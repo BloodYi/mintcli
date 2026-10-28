@@ -1,6 +1,7 @@
 import { AlertTriangle, LogIn } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+import ProviderCliVersion from '@/modules/settings/tabs/agents-settings/sections/content/ProviderCliVersion';
 import { Badge, Button, LLMProviderLogo } from '@/shared/ui';
 import type { AgentProvider, ProviderAuthStatus, ProviderAuthSubscriptionOverride } from '@/shared/types';
 
@@ -98,7 +99,19 @@ function SubscriptionOverrideNotice({ override }: SubscriptionOverrideNoticeProp
 export default function AccountContent({ agent, authStatus, onLogin }: AccountContentProps) {
   const { t } = useTranslation('settings');
   const config = agentConfig[agent];
-  if (agent === 'codex' || agent === 'claude') return <div className="space-y-3"><h3 className="font-medium">统一账号管理</h3><p className="text-sm text-muted-foreground">请回到聊天页，在上方“管理账号”中添加、登录和切换 Codex、Claude、agy 及第三方 API，并查看各账号额度。</p></div>;
+  if (agent === 'codex' || agent === 'claude') {
+    return (
+      <div className="space-y-3">
+        <h3 className="font-medium">统一账号管理</h3>
+        <p className="text-sm text-muted-foreground">请回到聊天页，在上方“管理账号”中添加、登录和切换 Codex、Claude、agy 及第三方 API，并查看各账号额度。</p>
+        {authStatus.authenticated && !authStatus.loading && (
+          <p className="text-sm text-muted-foreground">{t('agents.authStatus.loggedInAs', { email: authStatus.email || t('agents.authStatus.authenticatedUser') })}</p>
+        )}
+        {!authStatus.loading && authStatus.subscriptionOverride && <SubscriptionOverrideNotice override={authStatus.subscriptionOverride} />}
+        <ProviderCliVersion key={agent} agent={agent} installedVersion={authStatus.installedVersion ?? null} textClass={config.textClass} subtextClass={config.subtextClass} />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -153,6 +166,13 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
           {!authStatus.loading && authStatus.subscriptionOverride && (
             <SubscriptionOverrideNotice override={authStatus.subscriptionOverride} />
           )}
+          <ProviderCliVersion
+            key={agent}
+            agent={agent}
+            installedVersion={authStatus.installedVersion ?? null}
+            textClass={config.textClass}
+            subtextClass={config.subtextClass}
+          />
 
           {authStatus.method !== 'api_key' && (
             <div className="border-t border-border/50 pt-4">

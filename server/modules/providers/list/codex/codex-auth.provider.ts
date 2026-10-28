@@ -1,12 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { getCodexModelCatalog, resolveCodexConnection } from '@/modules/codex-connections/index.js';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
-import spawn from 'cross-spawn';
-
 import type { IProviderAuth } from '@/shared/interfaces.js';
-import type { ProviderAuthStatus } from '@/shared/types.js';
-import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
+import type { CliVersionProbe, ProviderAuthStatus } from '@/shared/types.js';
+import { probeCliVersion, readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
 type CodexCredentialsStatus = {
   authenticated: boolean;
@@ -17,22 +16,25 @@ type CodexCredentialsStatus = {
 
 export class CodexProviderAuth implements IProviderAuth {
   /**
-   * Checks whether Codex is available to the server runtime.
+   * Checks whether the Codex CLI that chats run is available, and which version
+   * it is. That is the `@openai/codex` package CloudCLI depends on, which
+   * `@openai/codex-sdk` resolves from node_modules, not a `codex` on PATH.
    */
-  private checkInstalled(): boolean {
+  checkInstalled(): CliVersionProbe {
+    let launcherPath: string;
     try {
-      spawn.sync('codex', ['--version'], { stdio: 'ignore', timeout: 5000 });
-      return true;
+      launcherPath = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js');
     } catch {
-      return false;
+      return { installed: false, exitCode: null, version: null };
     }
+    return probeCliVersion(process.execPath, [launcherPath, '--version']);
   }
 
   /**
    * Returns Codex SDK availability and credential status.
    */
   async getStatus(): Promise<ProviderAuthStatus> {
-    const installed = this.checkInstalled();
+    const { installed, version: installedVersion } = this.checkInstalled();
     let credentials = await this.checkCredentials();
     if (credentials.authenticated && resolveCodexConnection().kind === 'chatgpt') {
       try { await getCodexModelCatalog(); }
@@ -42,6 +44,7 @@ export class CodexProviderAuth implements IProviderAuth {
     return {
       installed,
       provider: 'codex',
+      installedVersion,
       authenticated: credentials.authenticated,
       email: credentials.email,
       method: credentials.method,

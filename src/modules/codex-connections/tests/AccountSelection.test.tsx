@@ -1,22 +1,15 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import AccountContent from '@/modules/settings/tabs/agents-settings/sections/content/AccountContent';
 import { api } from '@/shared/api';
-vi.mock('@/shared/api', () => ({ api: { codexConnections: { list: vi.fn(), select: vi.fn(), quota: vi.fn() } } }));
-vi.mock('react-i18next',()=>({useTranslation:()=>({t:(key:string)=>key})}));
-const response=(value:unknown)=>Promise.resolve(new Response(JSON.stringify(value)));
+vi.mock('@/shared/api', () => ({ api: { providers: { cliStatus: () => new Promise<Response>(() => {}) }, codexConnections: { list: vi.fn(), select: vi.fn() } } }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 afterEach(cleanup);
-it('Codex settings lists both saved identities and selects the same server connection as chat', async()=>{
- const connections=[{id:'one',name:'主账号',kind:'chatgpt',authorized:true,email:'one@example.test'},{id:'two',name:'Business',kind:'chatgpt',authorized:true,email:'bloodyi1999@example.test'}];
- vi.mocked(api.codexConnections.list).mockImplementation(()=>response({activeId:'one',connections}));
- vi.mocked(api.codexConnections.select).mockImplementation(()=>response({activeId:'two',connections}));
- vi.mocked(api.codexConnections.quota).mockImplementation(id=>response({connectionId:id,status:'unavailable',windows:[]}));
- render(<AccountContent agent="codex" authStatus={{email:null,method:null,authenticated:false,loading:false,error:'Codex not configured'}} onLogin={vi.fn()}/>);
- const accounts=await screen.findByRole('region',{name:'已保存的 Codex 账号与 API'});
- await within(accounts).findByRole('button',{name:/bloodyi1999/});
- expect(within(accounts).getAllByRole('button')).toHaveLength(2);
- expect(screen.queryByText(/Codex not configured/)).toBeNull();
- fireEvent.click(within(accounts).getByRole('button',{name:/bloodyi1999/}));
- await screen.findByText('当前账号：bloodyi1999@example.test');
- expect(api.codexConnections.select).toHaveBeenCalledWith('two');
+it('Codex settings keeps account switching in the unified chat account manager', () => {
+  render(<AccountContent agent="codex" authStatus={{ email: null, method: null, authenticated: false, loading: false, error: 'Codex not configured' }} onLogin={vi.fn()} />);
+  expect(screen.getByText('统一账号管理')).toBeTruthy();
+  expect(screen.getByText(/管理账号/)).toBeTruthy();
+  expect(screen.queryByText('Codex not configured')).toBeNull();
+  expect(api.codexConnections.list).not.toHaveBeenCalled();
+  expect(api.codexConnections.select).not.toHaveBeenCalled();
 });

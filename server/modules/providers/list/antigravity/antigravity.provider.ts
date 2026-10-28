@@ -5,7 +5,7 @@ import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 import { antigravityBridge } from '@/modules/antigravity/index.js';
 import { sessionsDb } from '@/modules/database/index.js';
 import type { IProvider, IProviderRuntime } from '@/shared/interfaces.js';
-import type { AnyRecord, FetchHistoryOptions, NormalizedMessage, ProviderAuthStatus } from '@/shared/types.js';
+import type { AnyRecord, CliVersionProbe, FetchHistoryOptions, NormalizedMessage, ProviderAuthStatus } from '@/shared/types.js';
 import { AppError, createNormalizedMessage, createCompleteMessage, sliceTailPage } from '@/shared/utils.js';
 
 const provider = 'antigravity';
@@ -127,7 +127,10 @@ export class AntigravityProvider implements IProvider {
     async getSupportedModels() { const data = await json(await antigravityBridge.request('GET', '/api/models')); const OPTIONS = (data.models || []).map((item: AnyRecord) => ({ value: String(item.id), label: String(item.name || item.id) })); return { ACCOUNT_SCOPED: true, OPTIONS, DEFAULT: OPTIONS[0]?.value || '' }; },
     async getCurrentActiveModel() { return { model: (await this.getSupportedModels()).DEFAULT }; },
   };
-  readonly auth = { async getStatus(): Promise<ProviderAuthStatus> { try { const data = await json(await antigravityBridge.request('GET', '/api/accounts')); const active = data.accounts?.find((item: AnyRecord) => item.active); return { provider, installed: true, authenticated: Boolean(active), email: active?.email || null, method: 'native' }; } catch { return { provider, installed: false, authenticated: false, email: null, method: null }; } } };
+  readonly auth = {
+    // Antigravity runs through the native bridge; it has no local CLI version to probe.
+    checkInstalled(): CliVersionProbe { return { installed: true, exitCode: null, version: null }; },
+    async getStatus(): Promise<ProviderAuthStatus> { try { const data = await json(await antigravityBridge.request('GET', '/api/accounts')); const active = data.accounts?.find((item: AnyRecord) => item.active); return { provider, installedVersion: null, installed: true, authenticated: Boolean(active), email: active?.email || null, method: 'native' }; } catch { return { provider, installedVersion: null, installed: false, authenticated: false, email: null, method: null }; } } };
   readonly sessions = {
     normalizeMessage(raw: unknown, id: string | null) { return normalizeAgy(raw as AnyRecord, id); },
     async fetchHistory(sessionId: string, options: FetchHistoryOptions = {}) {
