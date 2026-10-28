@@ -13,6 +13,7 @@ const AGENT_NAMES: Record<AgentProvider, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   opencode: 'OpenCode',
+  antigravity: 'agy',
 };
 
 /** Rendered by AgentsSettingsTab to pick which agent provider the tab is configuring. */
@@ -24,19 +25,22 @@ export default function AgentSelectorSection({
 }: AgentSelectorSectionProps) {
   return (
     <div className="flex-shrink-0 border-b border-border px-3 py-2 md:px-4 md:py-3">
-      <PillBar className="w-full md:w-auto">
+      <PillBar className="w-full flex-wrap md:w-auto">
         {agents.map((agent) => {
           const dotColor =
             agent === 'claude' ? 'bg-blue-500' :
             agent === 'cursor' ? 'bg-purple-500' :
+            agent === 'antigravity' ? 'bg-emerald-500' :
             agent === 'opencode' ? 'bg-zinc-500' : 'bg-foreground/60';
 
           return (
             <Pill
               key={agent}
               isActive={selectedAgent === agent}
+              aria-label={AGENT_NAMES[agent]}
+              aria-pressed={selectedAgent === agent}
               onClick={() => onSelectAgent(agent)}
-              className="min-w-0 flex-1 justify-center md:flex-initial"
+              className="min-w-0 flex-[1_0_6rem] justify-center md:flex-initial"
             >
               <LLMProviderLogo provider={agent} className="h-4 w-4 flex-shrink-0" />
               <span className="truncate">{AGENT_NAMES[agent]}</span>

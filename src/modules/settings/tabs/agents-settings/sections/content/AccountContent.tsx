@@ -21,7 +21,7 @@ type AgentVisualConfig = {
   description?: string;
 };
 
-const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
+const agentConfig: Record<Exclude<AgentProvider, 'antigravity'>, AgentVisualConfig> = {
   claude: {
     name: 'Claude',
     bgClass: 'bg-blue-50 dark:bg-blue-900/20',
@@ -98,6 +98,14 @@ function SubscriptionOverrideNotice({ override }: SubscriptionOverrideNoticeProp
 /** Rendered by AgentCategoryContentSection for the "account" category to show sign-in state for one provider. */
 export default function AccountContent({ agent, authStatus, onLogin }: AccountContentProps) {
   const { t } = useTranslation('settings');
+  if (agent === 'antigravity') {
+    return <div className="space-y-3" aria-label="agy 账户设置">
+      <h3 className="font-medium">统一账号管理</h3>
+      <p className="text-sm text-muted-foreground">请回到聊天页，在上方“管理账号”中添加、登录和切换 agy 账号，并查看各账号额度。</p>
+      <p role="status" className="text-sm text-muted-foreground">{authStatus.loading ? '正在检查 agy 连接…' : authStatus.authenticated ? `已连接${authStatus.email ? ' · ' + authStatus.email : ''}` : 'agy 尚未连接，请检查原生服务和账号授权。'}</p>
+      <p className="border-t border-border/50 pt-3 text-sm text-muted-foreground">agy 通过原生服务连接；权限、MCP 和技能由原生服务管理。</p>
+    </div>;
+  }
   const config = agentConfig[agent];
   if (['codex', 'claude', 'cursor', 'opencode'].includes(agent)) {
     return (

@@ -34,13 +34,15 @@ export default function AgentsSettingsTab({
   const [selectedAgent, setSelectedAgent] = useState<AgentProvider>('claude');
   const [selectedCategory, setSelectedCategory] = useState<AgentCategory>('account');
   const visibleCategories = useMemo<AgentCategory[]>(() => (
-    selectedAgent === 'opencode'
+    selectedAgent === 'antigravity'
+      ? ['account']
+      : selectedAgent === 'opencode'
       ? ['account', 'permissions', 'mcp']
       : ['account', 'permissions', 'mcp', 'skills']
   ), [selectedAgent]);
 
   const visibleAgents = useMemo<AgentProvider[]>(() => {
-    return ['claude', 'cursor', 'codex', 'opencode'];
+    return ['claude', 'cursor', 'codex', 'opencode', 'antigravity'];
   }, []);
 
   const agentContextById = useMemo<AgentContextByProvider>(() => ({
@@ -56,6 +58,8 @@ export default function AgentsSettingsTab({
       authStatus: providerAuthStatus.codex,
       onLogin: () => onProviderLogin('codex'),
     },
+    // agy authorization belongs to the shared native account manager.
+    antigravity: { authStatus: providerAuthStatus.antigravity, onLogin: () => undefined },
     opencode: {
       authStatus: providerAuthStatus.opencode,
       onLogin: () => onProviderLogin('opencode'),
@@ -66,6 +70,7 @@ export default function AgentsSettingsTab({
     providerAuthStatus.codex,
     providerAuthStatus.cursor,
     providerAuthStatus.opencode,
+    providerAuthStatus.antigravity,
   ]);
 
   useEffect(() => {
