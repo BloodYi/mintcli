@@ -288,6 +288,7 @@ export const sessionsService = {
     provider: LLMProvider,
     projectPath: string,
     initialMessage: string,
+    fastMode = false,
   ): CreateAppSessionResult {
     const normalizedProjectPath = projectPath.trim();
     if (!normalizedProjectPath) {
@@ -300,6 +301,7 @@ export const sessionsService = {
     const sessionId = randomUUID();
     const sessionName = buildCloudCliSessionName(initialMessage);
     sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, sessionName);
+    if (provider === 'codex' && fastMode) sessionsDb.setSessionFastMode(sessionId, true);
 
     return {
       sessionId,
@@ -372,6 +374,7 @@ export const sessionsService = {
       effort: source.effort,
     });
 
+    sessionsDb.setSessionFastMode(forkSessionId, source.fast_mode === 1);
     await broadcastSessionUpserted(forkSessionId);
 
     return {

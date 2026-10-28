@@ -29,13 +29,14 @@ const toProviderEffortOptions = (
 ): NonNullable<ProviderModelOption['effort']>['values'] => values.map((value) => ({ value }));
 
 const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
+  antigravity: '',
   claude: 'default',
   cursor: 'gpt-5.3-codex',
-  codex: 'gpt-5.4',
+  codex: '',
   opencode: 'anthropic/claude-sonnet-4-5',
 };
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
+const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'antigravity'];
 
 /** localStorage key holding the user's default model for one provider. */
 const providerModelStorageKey = (provider: LLMProvider): string => `${provider}-model`;
@@ -47,6 +48,7 @@ const providerModelStorageKey = (provider: LLMProvider): string => `${provider}-
  * first paint and when the capabilities request fails.
  */
 const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
+  antigravity: ['default'],
   claude: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'],
   cursor: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   codex: ['default', 'acceptEdits', 'bypassPermissions'],
@@ -77,6 +79,7 @@ type ProviderCapabilitiesApiResponse = {
 type UseChatProviderStateArgs = {
   selectedSession: ProjectSession | null;
   selectedProject: Project | null;
+  codexConnectionId?: string;
 };
 
 type ProviderModelsApiResponse = {
@@ -124,7 +127,7 @@ const getSessionSelectionKey = (provider: LLMProvider, sessionId: string): strin
   `${provider}:${sessionId}`
 );
 
-export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
+export function useChatProviderState({ selectedSession, selectedProject: _selectedProject, codexConnectionId }: UseChatProviderStateArgs) {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   // The provider the composer sends under. Held here rather than read from
@@ -201,12 +204,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
             const response = await api.providers.models(p);
             const body = (await response.json()) as ProviderModelsApiResponse;
             const models = body.success ? body.data?.models : undefined;
+            if (!models && p === 'codex' && providerModelsRequestIdRef.current === requestId) setProviderModelCatalog(previous => ({ ...previous, codex: { OPTIONS: [], DEFAULT: '' } }));
             if (!models || providerModelsRequestIdRef.current !== requestId) {
               return;
             }
 
             setProviderModelCatalog((previous) => ({ ...previous, [p]: models }));
           } catch (error) {
+            if (p === 'codex' && providerModelsRequestIdRef.current === requestId) setProviderModelCatalog(previous => ({ ...previous, codex: { OPTIONS: [], DEFAULT: '' } }));
             console.error(`Error loading ${p} models:`, error);
           }
         }),
@@ -220,7 +225,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   useEffect(() => {
     void loadProviderModels();
-  }, [loadProviderModels]);
+    const refresh = () => { void loadProviderModels(); };
+    window.addEventListener('codex-account-updated', refresh);
+    return () => window.removeEventListener('codex-account-updated', refresh);
+  }, [loadProviderModels, codexConnectionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -677,7 +685,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   // The open session's model wins over the per-provider default, so switching
   // sessions shows (and sends) what each session actually runs with.
-  const currentProviderModel = sessionModel ?? providerModels[provider];
+  const requestedProviderModel = sessionModel ?? providerModels[provider];
+  const codexCatalog = providerModelCatalog.codex;
+  const currentProviderModel = provider === 'codex' && codexCatalog && !codexCatalog.OPTIONS.some(option => option.value === requestedProviderModel) ? codexCatalog.DEFAULT : requestedProviderModel;
   const currentProviderEffortOptions = useMemo(() => {
     return getEffortOptionsForModel(provider, currentProviderModel);
   }, [currentProviderModel, getEffortOptionsForModel, provider]);

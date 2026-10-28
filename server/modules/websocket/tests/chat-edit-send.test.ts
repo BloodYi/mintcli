@@ -307,3 +307,21 @@ test('a provider that has to branch to rewind is rewound before the run, not dur
     assert.equal(truncatedBeforeRewind, true);
   }, CODEX_TRANSCRIPT_ROWS);
 });
+
+
+test('Codex sends inherit saved Fast mode and explicit standard mode resets it', async () => {
+  await withGateway('codex', async ({ socket, runs }) => {
+    sessionsDb.setSessionFastMode(SESSION_ID, true);
+    socket.emit('message', JSON.stringify({ type: 'chat.send', sessionId: SESSION_ID, content: 'saved fast' }));
+    await settle();
+    assert.equal(runs[0]?.options.fastMode, true);
+    socket.emit('message', JSON.stringify({ type: 'chat.send', sessionId: SESSION_ID, content: 'standard', options: { fastMode: false } }));
+    await settle();
+    assert.equal(runs[1]?.options.fastMode, false);
+    assert.equal(sessionsDb.getSessionById(SESSION_ID)?.fast_mode, 0);
+    socket.emit('message', JSON.stringify({ type: 'chat.send', sessionId: SESSION_ID, content: 'fast', options: { fastMode: true } }));
+    await settle();
+    assert.equal(runs[2]?.options.fastMode, true);
+    assert.equal(sessionsDb.getSessionById(SESSION_ID)?.fast_mode, 1);
+  }, CODEX_TRANSCRIPT_ROWS);
+});

@@ -50,8 +50,8 @@ for (const resumed of [false, true]) {
       assert.equal(start.mock.callCount(), resumed ? 0 : 1);
       assert.equal(resume.mock.callCount(), resumed ? 1 : 0);
       assert.equal(capturedPrompt, 'hey there');
-      assert.equal(capturedOptions?.sandboxMode, permissionMode === 'bypassPermissions' ? 'danger-full-access' : 'workspace-write');
-      assert.equal(capturedOptions?.approvalPolicy, permissionMode === 'acceptEdits' || permissionMode === 'bypassPermissions' ? 'never' : 'on-request');
+      assert.equal(capturedOptions?.sandboxMode, 'danger-full-access');
+      assert.equal(capturedOptions?.approvalPolicy, 'never');
       assert.ok(messages.some((message: any) => message.kind === 'complete' && message.exitCode === 0));
       assert.ok(!messages.some((message: any) => message.kind === 'error'));
     });
@@ -91,4 +91,34 @@ for (const command of ['', '  \n\t']) {
       { type: 'local_image', path: imagePath },
     ]);
   });
+}
+
+
+for (const resumed of [false, true]) {
+  for (const fastMode of [true, false, undefined]) {
+    test(`Codex ${resumed ? 'resume' : 'start'} passes explicit speed and independent effort (${fastMode})`, async (t) => {
+      let capturedConfig: Record<string, unknown> | undefined;
+      let capturedEffort: string | undefined;
+      const thread = { id: 'native-thread', async runStreamed() {
+        return { events: (async function* () { yield { type: 'thread.started', thread_id: 'native-thread' }; })() };
+      } } as unknown as Thread;
+      const capture = function(this: Codex, options?: ThreadOptions) {
+        capturedConfig = (this as unknown as { options: { config?: Record<string, unknown> } }).options.config;
+        capturedEffort = options?.modelReasoningEffort;
+        return thread;
+      };
+      t.mock.method(Codex.prototype, 'startThread', capture);
+      t.mock.method(Codex.prototype, 'resumeThread', function(this: Codex, _id: string, options?: ThreadOptions) { return capture.call(this, options); });
+      const context: ProviderRuntimeContext = {
+        resolveProviderSessionId: () => resumed ? 'native-thread' : null,
+        resolveResumeModel: async () => 'test-model',
+        getProviderModels: async () => ({ OPTIONS: [{ value: 'test-model', label: 'Test', effort: { values: [{ value: 'xhigh' }] } }], DEFAULT: 'test-model' }),
+        normalizeMessage: () => [], isProviderInstalled: async () => true,
+      };
+      await codexRuntime.run('hello', { cwd: process.cwd(), fastMode, effort: 'xhigh' }, { isWebSocketWriter: true, send: () => {} }, context);
+      assert.equal(capturedConfig?.service_tier, fastMode === true ? 'fast' : 'default');
+      assert.deepEqual(capturedConfig?.features, { fast_mode: fastMode === true });
+      assert.equal(capturedEffort, 'xhigh');
+    });
+  }
 }

@@ -5,7 +5,14 @@ import type { NavigateFunction } from 'react-router-dom';
 //----------------- LLM PROVIDER MODEL CATALOG ------------
 
 /** Identifies which coding-agent CLI backs a session, project selection or model list. */
-export type LLMProvider = 'claude' | 'cursor' | 'codex' | 'opencode';
+export type LLMProvider = 'claude' | 'cursor' | 'codex' | 'opencode' | 'antigravity';
+
+/** Safe connection selection shared by the native chat composer and account manager. */
+export type CodexConnectionChoice = { id: string; kind: 'chatgpt' | 'api'; model: string };
+/** Safe native credential choice for a turn; no credential values reach this view. */
+export type AgentConnectionChoice = { id: string; accountId: string; provider: LLMProvider; kind: string; model?: string; name: string; email?: string; authorized: boolean; current?: boolean; baseUrl?: string; protocol?: string };
+/** One common catalog for the account selector and manager. */
+export type AgentConnectionsCatalog = { activeId: string; connections: AgentConnectionChoice[]; warning?: string };
 
 /** One selectable model in a provider's model menu, including its optional reasoning-effort choices. */
 export type ProviderModelOption = {
@@ -1149,7 +1156,7 @@ export type CommitGraphRow = {
 //----------------- MCP SERVERS ------------
 
 /** The LLM provider whose MCP server configuration is being read or written; use it to key provider-specific MCP capabilities such as supported scopes and transports. */
-export type McpProvider = LLMProvider;
+export type McpProvider = Exclude<LLMProvider, 'antigravity'>;
 
 /** Where an MCP server definition is stored - the user's global provider config, Claude's project-local config, or a project workspace config - and therefore which config file a read or write targets. */
 export type McpScope = 'user' | 'local' | 'project';
@@ -1383,7 +1390,7 @@ export type AgentContext = {
 export type SettingsMainTab = 'agents' | 'appearance' | 'git' | 'api' | 'voice' | 'tasks' | 'browser' | 'notifications' | 'plugins' | 'about';
 
 /** The coding-agent CLI a settings screen is configuring, aliasing LLMProvider so agent-scoped settings read as being about an agent rather than a chat model. */
-export type AgentProvider = LLMProvider;
+export type AgentProvider = Exclude<LLMProvider, 'antigravity'>;
 
 /** One category of per-agent configuration in the agents settings tab (account, permissions, MCP servers or skills); use it to key which panel the tab renders. */
 export type AgentCategory = 'account' | 'permissions' | 'mcp' | 'skills';
@@ -1720,7 +1727,7 @@ type SnippetHighlight = {
 //----------------- PROVIDER SKILLS ------------
 
 /** The LLM provider whose skills are being listed, uploaded or deleted; use it to target the provider-specific skills endpoints. */
-export type SkillsProvider = LLMProvider;
+export type SkillsProvider = Exclude<LLMProvider, 'antigravity'>;
 
 /** Where a skill was discovered - the user's home directory, a project, a plugin, the repository, an admin location, or the built-in system set - used to group, order and label skills and to decide whether one can be deleted. */
 export type SkillsScope = 'user' | 'project' | 'plugin' | 'repo' | 'admin' | 'system';
@@ -1857,3 +1864,34 @@ type TaskStatus =
 
 /** A TaskMaster task's priority; high, medium and low are the known values and the string fallback tolerates anything else TaskMaster emits. */
 type TaskPriority = 'high' | 'medium' | 'low' | string;
+
+//----------------- NATIVE ANTIGRAVITY WORKSPACE ------------
+/** A saved agy identity returned by its existing account service; contains no authorization material. */
+export type AntigravityAccount = { id: string; email: string; name: string; active: boolean };
+/** A native agy model choice, fetched from the signed-in account instead of a fixed model list. */
+export type AntigravityModel = { id: string; name: string };
+/** Native allowance windows for the identified account; absent windows mean unavailable, not zero. */
+export type AntigravityQuota = {
+  email: string; timestamp: number; cached?: boolean;
+  quotas: { model: string; type: string; label: string; percentage: number; resets_at: string }[];
+};
+/** An original agy conversation, used by the history sidebar without copying it into Codex storage. */
+export type AntigravityConversation = { conversation_id: string; title?: string; updated_at?: number; pinned?: boolean };
+/** The existing agy message format used for history, streaming snapshots and uploaded attachments. */
+export type AntigravityMessage = {
+  id?: string; role: string; content: string; thinking?: string; tool?: string; metrics?: string;
+  status?: string; errorText?: string;
+  attachments?: { filename: string; path: string; is_image?: boolean; url?: string }[];
+};
+/** A history revision and the active server-owned turn used to reconnect without resending a prompt. */
+export type AntigravityHistory = {
+  messages?: AntigravityMessage[]; revision: string; conversation_id: string;
+  active_turn?: { id: string; status: string } | null;
+};
+/** Native agy web transport events, kept separate from Codex events and model API protocols. */
+export type AntigravityStreamEvent = {
+  event: string; turn_id?: string; conversation_id?: string; cursor?: number; status?: string;
+  delta?: string; text?: string; response?: string; thinking?: string; mode?: string;
+  tool?: string; name?: string; error?: string; message?: AntigravityMessage;
+};
+// ---------------------------

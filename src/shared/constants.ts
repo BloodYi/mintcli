@@ -213,6 +213,7 @@ export const CODE_EDITOR_DEFAULTS = {
  * key and OpenCode sessions would silently inherit Claude's `skipPermissions`.
  */
 export const PROVIDER_PERMISSION_PREFERENCE_KEYS: Record<LLMProvider, UserPreferenceKey> = {
+  antigravity: 'antigravityPermissions',
   claude: 'claudePermissions',
   cursor: 'cursorPermissions',
   codex: 'codexPermissions',

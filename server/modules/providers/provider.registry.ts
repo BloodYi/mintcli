@@ -1,3 +1,4 @@
+import { AntigravityProvider } from '@/modules/providers/list/antigravity/antigravity.provider.js';
 import { ClaudeProvider } from '@/modules/providers/list/claude/claude.provider.js';
 import { CodexProvider } from '@/modules/providers/list/codex/codex.provider.js';
 import { CursorProvider } from '@/modules/providers/list/cursor/cursor.provider.js';
@@ -7,6 +8,7 @@ import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
 const providers: Record<LLMProvider, IProvider> = {
+  antigravity: new AntigravityProvider(),
   claude: new ClaudeProvider(),
   codex: new CodexProvider(),
   cursor: new CursorProvider(),

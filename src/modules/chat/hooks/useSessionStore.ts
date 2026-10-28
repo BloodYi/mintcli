@@ -754,7 +754,10 @@ export function useSessionStore() {
       msg.sessionId === sessionId
         ? msg
         : { ...msg, sessionId };
-    let updated = [...slot.realtimeMessages, normalizedMessage];
+    // Native snapshots and replayed events replace the same logical row.
+    const existingIndex = slot.realtimeMessages.findIndex(message => message.id === normalizedMessage.id);
+    let updated = existingIndex < 0 ? [...slot.realtimeMessages, normalizedMessage]
+      : slot.realtimeMessages.map((message, index) => index === existingIndex ? normalizedMessage : message);
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
     }

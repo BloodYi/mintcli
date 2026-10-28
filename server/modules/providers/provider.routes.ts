@@ -21,6 +21,8 @@ import type {
 } from '@/shared/types.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
+import { codexFastModeService } from '@/modules/providers/services/codex-fast-mode.service.js';
+
 const router = express.Router();
 
 const readPathParam = (value: unknown, name: string): string => {
@@ -318,6 +320,7 @@ const parseProvider = (value: unknown): LLMProvider => {
     || normalized === 'codex'
     || normalized === 'cursor'
     || normalized === 'opencode'
+    || normalized === 'antigravity'
   ) {
     return normalized;
   }
@@ -733,6 +736,19 @@ router.post(
   }),
 );
 
+/** Speed is stored separately from the model and reasoning effort. */
+router.get('/codex/sessions/:sessionId/fast-mode', asyncHandler(async (req: Request, res: Response) => {
+  res.json(createApiSuccessResponse(codexFastModeService.get(parseSessionId(req.params.sessionId))));
+}));
+
+router.post('/codex/sessions/:sessionId/fast-mode', asyncHandler(async (req: Request, res: Response) => {
+  const sessionId = parseSessionId(req.params.sessionId);
+  if (typeof req.body?.fastMode !== 'boolean') {
+    throw new AppError('fastMode must be a boolean.', { code: 'INVALID_FAST_MODE', statusCode: 400 });
+  }
+  res.json(createApiSuccessResponse(codexFastModeService.set(sessionId, req.body.fastMode)));
+}));
+
 // ----------------- Skills routes -----------------
 router.get(
   '/:provider/skills',
@@ -870,7 +886,10 @@ router.post(
     const provider = parseProvider(body.provider);
     const projectPath = typeof body.projectPath === 'string' ? body.projectPath : '';
     const initialMessage = typeof body.initialMessage === 'string' ? body.initialMessage : '';
-    const result = sessionsService.createAppSession(provider, projectPath, initialMessage);
+    if (body.fastMode !== undefined && typeof body.fastMode !== 'boolean') {
+      throw new AppError('fastMode must be a boolean.', { code: 'INVALID_FAST_MODE', statusCode: 400 });
+    }
+    const result = sessionsService.createAppSession(provider, projectPath, initialMessage, body.fastMode as boolean | undefined);
     res.status(201).json(createApiSuccessResponse(result));
   }),
 );

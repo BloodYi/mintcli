@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon } from 'lucide-react';
 
@@ -9,13 +9,19 @@ import PermissionContext from '@/modules/chat/context/PermissionContext';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { TranscriptSessionContext } from '@/modules/chat/context/TranscriptSessionContext';
 import { api } from '@/shared/api';
+import { AgentConnections } from '@/modules/agent-connections';
+import { useNavigate } from 'react-router-dom';
+import { writeSelectedProvider } from '@/shared/selectedProvider';
 import type {
   ChatMessage,
+  AgentConnectionChoice,
+  LLMProvider,
   Project,
   ProjectSession,
   SessionEstablishedContext,
   SessionNavigationOptions,
 } from '@/shared/types';
+import { useCodexFastMode } from '@/modules/chat/hooks/useCodexFastMode';
 import { useChatProviderState } from '@/modules/chat/hooks/useChatProviderState';
 import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessages';
 import { useChatSessionState } from '@/modules/chat/hooks/useChatSessionState';
@@ -38,6 +44,7 @@ type ChatInterfaceProps = {
   sendMessage: (message: unknown) => void;
   onFileOpen?: (filePath: string, diffInfo?: any) => void;
   onNavigateToSession?: (targetSessionId: string, options?: SessionNavigationOptions) => void;
+  onStartNewSession?: () => void;
   onSessionEstablished?: (sessionId: string, context: SessionEstablishedContext) => void;
   onShowSettings?: () => void;
   showRawParameters?: boolean;
@@ -62,6 +69,7 @@ function ChatInterface({
   sendMessage,
   onFileOpen,
   onNavigateToSession,
+  onStartNewSession,
   onSessionEstablished,
   onShowSettings,
   showRawParameters,
@@ -74,6 +82,9 @@ function ChatInterface({
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const { subscribe } = useWebSocket();
   const { t } = useTranslation('chat');
+  // API connections own their configured model; hide the native CLI model controls for them.
+  const [activeConnection, setActiveConnection] = useState<AgentConnectionChoice | null>(null);
+  const navigate = useNavigate();
   const processingSessions = useProcessingSessions();
   const {
     markSessionProcessing: onSessionProcessing,
@@ -127,7 +138,9 @@ function ChatInterface({
   } = useChatProviderState({
     selectedSession,
     selectedProject,
+    codexConnectionId: activeConnection?.id,
   });
+  const usingApiConnection = provider === 'codex' && activeConnection?.kind === 'api';
 
   const {
     chatMessages,
@@ -176,6 +189,21 @@ function ChatInterface({
     lastSeqRef,
     sessionStore,
   });
+
+  const handleAccountProviderChange = useCallback((next: LLMProvider) => {
+    if (next !== provider) {
+      writeSelectedProvider(next);
+      setProvider(next);
+      setCurrentSessionId(null);
+      onStartNewSession?.();
+      navigate('/');
+    }
+  }, [navigate, provider, setProvider, setCurrentSessionId, onStartNewSession]);
+
+  const supportsFastMode = provider === 'codex' && !usingApiConnection;
+  const { fastMode, selectFastMode, fastModePending, fastModeError } = useCodexFastMode(
+    currentSessionId || selectedSession?.id || null, supportsFastMode,
+  );
 
   // Brand-new conversation: the composer allocated a stable session id via
   // the session gateway before the first send. Record it locally and put it
@@ -242,11 +270,13 @@ function ChatInterface({
     selectedProject,
     selectedSession,
     currentSessionId,
+    connectionId: activeConnection?.accountId,
     provider,
     permissionMode,
     cyclePermissionMode,
     currentProviderModel,
     currentProviderEffort,
+    fastMode: supportsFastMode ? fastMode : undefined,
     isLoading: isProcessing,
     processingSessions,
     canAbortSession,
@@ -386,12 +416,13 @@ function ChatInterface({
     const scheduled = await scheduleMessage({
       content,
       scheduledFor,
-      options: { model: currentProviderModel, effort: currentProviderEffort, permissionMode },
+      options: { model: currentProviderModel, effort: currentProviderEffort, permissionMode,
+        ...(supportsFastMode && fastMode !== undefined ? { fastMode } : {}) },
     });
     if (scheduled) {
       setInput('');
     }
-  }, [currentProviderEffort, currentProviderModel, input, permissionMode, scheduleMessage, setInput]);
+  }, [currentProviderEffort, currentProviderModel, input, permissionMode, scheduleMessage, setInput, supportsFastMode, fastMode]);
 
   const permissionContextValue = useMemo(() => ({
     pendingPermissionRequests,
@@ -430,7 +461,7 @@ function ChatInterface({
   const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
 
   const selectedProviderLabel =
-    provider === 'cursor'
+    provider === 'antigravity' ? 'agy' : provider === 'cursor'
       ? t('messageTypes.cursor')
       : provider === 'codex'
         ? t('messageTypes.codex')
@@ -457,6 +488,7 @@ function ChatInterface({
   return (
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full min-h-0 flex-col">
+        <AgentConnections provider={provider} sessionId={selectedSession?.id || currentSessionId} disabled={isProcessing} onChoice={setActiveConnection} onProviderChange={handleAccountProviderChange} />
         <MarkdownWorkspaceContext.Provider value={markdownWorkspaceValue}>
           <TranscriptSessionContext.Provider value={transcriptSessionValue}>
             <ChatMessagesPane
@@ -544,8 +576,13 @@ function ChatInterface({
           availablePermissionModes={availablePermissionModes}
           onSelectPermissionMode={selectPermissionMode}
           providerLabel={selectedProviderLabel}
+          supportsFastMode={supportsFastMode}
+          fastMode={fastMode === true}
+          fastModePending={fastModePending}
+          fastModeError={fastModeError}
+          onSelectFastMode={selectFastMode}
           effort={currentProviderEffort}
-          availableEffortOptions={currentProviderEffortOptions}
+          availableEffortOptions={usingApiConnection ? [] : currentProviderEffortOptions}
           onSelectEffort={handleSelectComposerEffort}
           model={currentProviderModel}
           availableModelOptions={currentProviderModelOptions}

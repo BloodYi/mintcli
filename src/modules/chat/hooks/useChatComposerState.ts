@@ -13,7 +13,7 @@ import { useDropzone } from 'react-dropzone';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '@/shared/api';
-import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
+import { MAX_FILE_UPLOAD_SIZE_BYTES, MAX_FILE_UPLOAD_SIZE_LABEL, PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
 import type { BackgroundSendChoice, BackgroundSendPrompt, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
@@ -37,6 +37,7 @@ type UseChatComposerStateArgs = {
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
   provider: LLMProvider;
+  connectionId?: string;
   permissionMode: PermissionMode | string;
   cyclePermissionMode: () => void;
   resolvePermissionModeForProvider: (provider: LLMProvider, requestedMode: PermissionMode | string) => PermissionMode;
@@ -46,6 +47,7 @@ type UseChatComposerStateArgs = {
    */
   currentProviderModel: string;
   currentProviderEffort: string;
+  fastMode?: boolean;
   isLoading: boolean;
   processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
@@ -103,7 +105,7 @@ const createFakeSubmitEvent = () => {
 };
 
 const MAX_ATTACHMENT_COUNT = 10;
-const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
+const MAX_ATTACHMENT_SIZE = MAX_FILE_UPLOAD_SIZE_BYTES;
 
 const isImageAttachment = (attachment: ChatAttachment) => {
   if (attachment.mimeType?.startsWith('image/')) return true;
@@ -178,6 +180,7 @@ const getNotificationSessionSummary = (
 const SAFARI_IME_RACE_WINDOW_MS = 30;
 
 export function useChatComposerState({
+  connectionId,
   selectedProject,
   selectedSession,
   currentSessionId,
@@ -187,6 +190,7 @@ export function useChatComposerState({
   resolvePermissionModeForProvider,
   currentProviderModel,
   currentProviderEffort,
+  fastMode,
   isLoading,
   processingSessions,
   canAbortSession,
@@ -449,7 +453,7 @@ export function useChatComposerState({
           projectId: selectedProject.projectId,
           sessionId: currentSessionId || selectedSession?.id || null,
           provider,
-          model: currentProviderModel,
+      model: currentProviderModel,
           tokenUsage: tokenBudget,
         };
 
@@ -592,7 +596,7 @@ export function useChatComposerState({
           const fileName = file.name || 'Unknown file';
           setFileErrors((previous) => {
             const next = new Map(previous);
-            next.set(fileName, 'File too large (max 10MB)');
+            next.set(fileName, `File too large (max ${MAX_FILE_UPLOAD_SIZE_LABEL})`);
             return next;
           });
           return false;
@@ -606,6 +610,11 @@ export function useChatComposerState({
     });
 
     if (validFiles.length > 0) {
+      setFileErrors((previous) => {
+        const next = new Map(previous);
+        validFiles.forEach((file) => next.delete(file.name));
+        return next;
+      });
       setAttachedFiles((previous) => [...previous, ...validFiles].slice(0, MAX_ATTACHMENT_COUNT));
     }
   }, []);
@@ -615,7 +624,7 @@ export function useChatComposerState({
       const items = Array.from(event.clipboardData.items);
 
       items.forEach((item) => {
-        if (!item.type.startsWith('image/')) {
+        if (item.kind !== 'file') {
           return;
         }
         const file = item.getAsFile();
@@ -626,9 +635,8 @@ export function useChatComposerState({
 
       if (items.length === 0 && event.clipboardData.files.length > 0) {
         const files = Array.from(event.clipboardData.files);
-        const imageFiles = files.filter((file) => file.type.startsWith('image/'));
-        if (imageFiles.length > 0) {
-          handleAttachmentFiles(imageFiles);
+        if (files.length > 0) {
+          handleAttachmentFiles(files);
         }
       }
     },
@@ -639,6 +647,14 @@ export function useChatComposerState({
     maxSize: MAX_ATTACHMENT_SIZE,
     maxFiles: MAX_ATTACHMENT_COUNT,
     onDrop: handleAttachmentFiles,
+    onDropRejected: (rejections) => {
+      setFileErrors(new Map(rejections.map(({ file, errors }) => [
+        file.name,
+        errors.some((error) => error.code === 'file-too-large')
+          ? `File too large (max ${MAX_FILE_UPLOAD_SIZE_LABEL})`
+          : `You can attach up to ${MAX_ATTACHMENT_COUNT} files at once.`,
+      ])));
+    },
     noClick: true,
     noKeyboard: true,
   });
@@ -660,14 +676,18 @@ export function useChatComposerState({
     const toolsSettings = getToolsSettings();
 
     return {
+      connectionId,
       model: currentProviderModel,
       effort: currentProviderEffort,
+      ...(provider === 'codex' && fastMode !== undefined ? { fastMode } : {}),
       permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
       toolsSettings,
       skipPermissions: toolsSettings?.skipPermissions || false,
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
     };
   }, [
+    connectionId,
+    fastMode,
     currentProviderEffort,
     currentProviderModel,
     permissionMode,
@@ -885,6 +905,7 @@ export function useChatComposerState({
             provider,
             projectPath: resolvedProjectPath,
             initialMessage: messageContent,
+            ...(provider === 'codex' && fastMode !== undefined ? { fastMode } : {}),
           });
           if (!response.ok) {
             throw new Error(`Failed to create session (${response.status})`);

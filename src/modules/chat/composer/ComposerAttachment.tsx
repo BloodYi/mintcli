@@ -20,19 +20,22 @@ const formatFileSize = (size: number) => {
  * thumbnail or file chip, upload progress and remove control.
  */
 const ComposerAttachment = ({ file, onRemove, error }: ComposerAttachmentProps) => {
+  // Object URL retained until this attachment changes or is removed.
   const [preview, setPreview] = useState<string | undefined>(undefined);
+  // Tracks whether the image lightbox is open.
   const [expanded, setExpanded] = useState(false);
   const isImage = file.type.startsWith('image/');
+  const isVideo = file.type.startsWith('video/') || /\.(mp4|m4v|mov|webm|mkv|avi|mpeg|mpg|3gp|ogv)$/i.test(file.name);
 
   useEffect(() => {
-    if (!isImage) {
+    if (!isImage && !isVideo) {
       setPreview(undefined);
       return;
     }
     const url = URL.createObjectURL(file);
     setPreview(url);
     return () => URL.revokeObjectURL(url);
-  }, [file, isImage]);
+  }, [file, isImage, isVideo]);
 
   return (
     <div className="group relative max-w-full">
@@ -47,6 +50,14 @@ const ComposerAttachment = ({ file, onRemove, error }: ComposerAttachmentProps) 
             ? <img src={preview} alt={file.name} className="h-20 w-20 cursor-zoom-in object-cover" />
             : <div className="h-20 w-20 animate-pulse bg-muted" />}
         </button>
+      ) : isVideo ? (
+        <div className="w-56 max-w-full overflow-hidden rounded-xl border border-border/50 bg-background/80 shadow-sm">
+          {preview && (
+            <video src={preview} controls preload="metadata" playsInline aria-label={file.name} className="h-28 w-full bg-black object-contain" />
+          )}
+          <p className="truncate px-3 pt-1 text-sm font-medium" title={file.name}>{file.name}</p>
+          <p className="px-3 pb-2 text-xs text-muted-foreground">{formatFileSize(file.size)}</p>
+        </div>
       ) : (
         <div className="flex h-20 w-56 max-w-full items-center gap-3 rounded-xl border border-border/50 bg-background/80 px-3 shadow-sm">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">

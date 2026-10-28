@@ -532,6 +532,9 @@ export const runMigrations = (db: Database) => {
     addProviderSessionIdMapping(db);
     addSessionModelColumn(db);
     addSessionEffortColumn(db);
+    // Existing sessions stay at standard speed until Fast is explicitly selected.
+    addColumnToTableIfNotExists(db, 'sessions', getTableInfo(db, 'sessions').map(column => column.name),
+      'fast_mode', 'INTEGER NOT NULL DEFAULT 0');
     addForkedFromSessionIdColumn(db);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);

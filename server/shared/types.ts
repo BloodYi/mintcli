@@ -66,7 +66,7 @@ export type AuthenticatedWebSocketRequest = IncomingMessage & {
  * Use this as the source of truth whenever a function or payload needs to identify
  * a specific LLM integration.
  */
-export type LLMProvider = 'claude' | 'codex' | 'cursor' | 'opencode';
+export type LLMProvider = 'claude' | 'codex' | 'cursor' | 'opencode' | 'antigravity';
 
 /**
  * One selectable model row in a provider model catalog.
@@ -92,6 +92,8 @@ export type ProviderModelOption = {
  * Provider model catalog returned by `GET /api/providers/:provider/models`.
  */
 export type ProviderModelsDefinition = {
+  /** Live selected-account choices are authoritative; saved custom rows may not expand this catalog. */
+  ACCOUNT_SCOPED?: boolean;
   OPTIONS: ProviderModelOption[];
   DEFAULT: string;
   /**

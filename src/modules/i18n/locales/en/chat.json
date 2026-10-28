@@ -161,6 +161,9 @@
     }
   },
   "composer": {
+    "fastMode": "Fast mode",
+    "fastModeHint": "Faster responses; uses more of your quota. Availability depends on your model and account.",
+    "fastModeError": "Could not load or save Fast mode. Try again.",
     "reasoning": "Reasoning",
     "model": "Model",
     "effortDefault": "Default",

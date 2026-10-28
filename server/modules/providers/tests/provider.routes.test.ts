@@ -8,7 +8,7 @@ import test from 'node:test';
 
 import express, { type NextFunction, type Request, type Response } from 'express';
 
-import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { closeConnection, getConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import providerRouter from '@/modules/providers/provider.routes.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type { IProvider } from '@/shared/interfaces.js';
@@ -538,5 +538,51 @@ test('the workflow agent route reads an agent\'s timeline and status from its ru
     const missing = await missingResponse.json() as { error: { code: string } };
     assert.equal(missingResponse.status, 404);
     assert.equal(missing.error.code, 'WORKFLOW_AGENT_NOT_FOUND');
+  });
+});
+
+
+test('Fast mode defaults off, validates booleans, and persists independently for each Codex session', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    sessionsDb.createAppSession('fast-session', 'codex', workspacePath);
+    sessionsDb.createAppSession('other-session', 'codex', workspacePath);
+    sessionsDb.createAppSession('claude-session', 'claude', workspacePath);
+    const url = `${baseUrl}/api/providers/codex/sessions/fast-session/fast-mode`;
+    assert.equal((await (await fetch(url)).json() as any).data.fastMode, false);
+    sessionsDb.setSessionEffort('fast-session', 'xhigh');
+    for (const fastMode of [true, false]) {
+      const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fastMode }) });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json() as any).data.fastMode, fastMode);
+      closeConnection();
+      assert.equal((await (await fetch(url)).json() as any).data.fastMode, fastMode);
+      assert.equal(sessionsDb.getSessionById('fast-session')?.effort, 'xhigh');
+      assert.equal(sessionsDb.getSessionById('other-session')?.fast_mode, 0);
+    }
+    for (const fastMode of ['true', 1, null, {}]) {
+      const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fastMode }) });
+      assert.equal(response.status, 400);
+    }
+    for (const id of ['missing', 'claude-session']) {
+      assert.equal((await fetch(`${baseUrl}/api/providers/codex/sessions/${id}/fast-mode`)).status, 404);
+    }
+    const created = await fetch(`${baseUrl}/api/providers/sessions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: 'codex', projectPath: workspacePath, initialMessage: 'Fast first turn', fastMode: true }) });
+    const body = await created.json() as any;
+    assert.equal(created.status, 201);
+    assert.equal(sessionsDb.getSessionById(body.data.sessionId)?.fast_mode, 1);
+  });
+});
+
+
+test('migrating an old database preserves sessions and gives them standard speed', async () => {
+  await withProviderServer(async (_baseUrl, workspacePath) => {
+    sessionsDb.createAppSession('legacy-session', 'codex', workspacePath);
+    sessionsDb.setSessionEffort('legacy-session', 'high');
+    getConnection().exec('ALTER TABLE sessions DROP COLUMN fast_mode');
+    await initializeDatabase();
+    assert.equal(sessionsDb.getSessionById('legacy-session')?.fast_mode, 0);
+    assert.equal(sessionsDb.getSessionById('legacy-session')?.effort, 'high');
+    await initializeDatabase();
+    assert.equal(sessionsDb.getSessionById('legacy-session')?.fast_mode, 0);
   });
 });

@@ -104,6 +104,8 @@ const mergeProviderModels = (
   custom: CustomProviderModelRecord[],
   customModelsOnly: boolean,
 ): ProviderModelsDefinition => {
+  // Codex choices are authoritative per selected account; keep stored custom rows without re-inserting retired ids.
+  if (provider === 'codex' && predefined.ACCOUNT_SCOPED) return { ...predefined, OPTIONS: predefined.OPTIONS.map(option => ({ ...option, isCustom: false })), EFFORT_LEVELS: [...new Set(predefined.OPTIONS.flatMap(option => option.effort?.values.map(level => level.value) || []))], CUSTOM_MODELS_ONLY: false };
   const customOptions = custom.map(toCustomProviderModelOption);
   const listOnlyCustomModels = customModelsOnly && customOptions.length > 0;
   return {

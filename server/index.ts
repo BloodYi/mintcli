@@ -8,6 +8,9 @@ import http from 'http';
 
 import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
+import { codexConnectionsRoutes } from './modules/codex-connections/index.js';
+import { agentConnectionsRoutes } from './modules/agent-connections/index.js';
+import { antigravityRoutes } from './modules/antigravity/index.js';
 
 import { AppError, findApplicationRoot, getModuleDirectory, IS_PLATFORM, terminalTextStyles } from '@/shared/utils.js';
 import {
@@ -153,6 +156,9 @@ app.use('/api', validateApiKey);
 
 // Authentication routes (public)
 app.use('/api/auth', authRoutes);
+app.use('/api/codex-connections', authenticateToken, codexConnectionsRoutes);
+app.use('/api/antigravity', authenticateToken, antigravityRoutes);
+app.use('/api/agent-connections', authenticateToken, agentConnectionsRoutes);
 
 // File Tree API Routes (protected)
 app.use('/api/file-tree', authenticateToken, fileTreeRoutes);
@@ -202,6 +208,10 @@ app.use('/api/scheduled-messages', authenticateToken, scheduledMessagesRoutes);
 app.use('/api/agent', agentRoutes);
 
 app.use('/api/voice', authenticateToken, voiceRoutes);
+
+// Former workspace links now lead into the single native application.
+app.get(['/classic', '/classic/*', '/login'], (_req, res) => res.redirect(302, '/'));
+app.use('/api', (_req, res) => { res.status(404).json({ error: 'API endpoint not found' }); });
 
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(APP_ROOT, 'public')));

@@ -60,6 +60,9 @@ function WorkspaceMain({
   onRenameSession,
 }: WorkspaceMainProps) {
   const preferences = useUiPreferences();
+  const handleStartNewSession = useCallback(() => {
+    if (selectedProject) onProjectSelect(selectedProject);
+  }, [onProjectSelect, selectedProject]);
   const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
 
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
@@ -167,6 +170,7 @@ function WorkspaceMain({
                 sendMessage={sendMessage}
                 onFileOpen={handleFileOpen}
                 onNavigateToSession={onNavigateToSession}
+                onStartNewSession={handleStartNewSession}
                 onSessionEstablished={onSessionEstablished}
                 onShowSettings={onShowSettings}
                 showRawParameters={showRawParameters}

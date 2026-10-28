@@ -31,6 +31,7 @@ const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "codex", name: "OpenAI" },
   { id: "cursor", name: "Cursor" },
   { id: "opencode", name: "OpenCode" },
+  { id: "antigravity", name: "Antigravity · agy" },
 ];
 
 const MOD_KEY =
@@ -76,6 +77,7 @@ function getModelConfig(
 function getProviderDisplayName(p: LLMProvider) {
   if (p === "claude") return "Claude";
   if (p === "cursor") return "Cursor";
+  if (p === "antigravity") return "agy";
   if (p === "codex") return "Codex";
   if (p === "opencode") return "OpenCode";
   return "Claude";
@@ -123,13 +125,13 @@ export default function ProviderSelectionEmptyState({
 
   /** One collapsible branch per provider, in the order the picker lists them. */
   const visibleProviderGroups = useMemo<ModelGroup[]>(
-    () => PROVIDER_META.map((meta) => ({
+    () => PROVIDER_META.filter(meta => meta.id === provider).map((meta) => ({
       key: meta.id,
       provider: meta.id,
       name: meta.name,
       models: providerModelCatalog[meta.id]?.OPTIONS ?? [],
     })),
-    [providerModelCatalog],
+    [providerModelCatalog, provider],
   );
 
   /**
@@ -144,7 +146,7 @@ export default function ProviderSelectionEmptyState({
         return catalog?.CUSTOM_MODELS_ONLY === true && catalog.OPTIONS.some((option) => option.isCustom);
       })
       .map((meta) => meta.name),
-    [providerModelCatalog],
+    [providerModelCatalog, provider],
   );
 
   const nextTaskPrompt = t("tasks.nextTaskPrompt", {
@@ -188,7 +190,7 @@ export default function ProviderSelectionEmptyState({
         <div className="w-full max-w-[34.25rem]">
           <div className="mb-8 text-center">
             <h2 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
-              {t("providerSelection.title")}
+              {getProviderDisplayName(provider)} · 新聊天
             </h2>
             <p className="mt-1 text-[13px] text-muted-foreground">
               {t("providerSelection.description")}
@@ -316,6 +318,7 @@ export default function ProviderSelectionEmptyState({
           <p className="mt-4 text-center text-sm text-muted-foreground/70">
             {
               {
+                antigravity: "已准备好使用 agy，可在上方切换账号。",
                 claude: t("providerSelection.readyPrompt.claude", {
                   model: providerModels.claude,
                 }),

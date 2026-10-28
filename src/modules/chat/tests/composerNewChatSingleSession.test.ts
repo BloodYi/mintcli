@@ -47,15 +47,16 @@ const releaseCreates = async (status = 201) => {
 const createRequests = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls
   .filter(([url, init]) => String(url) === '/api/providers/sessions' && (init as RequestInit | undefined)?.method === 'POST');
 
-const renderComposer = (initialSession: ProjectSession | null) => {
-  const sent: Array<{ type: string; sessionId?: string; content?: string }> = [];
+const renderComposer = (initialSession: ProjectSession | null, fastMode?: boolean) => {
+  const sent: Array<{ type: string; sessionId?: string; content?: string; options?: Record<string, unknown> }> = [];
   const established: string[] = [];
   const view = renderHook(({ session }: { session: ProjectSession | null }) =>
     useChatComposerState({
       selectedProject: PROJECT,
       selectedSession: session,
       currentSessionId: session?.id ?? null,
-      provider: 'claude',
+      provider: fastMode === undefined ? 'claude' : 'codex',
+      fastMode,
       permissionMode: 'default',
       cyclePermissionMode: () => undefined,
       resolvePermissionModeForProvider: () => 'default' as PermissionMode,
@@ -156,7 +157,7 @@ test('submitting again while an attachment uploads sends the message once', asyn
   await act(async () => {
     view.result.current.setInput('look at this');
     view.result.current.handlePaste({
-      clipboardData: { items: [{ type: 'image/png', getAsFile: () => image }], files: [] },
+      clipboardData: { items: [{ kind: 'file', type: 'image/png', getAsFile: () => image }], files: [] },
     } as never);
   });
 
@@ -198,3 +199,17 @@ test('a pending new chat does not hold up a submit in another session', async ()
   );
   await releaseCreates();
 });
+
+
+for (const fastMode of [true, false]) {
+  test(`new Codex conversations save Fast=${fastMode} before navigation and send it with the first turn`, async () => {
+    const { view, chatSends } = renderComposer(null, fastMode);
+    await act(async () => { view.result.current.setInput('hello'); });
+    await act(async () => { void view.result.current.handleSubmit({ preventDefault: () => undefined } as never); });
+    const request = createRequests(fetchMock)[0];
+    assert.equal(JSON.parse((request[1] as RequestInit).body as string).fastMode, fastMode);
+    await releaseCreates();
+    assert.equal(chatSends()[0]?.options?.fastMode, fastMode);
+    assert.equal(chatSends()[0]?.options?.effort, 'medium');
+  });
+}

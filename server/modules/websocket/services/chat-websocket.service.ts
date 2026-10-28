@@ -242,6 +242,12 @@ async function dispatchRun(
 
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
+  // Older clients and server-owned sends inherit the saved session preference.
+  const fastMode = provider === 'codex' && (typeof clientOptions.fastMode === 'boolean'
+    ? clientOptions.fastMode : session.fast_mode === 1);
+  if (provider === 'codex' && typeof clientOptions.fastMode === 'boolean') {
+    sessionsDb.setSessionFastMode(sessionId, fastMode);
+  }
 
   // Record what this turn runs with so reopening the session later restores the
   // same model and reasoning effort, and so the resume path has a
@@ -272,6 +278,7 @@ async function dispatchRun(
   const runtimeOptions: AnyRecord = {
     ...clientOptions,
     ...extraRuntimeOptions,
+    ...(provider === 'codex' ? { fastMode } : {}),
     // Attachments are re-validated server-side: only direct children of the
     // global upload store may reach provider runtimes or their file tools.
     attachments: uniqueAttachments,

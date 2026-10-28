@@ -272,6 +272,9 @@
     "answeredBy": "由 {{model}} 回答"
   },
   "composer": {
+    "fastMode": "Fast 加速模式",
+    "fastModeHint": "加快回應，消耗更多額度；是否支援取決於模型與帳號。",
+    "fastModeError": "Fast 設定讀取或儲存失敗，請重試。",
     "editing": {
       "title": "正在取代先前的訊息",
       "filesNotReverted": "已修改的檔案不會還原",

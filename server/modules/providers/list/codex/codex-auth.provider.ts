@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import os from 'node:os';
+import { getCodexModelCatalog, resolveCodexConnection } from '@/modules/codex-connections/index.js';
 import path from 'node:path';
 
 import spawn from 'cross-spawn';
@@ -33,7 +33,11 @@ export class CodexProviderAuth implements IProviderAuth {
    */
   async getStatus(): Promise<ProviderAuthStatus> {
     const installed = this.checkInstalled();
-    const credentials = await this.checkCredentials();
+    let credentials = await this.checkCredentials();
+    if (credentials.authenticated && resolveCodexConnection().kind === 'chatgpt') {
+      try { await getCodexModelCatalog(); }
+      catch (error) { credentials = { ...credentials, authenticated: false, error: error instanceof Error ? error.message : '官方授权检查失败' }; }
+    }
 
     return {
       installed,
@@ -50,7 +54,9 @@ export class CodexProviderAuth implements IProviderAuth {
    */
   private async checkCredentials(): Promise<CodexCredentialsStatus> {
     try {
-      const authPath = path.join(os.homedir(), '.codex', 'auth.json');
+      const item = resolveCodexConnection();
+      if (item.kind === 'api') return { authenticated: Boolean(item.apiKey), email: item.name, method: 'api_key' };
+      const authPath = path.join(item.home, 'auth.json');
       const content = await readFile(authPath, 'utf8');
       const auth = readObjectRecord(JSON.parse(content)) ?? {};
       const tokens = readObjectRecord(auth.tokens) ?? {};

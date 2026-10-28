@@ -10,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon, Zap } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
@@ -57,6 +57,11 @@ type ChatComposerProps = {
   availablePermissionModes: PermissionMode[];
   onSelectPermissionMode: (mode: PermissionMode) => void;
   providerLabel: string;
+  supportsFastMode?: boolean;
+  fastMode?: boolean;
+  fastModePending?: boolean;
+  fastModeError?: boolean;
+  onSelectFastMode?: (enabled: boolean) => void;
   effort: string;
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
   onSelectEffort: (effort: string) => void;
@@ -134,6 +139,11 @@ export default function ChatComposer({
   availablePermissionModes,
   onSelectPermissionMode,
   providerLabel,
+  supportsFastMode,
+  fastMode,
+  fastModePending,
+  fastModeError,
+  onSelectFastMode,
   effort,
   availableEffortOptions,
   onSelectEffort,
@@ -416,6 +426,14 @@ export default function ChatComposer({
 
           <input {...getInputProps()} />
 
+          {fileErrors.size > 0 && (
+            <div role="alert" className="px-4 py-2 text-sm text-destructive">
+              {Array.from(fileErrors, ([name, message]) => (
+                <p key={name}>{name}: {message}</p>
+              ))}
+            </div>
+          )}
+
           <PromptInputBody>
             <div ref={inputHighlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
               <div className="chat-input-placeholder block w-full whitespace-pre-wrap break-words px-4 py-2 text-sm leading-6 text-transparent">
@@ -487,6 +505,24 @@ export default function ChatComposer({
               disabled={!input.trim()}
               onSchedule={onScheduleMessage}
             />
+
+            {supportsFastMode && (
+              <button
+                type="button"
+                aria-label={t('composer.fastMode', { defaultValue: 'Fast mode' })}
+                aria-pressed={Boolean(fastMode)}
+                disabled={fastModePending}
+                title={fastModeError
+                  ? t('composer.fastModeError', { defaultValue: 'Could not load or save Fast mode. Try again.' })
+                  : t('composer.fastModeHint', { defaultValue: 'Faster responses; uses more of your quota. Availability depends on your model and account.' })}
+                onClick={() => onSelectFastMode?.(!fastMode)}
+                className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs font-medium transition-colors disabled:opacity-50 ${fastMode ? 'border-blue-500/40 bg-blue-500/10 text-blue-500' : 'border-border/60 bg-muted/40 text-muted-foreground hover:bg-muted'}`}
+              >
+                {fastModePending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+                <span>Fast</span>
+                {fastModeError && <span role="alert">!</span>}
+              </button>
+            )}
 
             <ComposerModelMenu
               effort={effort}

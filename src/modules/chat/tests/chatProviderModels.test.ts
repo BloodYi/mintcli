@@ -27,7 +27,11 @@ vi.mock('@/shared/api', () => ({
       savePreferences: () => okJson({ success: true, preferences: {} }),
     },
     providers: {
-      models: () => okJson({ success: true, data: null }),
+      models: (provider: string) => ['codex', 'antigravity'].includes(provider)
+        ? okJson({ success: true, data: { models: { ACCOUNT_SCOPED: true,
+          OPTIONS: (provider === 'codex' ? ['codex-live-default', 'codex-stored', 'codex-chosen'] : ['agy-live-default', 'agy-alternate']).map(value => ({ value, label: value })),
+          DEFAULT: provider === 'codex' ? 'codex-live-default' : 'agy-live-default',
+        } } }) : okJson({ success: true, data: null }),
       capabilities: () => okJson({ success: true, data: null }),
       sessionActiveModel: () => okJson({ success: true, data: null }),
       setSessionActiveModel: () => okJson({ success: true, data: null }),
@@ -79,7 +83,7 @@ test('a provider with no stored model falls back to its own default, not another
   const { result } = await renderProviderState();
 
   await waitFor(() => {
-    assert.ok(result.current.providerModels.claude);
+    assert.equal(result.current.providerModelsLoading, false);
   });
 
   const models = result.current.providerModels;
@@ -88,6 +92,16 @@ test('a provider with no stored model falls back to its own default, not another
     Object.keys(models).length,
     'each provider must have a distinct default model',
   );
+});
+
+test('agy uses the shared model selection while keeping the Codex choice', async () => {
+  writeUserPreference('selectedProvider', 'antigravity');
+  const { result } = await renderProviderState();
+  await waitFor(() => assert.equal(result.current.currentProviderModel, 'agy-live-default'));
+  const codex = result.current.providerModels.codex;
+  act(() => result.current.setStoredProviderModel('antigravity', 'agy-alternate'));
+  assert.equal(result.current.currentProviderModel, 'agy-alternate');
+  assert.equal(result.current.providerModels.codex, codex);
 });
 
 test('choosing a model persists it under that provider’s key only', async () => {

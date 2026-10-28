@@ -110,7 +110,7 @@ export class ApiRequestError extends Error {
 export async function readApiJson<T>(response: Response): Promise<T> {
   const data = await response.json();
   if (!response.ok || data.success === false) {
-    const raw = data.error ?? data.details;
+    const raw = data.error ?? data.details ?? data.detail;
     const payload = raw && typeof raw === 'object' ? raw : {};
     const message = (typeof raw === 'string' ? raw : payload?.message) || data.details || `Request failed (${response.status})`;
     throw new ApiRequestError(message, {
@@ -197,6 +197,46 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 // import a named method instead of assembling URLs of their own.
 
 export const api = {
+  antigravity: {
+    accounts: () => get('/api/antigravity/accounts'),
+    switchAccount: (id: string) => post('/api/antigravity/accounts/switch', { id }),
+    addAccount: (body: { alias: string; token_json: string; switch_now: boolean }) => post('/api/antigravity/accounts/add', body),
+    quota: (force = false) => get('/api/antigravity/quota' + query({ force })),
+    models: () => get('/api/antigravity/models'),
+    conversations: () => get('/api/antigravity/conversations'),
+    messages: (id: string, signal?: AbortSignal) => get('/api/antigravity/conversations/' + encodeURIComponent(id) + '/messages', { signal }),
+    chat: (body: Record<string, unknown>, signal: AbortSignal) => post('/api/antigravity/chat', body, { signal }),
+    turn: (id: string, signal: AbortSignal) => get('/api/antigravity/turns/' + encodeURIComponent(id), { signal }),
+    events: (id: string, signal: AbortSignal) => get('/api/antigravity/turns/' + encodeURIComponent(id) + '/events', { signal }),
+    stop: (id: string) => post('/api/antigravity/turns/' + encodeURIComponent(id) + '/stop'),
+    upload: (file: File) => {
+      const body = new FormData(); body.append('file', file);
+      return authenticatedFetch('/api/antigravity/upload', { method: 'POST', body });
+    },
+    download: (path: string) => get('/api/antigravity/download' + query({ path })),
+  },
+  agentConnections: {
+    list: () => get('/api/agent-connections'),
+    select: (id: string) => post('/api/agent-connections/' + encodeURIComponent(id) + '/select'),
+    quota: (id: string, force = false) => get('/api/agent-connections/' + encodeURIComponent(id) + '/quota' + query({ force })),
+    saveClaude: (body: unknown) => post('/api/agent-connections/claude/accounts', body),
+    removeClaude: (id: string) => del('/api/agent-connections/claude/accounts/' + encodeURIComponent(id)),
+    claudeLogin: (id: string) => post('/api/agent-connections/claude/accounts/' + encodeURIComponent(id) + '/login'),
+    claudeLoginStatus: (id: string) => get('/api/agent-connections/claude/accounts/' + encodeURIComponent(id) + '/login'),
+    claudeLoginCode: (id: string, code: string) => post('/api/agent-connections/claude/accounts/' + encodeURIComponent(id) + '/login/code', { code }),
+    cancelClaudeLogin: (id: string) => del('/api/agent-connections/claude/accounts/' + encodeURIComponent(id) + '/login'),
+  },
+  codexConnections: {
+    list: () => get('/api/codex-connections'),
+    save: (body: Record<string, unknown>) => post('/api/codex-connections', body),
+    select: (id: string) => post(`/api/codex-connections/${encodeURIComponent(id)}/select`),
+    remove: (id: string) => del(`/api/codex-connections/${encodeURIComponent(id)}`),
+    login: (id: string) => post(`/api/codex-connections/${encodeURIComponent(id)}/login`),
+    loginStatus: (id: string) => get(`/api/codex-connections/${encodeURIComponent(id)}/login`),
+    cancelLogin: (id: string) => del(`/api/codex-connections/${encodeURIComponent(id)}/login`),
+    models: (id: string) => get(`/api/codex-connections/${encodeURIComponent(id)}/models`),
+    quota: (id: string) => get(`/api/codex-connections/${encodeURIComponent(id)}/quota`),
+  },
   // Auth endpoints (no token required)
   auth: {
     status: () => fetch('/api/auth/status'),
@@ -434,6 +474,7 @@ export const api = {
       provider: string;
       projectPath: string;
       initialMessage?: unknown;
+      fastMode?: boolean;
     }) => post('/api/providers/sessions', payload),
     sessionMessages: (
       sessionId: string,
@@ -448,6 +489,10 @@ export const api = {
       post(`/api/providers/${provider}/sessions/${encodeURIComponent(sessionId)}/active-model`, {
         model,
       }),
+    sessionFastMode: (sessionId: string) =>
+      get(`/api/providers/codex/sessions/${encodeURIComponent(sessionId)}/fast-mode`),
+    setSessionFastMode: (sessionId: string, fastMode: boolean) =>
+      post(`/api/providers/codex/sessions/${encodeURIComponent(sessionId)}/fast-mode`, { fastMode }),
     setSessionActiveEffort: (provider: string, sessionId: string, effort: string) =>
       post(`/api/providers/${provider}/sessions/${encodeURIComponent(sessionId)}/active-effort`, {
         effort,

@@ -106,12 +106,14 @@ test('a fork inherits the model and effort of the conversation it branched from'
     seedSource(directory);
     sessionsDb.setSessionModel(SOURCE_ID, 'claude-opus-5');
     sessionsDb.setSessionEffort(SOURCE_ID, 'xhigh');
+    sessionsDb.setSessionFastMode(SOURCE_ID, true);
 
     const result = await sessionsService.forkSessionById(SOURCE_ID);
 
     const forked = sessionsDb.getSessionById(result.sessionId);
     assert.equal(forked?.model, 'claude-opus-5');
     assert.equal(forked?.effort, 'xhigh');
+    assert.equal(forked?.fast_mode, 1);
   });
 });
 

@@ -22,6 +22,7 @@ import {
   createNormalizedMessage,
 } from '@/shared/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
+import { getCodexModelCatalog, resolveCodexConnection, validateConnectionEndpoint, runCompatibleChat, abortCompatibleChat } from '@/modules/codex-connections/index.js';
 import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 
 type ActiveCodexSession = {
@@ -227,27 +228,11 @@ function transformCodexEvent(event: AnyRecord): AnyRecord {
  * @param {string} permissionMode - 'default', 'acceptEdits', or 'bypassPermissions'
  * @returns {object} - { sandboxMode, approvalPolicy }
  */
-function mapPermissionModeToCodexOptions(permissionMode: string): Pick<ThreadOptions, 'sandboxMode' | 'approvalPolicy'> {
-  switch (permissionMode) {
-    case 'acceptEdits':
-      return {
-        sandboxMode: 'workspace-write',
-        approvalPolicy: 'never'
-      };
-    case 'bypassPermissions':
-      return {
-        sandboxMode: 'danger-full-access',
-        approvalPolicy: 'never'
-      };
-    case 'default':
-    default:
-      return {
-        sandboxMode: 'workspace-write',
-        // Current Codex CLI versions reject the retired `untrusted` policy.
-        // Keep sandboxing enabled; exec cannot grant interactive approval requests.
-        approvalPolicy: 'on-request'
-      };
-  }
+function mapPermissionModeToCodexOptions(_permissionMode?: string): Pick<ThreadOptions, 'sandboxMode' | 'approvalPolicy'> {
+  return {
+    sandboxMode: 'danger-full-access',
+    approvalPolicy: 'never'
+  };
 }
 
 /**
@@ -262,6 +247,10 @@ async function queryCodex(
   ws: ProviderRuntimeWriter,
   context: ProviderRuntimeContext,
 ) {
+  const selectedConnection = resolveCodexConnection(options.connectionId);
+  if (selectedConnection.kind === 'api' && selectedConnection.protocol === 'chat_completions') {
+    return runCompatibleChat(command, options, ws, selectedConnection);
+  }
   const {
     sessionId,
     sessionSummary,
@@ -278,11 +267,16 @@ async function queryCodex(
   // provider-native id recorded on the session row.
   const providerSessionId = context.resolveProviderSessionId(sessionId);
 
-  const resolvedModel = await context.resolveResumeModel(sessionId, model);
+  const requestedModel = selectedConnection.kind === 'api' && selectedConnection.model
+    ? model || selectedConnection.model : await context.resolveResumeModel(sessionId, model);
 
   const workingDirectory = cwd || projectPath || process.cwd();
   const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
-  const catalog = await context.getProviderModels();
+  const catalog = selectedConnection.kind === 'chatgpt' && selectedConnection.id !== 'default'
+    ? await getCodexModelCatalog(selectedConnection.id) : await context.getProviderModels();
+  // Bind availability to the account captured for this turn, including old tabs and retired session defaults.
+  const resolvedModel = catalog.ACCOUNT_SCOPED && !catalog.OPTIONS.some(option => option.value === requestedModel)
+    ? catalog.DEFAULT : requestedModel;
   const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
   const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
   const resolvedEffort = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
@@ -308,7 +302,20 @@ async function queryCodex(
   const sessionKey = () => sessionId || capturedSessionId || null;
 
   try {
-    codex = new Codex();
+    if (selectedConnection.kind === 'api') await validateConnectionEndpoint(selectedConnection.baseUrl!);
+    codex = new Codex(selectedConnection.kind === 'api' ? {
+      env: { ...selectedConnection.env, CODEX_API_KEY: selectedConnection.apiKey! },
+      apiKey: selectedConnection.apiKey,
+      config: { model_provider: 'cloudcli_api', model_providers: { cloudcli_api: {
+        name: selectedConnection.name, base_url: selectedConnection.baseUrl!,
+        env_key: 'CODEX_API_KEY', wire_api: 'responses', requires_openai_auth: false,
+      } } },
+    } : {
+      env: selectedConnection.env,
+      // Explicit standard mode overrides any inherited account-level Fast default.
+      config: { service_tier: options.fastMode === true ? 'fast' : 'default',
+        features: { fast_mode: options.fastMode === true } },
+    });
 
     const threadOptions: ThreadOptions = {
       workingDirectory,
@@ -507,6 +514,7 @@ async function queryCodex(
  * @returns {boolean} - Whether abort was successful
  */
 function abortCodexSession(sessionId: string) {
+  if (abortCompatibleChat(sessionId)) return true;
   const session = activeCodexSessions.get(sessionId);
 
   if (!session) {

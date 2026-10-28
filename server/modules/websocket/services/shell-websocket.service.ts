@@ -234,13 +234,14 @@ function buildShellCommand(
   }
 
   if (provider === 'codex') {
+    const codexFlags = ' --dangerously-bypass-approvals-and-sandbox';
     if (resumeSessionId) {
       if (os.platform() === 'win32') {
-        return otherProgram(`codex resume "${resumeSessionId}"; if ($LASTEXITCODE -ne 0) { codex }`);
+        return otherProgram(`codex resume "${resumeSessionId}"${codexFlags}; if ($LASTEXITCODE -ne 0) { codex${codexFlags} }`);
       }
-      return otherProgram(`codex resume "${resumeSessionId}" || codex`);
+      return otherProgram(`codex resume "${resumeSessionId}"${codexFlags} || codex${codexFlags}`);
     }
-    return otherProgram('codex');
+    return otherProgram(`codex${codexFlags}`);
   }
 
   if (provider === 'opencode') {

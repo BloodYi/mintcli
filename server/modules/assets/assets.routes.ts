@@ -44,7 +44,7 @@ const upload = multer({
 const attachmentUpload = multer({
   storage,
   limits: {
-    fileSize: 10 * 1024 * 1024,
+    fileSize: 200 * 1024 * 1024,
     files: 10,
   },
 });
@@ -72,11 +72,14 @@ router.post('/images', (req, res) => {
 /**
  * Stores provider-neutral chat attachments. Files of any MIME type are
  * accepted because providers inspect them as data through their file-reading
- * tools; uploads are capped at 10 files and 10MB per file.
+ * tools; uploads, including videos, are capped at 10 files and 200MB per file.
  */
 router.post('/files', (req, res) => {
   attachmentUpload.array('files', 10)(req, res, (err: unknown) => {
     if (err) {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: 'File too large (max 200MB per file)' });
+      }
       const message = err instanceof Error ? err.message : 'Upload failed';
       return res.status(400).json({ error: message });
     }

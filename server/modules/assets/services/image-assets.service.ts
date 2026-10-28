@@ -121,7 +121,10 @@ export async function openStoredAttachmentAsset(filename: string) {
 
   return {
     status: 'found' as const,
-    contentType: mime.lookup(resolved) || 'application/octet-stream',
+    // mime-db can map .mp4 to application/mp4; chat uploads are video files.
+    contentType: path.extname(resolved).toLowerCase() === '.mp4'
+      ? 'video/mp4'
+      : mime.lookup(resolved) || 'application/octet-stream',
     stream: fsSync.createReadStream(resolved),
   };
 }

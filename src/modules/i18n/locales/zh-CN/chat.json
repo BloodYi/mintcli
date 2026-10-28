@@ -257,6 +257,9 @@
     "answeredBy": "由 {{model}} 回答"
   },
   "composer": {
+    "fastMode": "Fast 加速模式",
+    "fastModeHint": "加快响应，消耗更多额度；是否支持取决于模型和账号。",
+    "fastModeError": "Fast 设置读取或保存失败，请重试。",
     "editing": {
       "title": "正在替换先前的消息",
       "filesNotReverted": "已修改的文件不会被还原",

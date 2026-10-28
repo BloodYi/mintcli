@@ -55,6 +55,8 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
+      // Avoid gzip-size reporting allocations on the small self-hosted VPS.
+      reportCompressedSize: false,
       chunkSizeWarningLimit: 1000,
       rollupOptions: {
         output: {
