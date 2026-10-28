@@ -82,6 +82,10 @@ npm run lint
 
 The installed oxlint binary crashed in its allocator on the deployment host, including before this upgrade. Lint did not complete on that host.
 
+## CI workflow archive
+
+The original GitHub Actions definitions are preserved in [docs/upstream-workflows](docs/upstream-workflows). They are archived rather than activated for this repository. To enable them, review their publishing and secret requirements, then move the desired files into `.github/workflows/` using a GitHub credential with workflow permissions.
+
 ## Upstream and license
 
 This is a customized distribution of CloudCLI UI, originally developed by Siteboon AI B.V. and contributors. It is not an official upstream release.
