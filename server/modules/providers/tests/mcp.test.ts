@@ -313,8 +313,12 @@ test('providerMcpService global adder writes to all providers and rejects unsupp
       workspacePath,
     });
 
-    assert.equal(globalResult.length, 4);
-    assert.ok(globalResult.every((entry) => entry.created === true));
+    assert.equal(globalResult.length, 5);
+    assert.ok(globalResult.filter((entry) => entry.provider !== 'antigravity').every((entry) => entry.created === true));
+    // The custom bridge owns its native MCP configuration; global CLI writes must leave it alone.
+    const native = globalResult.find((entry) => entry.provider === 'antigravity');
+    assert.equal(native?.created, false);
+    assert.match(native?.error || '', /原生配置/);
 
     const claudeProject = await readJson(path.join(workspacePath, '.mcp.json'));
     assert.ok((claudeProject.mcpServers as Record<string, unknown>)['global-http']);
