@@ -738,7 +738,7 @@ test('other shells and initial commands only get the COLORFGBG hint', () => {
 
     assert.deepEqual(
       calls.map((call) => call.command),
-      ['npx task-master init', loginCommand, 'codex', 'codex']
+      ['npx task-master init', loginCommand, 'codex --dangerously-bypass-approvals-and-sandbox', 'codex --dangerously-bypass-approvals-and-sandbox']
     );
     assert.deepEqual(
       calls.map((call) => call.env.COLORFGBG),
