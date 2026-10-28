@@ -1,12 +1,14 @@
-# CloudCLI Unified
+# mintcli
 
-A customized, self-hosted CloudCLI workspace for managing coding agents, accounts, and conversations in one browser interface.
+A customized, self-hosted coding workspace for managing coding agents, accounts, and conversations in one browser interface.
 
 Based on [siteboon/claudecodeui](https://github.com/siteboon/claudecodeui), with upstream **v1.37.6** merged while preserving the integrations in this repository. The original project documentation is available in [README.upstream.md](README.upstream.md).
 
+mintcli is maintained independently. Upstream release polling and application update execution are disabled, including the system API and CLI update command. The interface has no upstream GitHub Star badge, issue-report link, or community link.
+
 ## What this version adds
 
-- **Unified account management:** Add, authorize, and switch Codex and Claude accounts, Antigravity identities, and third-party API connections from the chat workspace.
+- **Unified account management:** Add, authorize, and switch Codex and Claude accounts, native Cursor and OpenCode identities, Antigravity identities, and third-party API connections from the chat workspace.
 - **Account-aware model catalogs:** Load models for the selected account or API connection, with support for custom models and reasoning effort settings.
 - **Provider quota views:** Inspect the usage windows and account limits exposed by each supported provider.
 - **Native Antigravity integration:** Connect an existing local Antigravity web backend to the workspace, including conversations, account selection, attachments, streaming, and reconnect handling.
@@ -28,8 +30,8 @@ The customized Settings page keeps the unified account-manager entry while expos
 Use Node.js 22 or newer and npm. Provider CLIs and accounts need their own authorization.
 
 ```bash
-git clone https://github.com/BloodYi/cloudcli-unified.git
-cd cloudcli-unified
+git clone https://github.com/BloodYi/mintcli.git
+cd mintcli
 npm install
 npm run build
 npm run server
@@ -50,6 +52,14 @@ npm run dev
 ```
 
 Installing the upstream npm package does not install the customizations in this repository; build this source tree to use them.
+
+## Cursor and OpenCode login
+
+Open **Manage Accounts** in the chat workspace and choose Cursor or OpenCode. Official login runs in an embedded terminal inside that same dialog; the previous Settings and onboarding login controls are replaced by the common account manager. These integrations use the native CLI-owned identity rather than copying credentials into a Codex profile.
+
+Install the relevant native CLI on your host and ensure `cursor-agent` and `opencode` are on the server PATH. Cursor uses `cursor-agent login`; OpenCode uses `opencode auth login`. Status can be refreshed after authorization. No login command starts simply because you browse the account manager.
+
+When the native login does not expose a readable remaining-quota response, mintcli displays an explicit unavailable state and links to the provider's official usage console. It does not infer a balance from session token counts.
 
 ## Configuration
 

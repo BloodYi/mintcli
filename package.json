@@ -1,12 +1,12 @@
 {
-  "name": "@cloudcli-ai/cloudcli",
-  "version": "1.37.6",
-  "productName": "CloudCLI",
-  "description": "A web-based UI for Claude Code CLI",
+  "name": "mintcli",
+  "version": "1.0.0",
+  "productName": "mintcli",
+  "description": "A unified coding workspace for Codex, Claude, Cursor, OpenCode, Antigravity and compatible APIs",
   "type": "module",
   "main": "dist-server/server/index.js",
   "bin": {
-    "cloudcli": "dist-server/server/modules/cli/cli.js"
+    "mintcli": "dist-server/server/modules/cli/cli.js"
   },
   "files": [
     "electron/",
@@ -18,13 +18,13 @@
     "scripts/",
     "README.md"
   ],
-  "homepage": "https://cloudcli.ai",
+  "homepage": "https://github.com/BloodYi/mintcli",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/siteboon/claudecodeui.git"
+    "url": "git+https://github.com/BloodYi/mintcli.git"
   },
   "bugs": {
-    "url": "https://github.com/siteboon/claudecodeui/issues"
+    "url": "https://github.com/BloodYi/mintcli/issues"
   },
   "scripts": {
     "dev": "concurrently --kill-others \"npm run server:dev\" \"npm run client\"",
@@ -62,10 +62,10 @@
     "update:platform": "./update-platform.sh"
   },
   "build": {
-    "appId": "ai.cloudcli.desktop",
-    "productName": "CloudCLI",
+    "appId": "dev.bloodyi.mintcli",
+    "productName": "mintcli",
     "asar": false,
-    "artifactName": "cloudcli-desktop-${version}-${os}-${arch}.${ext}",
+    "artifactName": "mintcli-${version}-${os}-${arch}",
     "directories": {
       "output": "release/desktop"
     },
@@ -98,8 +98,8 @@
         "dmg"
       ],
       "extendInfo": {
-        "CFBundleName": "CloudCLI",
-        "CFBundleDisplayName": "CloudCLI",
+        "CFBundleName": "mintcli",
+        "CFBundleDisplayName": "mintcli",
         "CFBundleURLTypes": [
           {
             "CFBundleURLName": "CloudCLI",

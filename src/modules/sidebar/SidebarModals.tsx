@@ -5,7 +5,6 @@ import type { TFunction } from 'i18next';
 
 import { Button } from '@/shared/ui';
 import { Settings } from '@/modules/settings';
-import { VersionUpgradeModal } from '@/modules/version-upgrade';
 import type { InstallMode, PendingSidebarDeletion, Project, ReleaseInfo, SettingsProject } from '@/shared/types';
 import { normalizeProjectForSettings } from '@/modules/sidebar/utils/sidebarProjectFormatting';
 import { ProjectCreationWizard } from '@/modules/project-creation-wizard';
@@ -258,14 +257,6 @@ export default function SidebarModals({
           document.body,
         )}
 
-      <VersionUpgradeModal
-        isOpen={showVersionModal}
-        onClose={onCloseVersionModal}
-        releaseInfo={releaseInfo}
-        currentVersion={currentVersion}
-        latestVersion={latestVersion}
-        installMode={installMode}
-      />
     </>
   );
 }

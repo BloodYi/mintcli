@@ -10,8 +10,7 @@ export function createSystemRouter(
 
   router.post('/update', async (_request, response, next) => {
     try {
-      const result = await systemUpdateService.updateSystem();
-      response.status(result.success ? 200 : 500).json(result);
+      await systemUpdateService.updateSystem();
     } catch (error) {
       next(error);
     }

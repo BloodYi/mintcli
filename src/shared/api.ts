@@ -217,7 +217,7 @@ export const api = {
     download: (path: string) => get('/api/antigravity/download' + query({ path })),
   },
   agentConnections: {
-    list: () => get('/api/agent-connections'),
+    list: (force = false) => get('/api/agent-connections' + (force ? '?refresh=true' : '')),
     select: (id: string) => post('/api/agent-connections/' + encodeURIComponent(id) + '/select'),
     quota: (id: string, force = false) => get('/api/agent-connections/' + encodeURIComponent(id) + '/quota' + query({ force })),
     saveClaude: (body: unknown) => post('/api/agent-connections/claude/accounts', body),
@@ -674,7 +674,7 @@ export const api = {
 
 /**
  * Builds a URL against the user's own OpenAI-compatible voice endpoint. Private to the
- * voice helpers below, which bypass the CloudCLI proxy when a base URL is configured.
+ * voice helpers below, which bypass the mintcli proxy when a base URL is configured.
  */
 function voiceDirectUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, '')}${path}`;
@@ -690,7 +690,7 @@ export function voiceConfigSignature(): string {
 
 /**
  * Transcribes recorded audio, posting directly to the user's configured OpenAI-compatible
- * endpoint when one is set and otherwise going through the CloudCLI voice proxy.
+ * endpoint when one is set and otherwise going through the mintcli voice proxy.
  */
 export function transcribeVoice(blob: Blob, filename: string): Promise<Response> {
   const config = readVoiceConfig();
@@ -712,7 +712,7 @@ export function transcribeVoice(blob: Blob, filename: string): Promise<Response>
 
 /**
  * Synthesizes speech for the given text, using the user's configured OpenAI-compatible
- * endpoint when one is set and otherwise the CloudCLI voice proxy.
+ * endpoint when one is set and otherwise the mintcli voice proxy.
  */
 export function synthesizeVoice(text: string, signal: AbortSignal): Promise<Response> {
   const config = readVoiceConfig();

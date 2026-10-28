@@ -36,8 +36,6 @@ function createHarness() {
         return 7;
       },
     },
-    getLatestPackageVersion: async () => '1.2.3',
-    updateGlobalPackage: () => undefined,
     startServer: async () => {
       serverStarts += 1;
     },
@@ -85,4 +83,12 @@ test('returns a failure code for an unknown command without exiting the process'
 
   assert.equal(exitCode, 1);
   assert.match(harness.errorMessages[0], /Unknown command: unknown/);
+});
+
+
+test('mintcli rejects the update command and keeps the local server stopped', async () => {
+  const harness = createHarness();
+  assert.equal(await harness.service.run(['update']), 1);
+  assert.equal(harness.getServerStarts(), 0);
+  assert.match(harness.errorMessages.join('\n'), /does not accept upstream updates/);
 });

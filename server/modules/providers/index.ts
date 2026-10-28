@@ -12,3 +12,6 @@ export { sessionsService } from './services/sessions.service.js';
 
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
+
+// providerAuthService: used by Agent Connections to inspect the native Cursor and OpenCode identities.
+export { providerAuthService } from './services/provider-auth.service.js';

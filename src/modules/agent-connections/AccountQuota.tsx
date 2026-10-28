@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, readApiJson } from '@/shared/api';
-type Quota = { connectionId: string; status: string; planType?: string; checkedAt?: number; reason?: string; source?: string; windows: { bucket: string; model?: string; type?: string; minutes?: number | null; remainingPercent: number | null; resetsAt: number | null }[] };
+type Quota = { connectionId: string; status: string; planType?: string; checkedAt?: number; reason?: string; source?: string; dashboardUrl?: string; windows: { bucket: string; model?: string; type?: string; minutes?: number | null; remainingPercent: number | null; resetsAt: number | null }[] };
 /** Used by AgentConnections. Guards identity across slow quota responses and keeps unavailable values distinct from zero. */
 export function AccountQuota({ id }: { id?: string }) {
   // Every snapshot carries the identity it was measured for.
@@ -44,6 +44,7 @@ export function AccountQuota({ id }: { id?: string }) {
     </div>}
     {!groups.size && current?.windows.map((window, index) => <span key={index} className="rounded border border-border px-2 py-1" title={window.resetsAt ? '重置：' + new Date(window.resetsAt * 1000).toLocaleString() : '未返回重置时间'}>{window.bucket}{window.minutes ? ` · ${window.minutes >= 1440 ? window.minutes / 1440 + ' 天' : window.minutes / 60 + ' 小时'}` : ''} · 剩余 {window.remainingPercent === null ? '未返回' : window.remainingPercent + '%'}</span>)}
     {!current?.windows.length && <span className="text-muted-foreground" role="status">{current?.reason || (busy ? '正在读取原生额度…' : '请选择账号')}</span>}
+    {current?.dashboardUrl && ['https://cursor.com/dashboard?tab=usage', 'https://opencode.ai/console'].includes(current.dashboardUrl) && <a href={current.dashboardUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline">查看官方额度</a>}
     {current?.checkedAt && <time className="text-muted-foreground" dateTime={new Date(current.checkedAt).toISOString()} title={current.source}>更新于 {new Date(current.checkedAt).toLocaleTimeString()}</time>}
     <button type="button" disabled={busy || !id} className="ml-auto rounded border border-border px-2 py-1 disabled:opacity-50" onClick={() => setRevision(value => value + 1)}>刷新额度</button>
   </div>;

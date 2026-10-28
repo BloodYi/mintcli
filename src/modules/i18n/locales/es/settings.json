@@ -408,7 +408,7 @@
       "versionUnavailable": "No se pudo leer la versión",
       "updateAvailable": "Actualización disponible: v{{version}}",
       "upToDate": "Actualizada",
-      "bundled": "Se incluye con CloudCLI y se actualiza junto con él.",
+      "bundled": "Se incluye con mintcli y se actualiza junto con él.",
       "platform": "La gestiona la plataforma de alojamiento.",
       "updateTo": "Actualizar a v{{version}}",
       "runUpdater": "Ejecutar actualizador",
@@ -581,7 +581,7 @@
     },
     "managed": {
       "badge": "Gestionado",
-      "hint": "Gestionado por CloudCLI."
+      "hint": "Gestionado por mintcli."
     },
     "help": {
       "title": "Acerca de MCP en Codex",
@@ -613,7 +613,7 @@
     "docs": "Docs",
     "sections": {
       "officialTitle": "Plugins oficiales",
-      "officialDescription": "Mantenidos por el equipo de CloudCLI y listos para instalar directamente.",
+      "officialDescription": "Mantenidos por el equipo de mintcli y listos para instalar directamente.",
       "unofficialTitle": "Otros plugins",
       "unofficialDescription": "Plugins e integraciones no oficiales de otros usuarios. Revisa el código fuente antes de instalar."
     },
@@ -636,9 +636,9 @@
       "install": "Instalar"
     },
     "prismCloudCLI": {
-      "name": "PRISM CloudCLI",
+      "name": "PRISM mintcli",
       "badge": "no oficial",
-      "description": "Inteligencia de sesiones para Claude Code, dentro de CloudCLI. Descubre por qué tus sesiones queman tokens sin salir del navegador.",
+      "description": "Inteligencia de sesiones para Claude Code, dentro de mintcli. Descubre por qué tus sesiones queman tokens sin salir del navegador.",
       "install": "Instalar"
     },
     "sessionManagerPlugin": {
@@ -855,7 +855,7 @@
   "mcpTeamCard": {
     "title": "Configuraciones MCP del equipo",
     "description": "Comparte la configuración de los servidores MCP con tu equipo. Todos se mantienen sincronizados.",
-    "proLink": "Disponible con CloudCLI Pro"
+    "proLink": "Disponible con mintcli Pro"
   },
   "mcpServersAddErrors": {
     "loadFailedProvider": "No se pudieron cargar los servidores MCP de {{provider}}",
@@ -872,15 +872,15 @@
     "tagline": "Interfaz de código abierto para asistentes de programación con IA",
     "starOnGitHub": "Dar estrella en GitHub",
     "docs": "Docs",
-    "hostedTitle": "Prueba CloudCLI Hosted",
+    "hostedTitle": "Prueba mintcli Hosted",
     "hostedDescription": "Colaboración en equipo, configuraciones MCP compartidas, sincronización de ajustes entre entornos e infraestructura gestionada.",
     "learnMore": "Más información",
-    "proFeaturesTitle": "Funciones de CloudCLI Pro",
+    "proFeaturesTitle": "Funciones de mintcli Pro",
     "syncSettingsTitle": "Sincronizar ajustes",
     "syncSettingsDescription": "Mantén tus preferencias, configuraciones MCP y el tema sincronizados en todos tus entornos.",
     "teamManagementTitle": "Gestión del equipo",
     "teamManagementDescription": "Varios usuarios, acceso por roles y proyectos compartidos para tu equipo.",
     "licensed": "Con licencia AGPL-3.0",
-    "proCta": "Disponible con CloudCLI Pro"
+    "proCta": "Disponible con mintcli Pro"
   }
 }

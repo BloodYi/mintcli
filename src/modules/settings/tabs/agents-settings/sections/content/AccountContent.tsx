@@ -99,11 +99,11 @@ function SubscriptionOverrideNotice({ override }: SubscriptionOverrideNoticeProp
 export default function AccountContent({ agent, authStatus, onLogin }: AccountContentProps) {
   const { t } = useTranslation('settings');
   const config = agentConfig[agent];
-  if (agent === 'codex' || agent === 'claude') {
+  if (['codex', 'claude', 'cursor', 'opencode'].includes(agent)) {
     return (
       <div className="space-y-3">
         <h3 className="font-medium">统一账号管理</h3>
-        <p className="text-sm text-muted-foreground">请回到聊天页，在上方“管理账号”中添加、登录和切换 Codex、Claude、agy 及第三方 API，并查看各账号额度。</p>
+        <p className="text-sm text-muted-foreground">请回到聊天页，在上方“管理账号”中添加、登录和切换 Codex、Claude、Cursor、OpenCode、agy 及第三方 API，并查看各账号额度。</p>
         {authStatus.authenticated && !authStatus.loading && (
           <p className="text-sm text-muted-foreground">{t('agents.authStatus.loggedInAs', { email: authStatus.email || t('agents.authStatus.authenticatedUser') })}</p>
         )}
