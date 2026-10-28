@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { render } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { test, vi } from 'vitest';
 
 import '@/modules/i18n';
@@ -72,13 +73,13 @@ const session: ProjectSession = { id: harness.sessionId, provider: 'claude' };
 
 test('ChatInterface gives useScheduledMessages the websocket subscribe, so the banner stays live', () => {
   render(
-    <ChatInterface
+    <MemoryRouter><ChatInterface
       isActive
       selectedProject={project}
       selectedSession={session}
       ws={null}
       sendMessage={() => {}}
-    />,
+    /></MemoryRouter>,
   );
 
   const calls = harness.useScheduledMessages.mock.calls;
