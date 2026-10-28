@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { mock } from 'node:test';
 
 import express, { type NextFunction, type Request, type Response } from 'express';
 
@@ -18,6 +18,10 @@ import { AppError, IS_PLATFORM } from '@/shared/utils.js';
 async function withProviderServer(
   run: (baseUrl: string, workspacePath: string) => Promise<void>,
 ): Promise<void> {
+  // Route tests use a stable account catalog; live catalog authorization is covered by catalog tests.
+  const models = providerRegistry.resolveProvider('codex').models;
+  const catalogProbe = mock.method(models, 'getSupportedModels', async () => ({ OPTIONS: [{ value: 'fixture-model', label: 'Fixture model' }], DEFAULT: 'fixture-model' }));
+  const activeProbe = mock.method(models, 'getCurrentActiveModel', async () => ({ model: 'fixture-model' }));
   const previousDatabasePath = process.env.DATABASE_PATH;
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'provider-routes-'));
 
@@ -48,6 +52,8 @@ async function withProviderServer(
       server.close((error) => error ? reject(error) : resolve());
     });
     closeConnection();
+    catalogProbe.mock.restore();
+    activeProbe.mock.restore();
     if (previousDatabasePath === undefined) {
       delete process.env.DATABASE_PATH;
     } else {
