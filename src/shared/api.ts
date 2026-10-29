@@ -198,6 +198,10 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 // import a named method instead of assembling URLs of their own.
 
 export const api = {
+  tokenMonitor: {
+    snapshot: (sessionId: string, signal?: AbortSignal) => get('/api/token-monitor/sessions/' + encodeURIComponent(sessionId), { signal }),
+    updates: (signal?: AbortSignal) => get('/api/token-monitor/updates', { signal }),
+  },
   antigravity: {
     accounts: () => get('/api/antigravity/accounts'),
     switchAccount: (id: string) => post('/api/antigravity/accounts/switch', { id }),

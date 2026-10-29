@@ -59,6 +59,14 @@ export async function runCompatibleChat(command: string, options: AnyRecord, wri
   const history = readCompatibleHistory(file);
   const model = options.model || selected.model;
   let output = '', finished = false, terminalError: string | undefined;
+  let returnedModel: string | undefined;
+  let returnedId: string | undefined;
+  let returnedUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_input_tokens: number; reasoning_output_tokens: number } | undefined;
+  // Preserve cumulative native counters while requesting usage on new streamed responses.
+  let previousUsage: Record<string, number> = {};
+  if (fs.existsSync(file)) for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+    try { const row = JSON.parse(line); if (row.payload?.type === 'token_count' && row.payload.info?.total_token_usage) previousUsage = row.payload.info.total_token_usage; } catch { /* incomplete trailing record */ }
+  }
   try {
     await validateConnectionEndpoint(selected.baseUrl!);
     if (!model) throw new Error('请先为第三方 API 填写模型名');
@@ -67,19 +75,28 @@ export async function runCompatibleChat(command: string, options: AnyRecord, wri
       append('session_meta', { id: nativeId, timestamp: stamp, cwd: options.cwd || '/home/ubuntu', originator: 'cloudcli', cli_version: '0.160.1', source: 'cli', model_provider: 'openai' });
     }
     writer.setSessionId?.(nativeId);
+    append('turn_context', { model });
     append('event_msg', { type: 'task_started', turn_id: turnId });
     append('event_msg', { type: 'user_message', message: command, images: [] });
     append('response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text: command }] });
     const response = await fetch(selected.baseUrl + '/chat/completions', {
       method: 'POST', redirect: 'error', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + selected.apiKey },
-      body: JSON.stringify({ model, stream: true, messages: [...history, { role: 'user', content: command }] }),
+      body: JSON.stringify({ model, stream: true, stream_options: { include_usage: true }, messages: [...history, { role: 'user', content: command }] }),
     });
     // Do not forward provider response bodies: they may echo keys or private request headers.
     if (!response.ok) throw new Error(`第三方 API 返回 HTTP ${response.status}，请检查地址、密钥与模型名`);
     if (response.headers.get('content-type')?.includes('text/html')) throw new Error('第三方 API 返回了网页，请检查 API 地址是否包含 /v1');
     const accept = (data: AnyRecord) => {
       if (data.error) throw new Error('第三方 API 返回错误，请检查模型或账户余额');
+      if (typeof data.model === 'string' && data.model.length <= 256) returnedModel = data.model;
+      if (typeof data.id === 'string' && data.id.length <= 256) returnedId = data.id;
+      if (data.usage && typeof data.usage.prompt_tokens === 'number' && typeof data.usage.completion_tokens === 'number') {
+        const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+        returnedUsage = { prompt_tokens: count(data.usage.prompt_tokens), completion_tokens: count(data.usage.completion_tokens),
+          total_tokens: count(data.usage.total_tokens), cached_input_tokens: count(data.usage.prompt_tokens_details?.cached_tokens),
+          reasoning_output_tokens: count(data.usage.completion_tokens_details?.reasoning_tokens) };
+      }
       const choice = data.choices?.[0];
       if (choice?.delta?.tool_calls || choice?.message?.tool_calls) throw new Error('此接口请求执行工具；需要 VPS 工具时请选择 Responses 协议');
       const text = choice?.delta?.content ?? choice?.message?.content;
@@ -118,10 +135,23 @@ export async function runCompatibleChat(command: string, options: AnyRecord, wri
     if (!/^(第三方|请先|此接口|API 地址|已停止)/.test(terminalError)) terminalError = '第三方 API 连接或返回格式异常';
   } finally {
     if (output) {
-      if (selected.apiKey) output = output.replaceAll(selected.apiKey, '[密钥已隐藏]');
-      append('response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: output }] });
+      if (selected.apiKey) {
+        output = output.replaceAll(selected.apiKey, '[密钥已隐藏]');
+        returnedModel = returnedModel?.replaceAll(selected.apiKey, '[密钥已隐藏]');
+        returnedId = returnedId?.replaceAll(selected.apiKey, '[密钥已隐藏]');
+      }
+      append('response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: output }],
+        ...(returnedId ? { id: returnedId } : {}), ...(returnedModel ? { model: returnedModel } : {}), ...(returnedUsage ? { usage: returnedUsage } : {}) });
+      if (returnedUsage) {
+        const last = { input_tokens: returnedUsage.prompt_tokens, output_tokens: returnedUsage.completion_tokens,
+          cached_input_tokens: returnedUsage.cached_input_tokens, reasoning_output_tokens: returnedUsage.reasoning_output_tokens,
+          total_tokens: returnedUsage.prompt_tokens + returnedUsage.completion_tokens };
+        const total = Object.fromEntries(Object.entries(last).map(([key, value]) => [key, (Number(previousUsage[key]) || 0) + value]));
+        append('event_msg', { type: 'token_count', info: { total_token_usage: total, last_token_usage: last } });
+      }
       send(writer, createNormalizedMessage({ kind: 'text', provider: 'codex', sessionId: nativeId, role: 'assistant', content: output }));
     }
+    if (terminalError && !controller.signal.aborted) append('monitor_error', { message: terminalError });
     append('event_msg', { type: 'task_complete', turn_id: turnId, last_agent_message: output || null });
     if (terminalError && !controller.signal.aborted) send(writer, createNormalizedMessage({ kind: 'error', provider: 'codex', sessionId: nativeId, content: terminalError }));
     send(writer, createCompleteMessage({ provider: 'codex', sessionId: nativeId, exitCode: terminalError ? 1 : 0, aborted: controller.signal.aborted }));

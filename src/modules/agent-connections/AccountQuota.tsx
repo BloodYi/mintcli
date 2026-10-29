@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
 import { api, readApiJson } from '@/shared/api';
+import { MonitorButton } from '@/modules/token-monitor';
 type Quota = { connectionId: string; status: string; planType?: string; checkedAt?: number; reason?: string; source?: string; dashboardUrl?: string; windows: { bucket: string; model?: string; type?: string; minutes?: number | null; remainingPercent: number | null; resetsAt: number | null }[] };
 /** Used by AgentConnections. Guards identity across slow quota responses and keeps unavailable values distinct from zero. */
 export function AccountQuota({ id }: { id?: string }) {
+  // Keep the user’s compact quota preference across refreshes and account switches.
+  const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem('account-quota-collapsed') === 'true'; } catch { return false; } });
+  const toggleCollapsed = () => setCollapsed(value => { const next = !value; try { localStorage.setItem('account-quota-collapsed', String(next)); } catch { /* Storage may be disabled. */ } return next; });
   // Every snapshot carries the identity it was measured for.
   const [quota, setQuota] = useState<Quota | null>(null);
   // Manual refresh asks the native CLI; ordinary refresh can use its recent snapshot.
@@ -32,6 +36,8 @@ export function AccountQuota({ id }: { id?: string }) {
   const order = (type?: string) => type === 'weekly' ? 0 : type === 'five_hour' ? 1 : 2;
   return <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs" aria-label="当前账号额度" aria-busy={busy}>
     <strong>额度{current?.planType ? ' · ' + current.planType : ''}</strong>
+    <button type="button" aria-expanded={!collapsed} aria-label={collapsed ? '展开账号额度' : '收起账号额度'} className="rounded border border-border px-2 py-1" onClick={toggleCollapsed}>{collapsed ? '展开 ▾' : '收起 ▴'}</button>
+    {!collapsed && <>
     {groups.size > 0 && <div className="w-full max-w-sm divide-y divide-border rounded-xl border border-border bg-background px-3" aria-label="agy 模型额度分组">
       {[...groups].map(([name, windows]) => <section key={name} className="py-2">
         <h3 className="mb-1 text-muted-foreground">{groupName(name)}</h3>
@@ -46,6 +52,10 @@ export function AccountQuota({ id }: { id?: string }) {
     {!current?.windows.length && <span className="text-muted-foreground" role="status">{current?.reason || (busy ? '正在读取原生额度…' : '请选择账号')}</span>}
     {current?.dashboardUrl && ['https://cursor.com/dashboard?tab=usage', 'https://opencode.ai/console'].includes(current.dashboardUrl) && <a href={current.dashboardUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline">查看官方额度</a>}
     {current?.checkedAt && <time className="text-muted-foreground" dateTime={new Date(current.checkedAt).toISOString()} title={current.source}>更新于 {new Date(current.checkedAt).toLocaleTimeString()}</time>}
+    </>}
+    <div className="ml-auto flex items-center gap-2">
     <button type="button" disabled={busy || !id} className="ml-auto rounded border border-border px-2 py-1 disabled:opacity-50" onClick={() => setRevision(value => value + 1)}>刷新额度</button>
+    <MonitorButton />
+    </div>
   </div>;
 }

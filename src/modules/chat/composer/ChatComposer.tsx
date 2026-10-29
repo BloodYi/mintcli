@@ -36,6 +36,7 @@ import BackgroundSendDialog from '@/modules/chat/composer/BackgroundSendDialog';
 import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessagePopover';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
+import { MonitorButton } from '@/modules/token-monitor';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
 
 type MentionableFile = {
@@ -500,7 +501,7 @@ export default function ChatComposer({
 
           </PromptInputTools>
 
-          <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
+          <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5 sm:gap-2">
             <ScheduleMessagePopover
               disabled={!input.trim()}
               onSchedule={onScheduleMessage}
@@ -533,6 +534,8 @@ export default function ChatComposer({
               onSelectModel={onSelectModel}
               modelsLoading={modelsLoading}
             />
+
+            <MonitorButton model />
 
             <ComposerPermissionMenu
               permissionMode={permissionMode}

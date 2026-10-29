@@ -1,0 +1,11 @@
+{
+  "name": "token-monitor",
+  "displayName": "Token Monitor · 真实返回与用量",
+  "version": "1.0.0",
+  "entry": "index.js",
+  "description": "mintcli 适配版：返回模型、原始回复、token 与接口更新提醒。使用 Javis603/token-monitor 的会话用量解析器。",
+  "author": "mintcli integration / Javis603",
+  "icon": "Activity",
+  "type": "module",
+  "slot": "tab"
+}

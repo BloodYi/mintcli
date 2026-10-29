@@ -10,6 +10,7 @@ import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspa
 import { TranscriptSessionContext } from '@/modules/chat/context/TranscriptSessionContext';
 import { api } from '@/shared/api';
 import { AgentConnections } from '@/modules/agent-connections';
+import { TokenMonitorProvider } from '@/modules/token-monitor';
 import { useNavigate } from 'react-router-dom';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import type {
@@ -486,6 +487,7 @@ function ChatInterface({
 
 
   return (
+    <TokenMonitorProvider sessionId={selectedSession?.id || currentSessionId} model={currentProviderModel}>
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full min-h-0 flex-col">
         <AgentConnections provider={provider} sessionId={selectedSession?.id || currentSessionId} disabled={isProcessing} onChoice={setActiveConnection} onProviderChange={handleAccountProviderChange} />
@@ -657,6 +659,7 @@ function ChatInterface({
         onSelectProviderModel={selectProviderModel}
       />
     </PermissionContext.Provider>
+    </TokenMonitorProvider>
   );
 }
 

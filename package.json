@@ -16,6 +16,7 @@
     "dist/",
     "dist-server/",
     "scripts/",
+    "plugins/",
     "README.md"
   ],
   "homepage": "https://github.com/BloodYi/mintcli",

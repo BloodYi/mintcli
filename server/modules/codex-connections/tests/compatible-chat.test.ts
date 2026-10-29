@@ -22,7 +22,7 @@ test('Chat Completions persists native history, carries follow-up context, and m
     bodies.push(JSON.parse(String(init?.body)));
     if (mode === 'error') return new Response('private-provider-body unit-test-key', { status: 401 });
     if (mode === 'truncated') return new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', { headers: { 'content-type': 'text/event-stream' } });
-    return new Response('data: {"choices":[{"delta":{"content":"HELLO"}}]}\n\ndata: {"choices":[{"delta":{"content":" WORLD"},"finish_reason":"stop"}]}\n\ndata: [DONE]', { headers: { 'content-type': 'text/event-stream' } });
+    return new Response('data: {"id":"response-1","model":"returned-real-model","choices":[{"delta":{"content":"HELLO"}}]}\n\ndata: {"choices":[{"delta":{"content":" WORLD"},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":60},"completion_tokens_details":{"reasoning_tokens":12}}}\n\ndata: [DONE]', { headers: { 'content-type': 'text/event-stream' } });
   });
   const frames: unknown[] = [];
   const writer = { isWebSocketWriter: true, send: (value: unknown) => frames.push(value) };
@@ -32,6 +32,13 @@ test('Chat Completions persists native history, carries follow-up context, and m
     assert.ok(frames.some((item: any) => item.kind === 'complete' && item.exitCode === 0));
     await runCompatibleChat('follow-up question', { sessionId: 'test-native' }, writer, selected);
     assert.deepEqual(bodies[1].messages.map(item => item.content), ['first question', 'HELLO WORLD', 'follow-up question']);
+    const records = fs.readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const replies = records.filter(row => row.type === 'response_item' && row.payload.role === 'assistant');
+    assert.equal(replies.at(-1).payload.model, 'returned-real-model');
+    const lastUsage = records.filter(row => row.payload?.type === 'token_count').at(-1).payload.info;
+    assert.equal(lastUsage.last_token_usage.input_tokens, 100);
+    assert.equal(lastUsage.total_token_usage.total_tokens, 240);
+    assert.equal(lastUsage.total_token_usage.cached_input_tokens, 120);
     mode = 'error'; frames.length = 0;
     await runCompatibleChat('unauthorized', { sessionId: 'test-native' }, writer, selected);
     assert.ok(frames.some((item: any) => item.kind === 'error' && item.content.includes('401')));
