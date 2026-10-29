@@ -1,12 +1,12 @@
 import { Router } from 'express';
-import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/index.js';
+import { AppError, asyncHandler } from '@/shared/index.js';
 import { tokenMonitorService } from './token-monitor.service.js';
 
 /** Used by the server entrypoint for read-only session monitoring and release checks. */
 export const tokenMonitorRoutes = Router();
 tokenMonitorRoutes.get('/updates', asyncHandler(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json(createApiSuccessResponse(await tokenMonitorService.updates()));
+  res.json(await tokenMonitorService.updates());
 }));
 tokenMonitorRoutes.get('/sessions/:sessionId', asyncHandler(async (req, res) => {
   const sessionId = req.params.sessionId;
@@ -14,5 +14,5 @@ tokenMonitorRoutes.get('/sessions/:sessionId', asyncHandler(async (req, res) => 
     throw new AppError('Invalid session id', { code: 'INVALID_SESSION_ID', statusCode: 400 });
   }
   res.setHeader('Cache-Control', 'no-store');
-  res.json(createApiSuccessResponse(await tokenMonitorService.snapshot(sessionId)));
+  res.json(await tokenMonitorService.snapshot(sessionId));
 }));

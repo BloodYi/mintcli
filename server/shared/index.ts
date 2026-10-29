@@ -4,5 +4,5 @@ export type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '.
 // Used by the connections module for validated application errors and thin routes.
 export { AppError, asyncHandler } from './utils.js';
 
-// Used by Token Monitor to resolve packaged assets and format authenticated API responses.
-export { findApplicationRoot, getModuleDirectory, createApiSuccessResponse } from './utils.js';
+// Used by Token Monitor to resolve packaged parser assets.
+export { findApplicationRoot, getModuleDirectory } from './utils.js';
