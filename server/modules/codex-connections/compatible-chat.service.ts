@@ -79,11 +79,21 @@ export async function runCompatibleChat(command: string, options: AnyRecord, wri
     append('event_msg', { type: 'task_started', turn_id: turnId });
     append('event_msg', { type: 'user_message', message: command, images: [] });
     append('response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text: command }] });
-    const response = await fetch(selected.baseUrl + '/chat/completions', {
+    const request = (includeUsage: boolean) => fetch(selected.baseUrl + '/chat/completions', {
       method: 'POST', redirect: 'error', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + selected.apiKey },
-      body: JSON.stringify({ model, stream: true, stream_options: { include_usage: true }, messages: [...history, { role: 'user', content: command }] }),
+      body: JSON.stringify({ model, stream: true, ...(includeUsage ? { stream_options: { include_usage: true } } : {}), messages: [...history, { role: 'user', content: command }] }),
     });
+    let response = await request(true);
+    if ([400, 422].includes(response.status) && response.body) {
+      // Older compatible APIs may reject the usage option. Retry only an explicit
+      // pre-generation schema rejection, never a failed or partially streamed turn.
+      const reader = response.body.getReader(); let hint = '';
+      try {
+        while (hint.length < 8192) { const chunk = await reader.read(); if (chunk.done) break; hint += new TextDecoder().decode(chunk.value); }
+      } finally { await reader.cancel(); }
+      if (/(?:stream_options|include_usage)/i.test(hint) && /(?:unknown|unsupported|unrecognized|not support|extra|not permitted|invalid)/i.test(hint)) response = await request(false);
+    }
     // Do not forward provider response bodies: they may echo keys or private request headers.
     if (!response.ok) throw new Error(`第三方 API 返回 HTTP ${response.status}，请检查地址、密钥与模型名`);
     if (response.headers.get('content-type')?.includes('text/html')) throw new Error('第三方 API 返回了网页，请检查 API 地址是否包含 /v1');

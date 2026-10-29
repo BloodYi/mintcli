@@ -20,6 +20,7 @@ test('Chat Completions persists native history, carries follow-up context, and m
   let mode = 'success';
   t.mock.method(globalThis, 'fetch', async (_input: unknown, init?: RequestInit) => {
     bodies.push(JSON.parse(String(init?.body)));
+    if (mode === 'legacy' && JSON.parse(String(init?.body)).stream_options) return Response.json({ error: 'unknown stream_options field' }, { status: 400 });
     if (mode === 'error') return new Response('private-provider-body unit-test-key', { status: 401 });
     if (mode === 'truncated') return new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', { headers: { 'content-type': 'text/event-stream' } });
     return new Response('data: {"id":"response-1","model":"returned-real-model","choices":[{"delta":{"content":"HELLO"}}]}\n\ndata: {"choices":[{"delta":{"content":" WORLD"},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":60},"completion_tokens_details":{"reasoning_tokens":12}}}\n\ndata: [DONE]', { headers: { 'content-type': 'text/event-stream' } });
@@ -48,6 +49,11 @@ test('Chat Completions persists native history, carries follow-up context, and m
     await runCompatibleChat('interrupted', { sessionId: 'test-native' }, writer, selected);
     assert.ok(frames.some((item: any) => item.kind === 'complete' && item.exitCode === 1));
     assert.equal(readCompatibleHistory(file).at(-1)?.content, 'partial');
+    mode = 'legacy'; frames.length = 0;
+    await runCompatibleChat('legacy usage option', { sessionId: 'test-native' }, writer, selected);
+    assert.ok(JSON.parse(JSON.stringify(bodies.at(-2))).stream_options);
+    assert.equal(JSON.parse(JSON.stringify(bodies.at(-1))).stream_options, undefined);
+    assert.ok(frames.some((item: any) => item.kind === 'complete' && item.exitCode === 0));
   } finally {
     closeConnection(); fs.rmSync(root, { recursive: true, force: true });
   }
