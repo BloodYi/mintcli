@@ -53,6 +53,23 @@ test('session archive queries hide archived rows from active project views', asy
   });
 });
 
+test('recent pagination ranks old pins first without changing activity or exposing archived sessions', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createSession('old-pin', 'codex', '/workspace/pins', 'Old', '2025-01-01', '2025-01-01');
+    sessionsDb.createSession('new', 'claude', '/workspace/pins', 'New', '2026-01-01', '2026-01-01');
+    sessionsDb.createSession('archived-pin', 'antigravity', '/workspace/pins', 'Hidden', '2026-02-01', '2026-02-01');
+    sessionsDb.updateSessionIsArchived('archived-pin', true);
+    const pins = ['old-pin', 'archived-pin', 'missing'];
+    assert.deepEqual(sessionsDb.getRecentSessionsPage(1, 0, pins).sessions.map(row => row.session_id), ['old-pin']);
+    assert.deepEqual(sessionsDb.getRecentSessionsPage(1, 1, pins).sessions.map(row => row.session_id), ['new']);
+    assert.equal(sessionsDb.getRecentSessionsPage(1, 0, pins).total, 2);
+    assert.deepEqual(sessionsDb.getRecentSessionsPage(1, 0).sessions.map(row => row.session_id), ['new']);
+    assert.deepEqual(sessionsDb.getSessionsByProjectPathPage('/workspace/pins', 1, 0, pins).map(row => row.session_id), ['old-pin']);
+    assert.deepEqual(sessionsDb.getSessionsByProjectPathPage('/workspace/pins', 1, 1, pins).map(row => row.session_id), ['new']);
+    assert.equal(sessionsDb.getSessionById('old-pin')?.updated_at, '2025-01-01T00:00:00.000Z');
+  });
+});
+
 test('createSession reactivates archived rows when the session becomes active again', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 'First Name');

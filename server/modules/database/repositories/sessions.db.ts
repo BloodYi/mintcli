@@ -551,7 +551,7 @@ export const sessionsDb = {
    * and correctly ordered across projects instead of flattening only the
    * per-project slices already loaded by the client.
    */
-  getRecentSessionsPage(limit: number, offset: number): RecentSessionsPage {
+  getRecentSessionsPage(limit: number, offset: number, pinnedSessionIds: string[] = []): RecentSessionsPage {
     const db = getConnection();
     const visibilityClause = `
       sessions.isArchived = 0
@@ -563,11 +563,12 @@ export const sessionsDb = {
          FROM sessions
          LEFT JOIN projects ON projects.project_path = sessions.project_path
          WHERE ${visibilityClause}
-         ORDER BY julianday(COALESCE(sessions.updated_at, sessions.created_at)) DESC,
+         ORDER BY EXISTS (SELECT 1 FROM json_each(?) WHERE value = sessions.session_id) DESC,
+                  julianday(COALESCE(sessions.updated_at, sessions.created_at)) DESC,
                   sessions.session_id DESC
          LIMIT ? OFFSET ?`
       )
-      .all(limit, offset) as SessionRow[];
+      .all(JSON.stringify(pinnedSessionIds), limit, offset) as SessionRow[];
     const countRow = db
       .prepare(
         `SELECT COUNT(*) AS count
@@ -634,7 +635,7 @@ export const sessionsDb = {
     return normalizeSessionRows(rows);
   },
 
-  getSessionsByProjectPathPage(projectPath: string, limit: number, offset: number): SessionRow[] {
+  getSessionsByProjectPathPage(projectPath: string, limit: number, offset: number, pinnedSessionIds: string[] = []): SessionRow[] {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPath(projectPath);
     const rows = db
@@ -643,10 +644,11 @@ export const sessionsDb = {
          FROM sessions
          WHERE project_path = ?
            AND isArchived = 0
-         ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
+         ORDER BY EXISTS (SELECT 1 FROM json_each(?) WHERE value = sessions.session_id) DESC,
+                  datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
          LIMIT ? OFFSET ?`
       )
-      .all(normalizedProjectPath, limit, offset) as SessionRow[];
+      .all(normalizedProjectPath, JSON.stringify(pinnedSessionIds), limit, offset) as SessionRow[];
 
     return normalizeSessionRows(rows);
   },

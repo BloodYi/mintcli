@@ -439,8 +439,12 @@ test('Cursor has no npm release to compare with; Codex ships with CloudCLI; plat
     assert.equal(cursorStatus.updateCommand, 'cursor-agent update');
     assert.equal(cursorStatus.updateUnavailableReason, null);
 
-    const codexStatus = await service.getCliStatus('codex');
+    const codexRegistry = createFakeRegistry(async () => jsonResponse({ version: '9.9.9' }));
+    const codexService = createService({ fetch: codexRegistry.fetch });
+    const codexStatus = await codexService.getCliStatus('codex');
     assert.equal(codexStatus.installed, true);
+    assert.equal(codexStatus.latestVersion, '9.9.9');
+    assert.equal(codexStatus.updateAvailable, true);
     assert.equal(codexStatus.updateCommand, null);
     assert.equal(codexStatus.updateUnavailableReason, 'bundled');
     await rejectsWithAppError(service.updateCli('codex'), 'PROVIDER_CLI_UPDATE_UNAVAILABLE', 400);
@@ -461,6 +465,22 @@ test('Cursor has no npm release to compare with; Codex ships with CloudCLI; plat
     assert.equal(platformClaude.installedVersion, '2.1.200');
     assert.equal(platformClaude.latestVersion, null);
     assert.equal(platformClaude.updateAvailable, false);
+  });
+});
+
+test('SDK-managed Claude is detected and checked for updates without running a native updater', async () => {
+  await withIsolatedCliEnv(async () => {
+    delete process.env.CLAUDE_CLI_PATH;
+    const registry = createFakeRegistry(async () => jsonResponse({ version: '9.9.9' }));
+    const service = createService({ fetch: registry.fetch });
+    const status = await service.getCliStatus('claude');
+    assert.equal(status.installed, true);
+    assert.ok(status.installedVersion);
+    assert.equal(status.latestVersion, '9.9.9');
+    assert.equal(status.updateAvailable, true);
+    assert.equal(status.updateCommand, null);
+    assert.equal(status.updateUnavailableReason, 'bundled');
+    await rejectsWithAppError(service.updateCli('claude'), 'PROVIDER_CLI_UPDATE_UNAVAILABLE', 400);
   });
 });
 

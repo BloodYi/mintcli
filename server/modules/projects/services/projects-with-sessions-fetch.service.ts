@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { projectsDb, sessionsDb, userPreferencesDb } from '@/modules/database/index.js';
 import { sessionSynchronizerService } from '@/modules/providers/index.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { RealtimeClientConnection } from '@/shared/types.js';
@@ -48,12 +48,14 @@ type ProgressUpdate = {
 };
 
 type GetProjectsWithSessionsOptions = {
+  userId?: number;
   skipSynchronization?: boolean;
   sessionsLimit?: number;
   sessionsOffset?: number;
 };
 
 type SessionPaginationOptions = {
+  userId?: number;
   limit?: number;
   offset?: number;
 };
@@ -149,6 +151,7 @@ function readProjectSessionsPageByPath(
     projectPath,
     pagination.limit,
     pagination.offset,
+    userPreferencesDb.getPinnedSessionIds(options.userId),
   ) as SessionRepositoryRow[];
   const total = sessionsDb.countSessionsByProjectPath(projectPath);
 
@@ -213,6 +216,7 @@ export async function getProjectsWithSessions(
         : await generateDisplayName(path.basename(projectPath) || projectPath, projectPath);
 
     const sessionsPage = readProjectSessionsPageByPath(projectPath, {
+      userId: options.userId,
       limit: options.sessionsLimit,
       offset: options.sessionsOffset,
     });

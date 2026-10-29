@@ -2,7 +2,7 @@ import spawn from 'cross-spawn';
 
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
-import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
+import { resolveBundledClaudeExecutablePath, resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type { CliVersionProbe, LLMProvider } from '@/shared/types.js';
 import { AppError, IS_PLATFORM, stripAnsiSequences } from '@/shared/utils.js';
@@ -362,6 +362,8 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
   const resolveUpdateCommand = (provider: LLMProvider): { command: string; args: string[] } | null => {
     const updater = CLI_UPDATERS[provider];
     const command = updater?.resolveCommand();
+    // SDK binaries must stay paired with the SDK; `claude update` would change a dependency in place.
+    if (provider === 'claude' && command === resolveBundledClaudeExecutablePath()) return null;
     return updater && command ? { command, args: updater.args } : null;
   };
 
@@ -406,10 +408,9 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
         ? 'platform'
         : update ? null : 'bundled';
 
-      // The registry is only worth asking when the answer can lead to an update
-      // of a CLI that is there.
-      const npmPackage = CLI_UPDATERS[provider.id]?.npmPackage;
-      const latestVersion = installed && updateUnavailableReason === null && npmPackage
+      // Bundled CLIs still need version checks: hiding them made outdated dependencies look current.
+      const npmPackage = provider.id === 'codex' ? '@openai/codex' : CLI_UPDATERS[provider.id]?.npmPackage;
+      const latestVersion = installed && !dependencies.platformMode && npmPackage
         ? await getLatestVersion(npmPackage)
         : null;
 

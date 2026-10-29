@@ -38,7 +38,10 @@
     "selectAllLoaded": "全選已載入",
     "clearSelection": "清除選取",
     "deleteSelected_one": "刪除 {{count}} 個工作階段",
-    "deleteSelected_other": "刪除 {{count}} 個工作階段"
+    "deleteSelected_other": "刪除 {{count}} 個工作階段",
+    "pin": "置頂對話",
+    "unpin": "取消置頂",
+    "pinFailed": "儲存失敗，請重試。"
   },
   "tooltips": {
     "viewEnvironments": "查看環境",

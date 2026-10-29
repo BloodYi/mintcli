@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { Check, CheckSquare, Edit2, Loader2, MoreHorizontal, Square, Trash2, X } from 'lucide-react';
+import { Check, CheckSquare, Edit2, Loader2, MoreHorizontal, Pin, PinOff, Square, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Badge, Dialog, DialogContent, DialogTitle, LLMProviderLogo, Tooltip, buttonVariants } from '@/shared/ui';
@@ -10,6 +10,7 @@ import { PROVIDER_LABELS, createSessionViewModel, formatCompactAge } from '@/mod
 import { useCompactSidebar } from '@/modules/sidebar/hooks/useCompactSidebar';
 import { useProviderSessionIdCopy } from '@/modules/sidebar/hooks/useProviderSessionIdCopy';
 import SessionOptions from '@/modules/sidebar/SessionOptions';
+import { useSessionPin } from '@/modules/sidebar/hooks/usePinnedSessions';
 
 type SidebarSessionItemProps = {
   project: Project;
@@ -66,6 +67,7 @@ function SidebarSessionItem({
   t,
 }: SidebarSessionItemProps) {
   const isCompact = useCompactSidebar();
+  const pin = useSessionPin(session.id);
   const sessionView = createSessionViewModel(session, currentTime, t);
   const isSelected = selectedSession?.id === session.id;
   const compactSessionAge = formatCompactAge(sessionView.sessionTime, currentTime);
@@ -240,7 +242,7 @@ function SidebarSessionItem({
                   setMobileOptionsOpen(true);
                 }}
               >
-                <MoreHorizontal className="h-4 w-4" />
+                {pin.pinned ? <Pin className="h-4 w-4" /> : <MoreHorizontal className="h-4 w-4" />}
               </button>
             )}
           </div>
@@ -312,6 +314,16 @@ function SidebarSessionItem({
               </div>
             ) : (
               <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => { void pin.togglePin(); }}
+                  disabled={pin.saving}
+                  className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground disabled:opacity-50"
+                >
+                  {pin.pinned ? <PinOff className="h-5 w-5 flex-shrink-0" /> : <Pin className="h-5 w-5 flex-shrink-0" />}
+                  <span className="text-sm font-medium">{t(pin.pinned ? 'sessions.unpin' : 'sessions.pin')}</span>
+                </button>
+                {pin.error && <p role="alert" className="text-xs text-red-500">{t('sessions.pinFailed')}</p>}
                 <button
                   type="button"
                   onClick={startMobileRename}

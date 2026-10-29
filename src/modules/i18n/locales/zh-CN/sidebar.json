@@ -38,7 +38,10 @@
     "selectAllLoaded": "全选已加载",
     "clearSelection": "清除选择",
     "deleteSelected_one": "删除 {{count}} 个会话",
-    "deleteSelected_other": "删除 {{count}} 个会话"
+    "deleteSelected_other": "删除 {{count}} 个会话",
+    "pin": "置顶对话",
+    "unpin": "取消置顶",
+    "pinFailed": "保存失败，请重试。"
   },
   "tooltips": {
     "viewEnvironments": "查看环境",

@@ -7,6 +7,7 @@ import { cn } from '@/shared/utils';
 import type { ProjectSession, RecentConversationListItem, SessionRowActions } from '@/shared/types';
 import { formatCompactAge } from '@/modules/sidebar/utils/sidebarProjectFormatting';
 import SessionOptions from '@/modules/sidebar/SessionOptions';
+import { usePinnedSessions } from '@/modules/sidebar/hooks/usePinnedSessions';
 
 type SidebarRecentConversationsProps = {
   conversations: RecentConversationListItem[];
@@ -64,6 +65,8 @@ export default function SidebarRecentConversations({
   onRetry,
   t,
 }: SidebarRecentConversationsProps) {
+  const pins = usePinnedSessions();
+  const orderedConversations = [...conversations].sort((a, b) => Number(pins.has(b.sessionId)) - Number(pins.has(a.sessionId)));
   if (isLoading && conversations.length === 0) {
     return <RecentConversationSkeleton />;
   }
@@ -106,7 +109,7 @@ export default function SidebarRecentConversations({
       </div>
 
       <div className="space-y-0.5">
-        {conversations.map((conversation) => {
+        {orderedConversations.map((conversation) => {
           const isSelected = String(selectedSession?.id ?? '') === conversation.sessionId;
           const age = formatCompactAge(conversation.lastActivity, currentTime);
           const hasBackgroundWork = sessionActions.backgroundSessionIds.has(conversation.sessionId);

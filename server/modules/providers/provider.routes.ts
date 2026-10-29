@@ -926,7 +926,8 @@ router.get(
   asyncHandler(async (req: Request, res: Response) => {
     const limit = parseBoundedIntegerQuery(req.query.limit, 'limit', 40, 1, 100);
     const offset = parseBoundedIntegerQuery(req.query.offset, 'offset', 0, 0);
-    const page = sessionsService.listRecentSessions(limit, offset);
+    const userId = Number((req as Request & { user?: { id?: number | string } }).user?.id);
+    const page = sessionsService.listRecentSessions(limit, offset, userId);
     res.json(createApiSuccessResponse(page));
   }),
 );

@@ -20,6 +20,12 @@ function decodePreference(row: PreferenceRow): [string, unknown] | null {
 }
 
 export const userPreferencesDb = {
+  /** Used by Projects and Providers to rank only the authenticated user's pinned conversations. */
+  getPinnedSessionIds(userId?: number): string[] {
+    if (!userId || !Number.isSafeInteger(userId) || userId < 1) return [];
+    const stored = userPreferencesDb.getPreferences(userId).pinnedSessionIds;
+    return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : [];
+  },
   /**
    * Returns every preference the user has ever set, as one object.
    *

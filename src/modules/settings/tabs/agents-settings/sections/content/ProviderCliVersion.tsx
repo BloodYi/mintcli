@@ -100,7 +100,9 @@ export default function ProviderCliVersion({ agent, installedVersion, textClass,
 
   let detail: string | null = null;
   if (status?.updateUnavailableReason === 'bundled') {
-    detail = t('agents.cli.bundled');
+    detail = status.updateAvailable && status.latestVersion
+      ? `${t('agents.cli.updateAvailable', { version: status.latestVersion })} · ${t('agents.cli.bundled')}`
+      : t('agents.cli.bundled');
   } else if (status?.updateUnavailableReason === 'platform') {
     detail = t('agents.cli.platform');
   } else if (status?.updateAvailable && status.latestVersion) {

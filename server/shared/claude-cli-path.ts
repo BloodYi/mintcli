@@ -1,10 +1,21 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 
 const DEFAULT_CLAUDE_COMMAND = 'claude';
 const CLAUDE_SCRIPT_EXTENSIONS = new Set(['.cjs', '.js', '.jsx', '.mjs', '.ts', '.tsx']);
 const CLAUDE_WRAPPER_SEGMENTS = ['node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'] as const;
+
+/** Used by the executable resolver and provider update service to identify the SDK-managed native CLI. */
+export function resolveBundledClaudeExecutablePath(): string | undefined {
+  try {
+    const manifest = createRequire(import.meta.url).resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/package.json`);
+    return path.join(path.dirname(manifest), process.platform === 'win32' ? 'claude.exe' : 'claude');
+  } catch {
+    return undefined;
+  }
+}
 
 export type ResolveClaudeCodeExecutablePathDependencies = {
   execFileSync?: typeof execFileSync;
@@ -150,6 +161,10 @@ export function resolveClaudeCodeExecutablePath(
   const configuredExplicitly = Boolean(stripWrappingQuotes(configuredPath || ''));
   const normalizedPath = stripWrappingQuotes(configuredPath || DEFAULT_CLAUDE_COMMAND);
   if (deps.platform !== 'win32') {
+    if (!configuredExplicitly && !(process.env.PATH || '').split(path.delimiter).some(directory => deps.existsSync(path.join(directory, DEFAULT_CLAUDE_COMMAND)))) {
+      // Native SDK installations do not necessarily install a `claude` command on PATH.
+      return resolveBundledClaudeExecutablePath() ?? normalizedPath;
+    }
     return normalizedPath;
   }
 

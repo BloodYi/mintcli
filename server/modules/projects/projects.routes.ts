@@ -67,6 +67,7 @@ router.get(
     const sessionsLimit = readOptionalNumericQueryValue(req.query.sessionsLimit) ?? undefined;
     const sessionsOffset = readOptionalNumericQueryValue(req.query.sessionsOffset) ?? undefined;
     const projects = await getProjectsWithSessions({
+      userId: Number((req as express.Request & { user?: { id?: number | string } }).user?.id),
       skipSynchronization,
       sessionsLimit,
       sessionsOffset,
@@ -89,7 +90,8 @@ router.get(
     const projectId = typeof req.params.projectId === 'string' ? req.params.projectId : '';
     const limit = parseNonNegativeIntQuery(req.query.limit, 'limit', 20);
     const offset = parseNonNegativeIntQuery(req.query.offset, 'offset', 0);
-    const sessionsPage = await getProjectSessionsPage(projectId, { limit, offset });
+    const userId = Number((req as express.Request & { user?: { id?: number | string } }).user?.id);
+    const sessionsPage = await getProjectSessionsPage(projectId, { limit, offset, userId });
     res.json(sessionsPage);
   }),
 );

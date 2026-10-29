@@ -6,6 +6,7 @@ import { cn } from '@/shared/utils';
 import type { LLMProvider, Project, ProjectSession, SessionWithProvider, SidebarSessionSelection } from '@/shared/types';
 import SidebarSessionItem from '@/modules/sidebar/SidebarSessionItem';
 import { useCompactSidebar } from '@/modules/sidebar/hooks/useCompactSidebar';
+import { usePinnedSessions } from '@/modules/sidebar/hooks/usePinnedSessions';
 
 type SidebarProjectSessionsProps = {
   project: Project;
@@ -92,6 +93,8 @@ export default function SidebarProjectSessions({
   t,
 }: SidebarProjectSessionsProps) {
   const isCompact = useCompactSidebar();
+  const pins = usePinnedSessions();
+  const orderedSessions = [...sessions].sort((a, b) => Number(pins.has(b.id)) - Number(pins.has(a.id)));
 
   if (!isExpanded) {
     return null;
@@ -218,7 +221,7 @@ export default function SidebarProjectSessions({
         </div>
       ) : (
         <>
-          {sessions.map((session) => (
+          {orderedSessions.map((session) => (
             <SidebarSessionItem
               key={session.id}
               project={project}

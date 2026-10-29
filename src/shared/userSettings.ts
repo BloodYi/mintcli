@@ -21,6 +21,7 @@ export type UserPreferences = {
   userLanguage: string;
   tasksEnabled: boolean;
   projectSortOrder: 'name' | 'date';
+  pinnedSessionIds: string[];
   claudePermissions: unknown;
   cursorPermissions: unknown;
   codexPermissions: unknown;
@@ -59,6 +60,7 @@ const LEGACY_STORAGE_KEYS: Record<UserPreferenceKey, string> = {
   userLanguage: 'userLanguage',
   tasksEnabled: 'tasks-enabled',
   projectSortOrder: 'claude-settings',
+  pinnedSessionIds: '',
   claudePermissions: 'claude-settings',
   cursorPermissions: 'cursor-tools-settings',
   codexPermissions: 'codex-settings',
@@ -159,15 +161,15 @@ export function readUserPreference<T>(key: UserPreferenceKey, fallback: T): T {
   return value === undefined || value === null ? fallback : (value as T);
 }
 
-/** Writes one preference through to the mirror, the listeners and the server. */
-export function writeUserPreference(key: UserPreferenceKey, value: unknown): void {
+/** Writes a preference and notifies subscribers; skip the server write for an already saved response. */
+export function writeUserPreference(key: UserPreferenceKey, value: unknown, persist = true): void {
   if (JSON.stringify(preferences[key]) === JSON.stringify(value)) {
     return;
   }
 
   preferences = { ...preferences, [key]: value };
   writeMirror();
-  queueServerWrite({ [key]: value });
+  if (persist) queueServerWrite({ [key]: value });
   notifyListeners();
 }
 

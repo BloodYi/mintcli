@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   resolveClaudeCodeExecutablePath,
+  resolveBundledClaudeExecutablePath,
   type ResolveClaudeCodeExecutablePathDependencies,
 } from '@/shared/claude-cli-path.js';
 
@@ -111,8 +112,17 @@ test('resolveClaudeCodeExecutablePath still resolves the native exe when both in
   assert.equal(resolved, nativePath);
 });
 
-test('resolveClaudeCodeExecutablePath leaves non-Windows platforms on the bare command', () => {
-  const resolved = resolveClaudeCodeExecutablePath(undefined, { platform: 'linux' });
+test('resolveClaudeCodeExecutablePath keeps an available non-Windows command', () => {
+  const resolved = resolveClaudeCodeExecutablePath(undefined, { platform: 'linux', existsSync: () => true });
 
   assert.equal(resolved, 'claude');
+});
+
+test('resolveClaudeCodeExecutablePath uses the bundled CLI when no command is on PATH', () => {
+  const resolved = resolveClaudeCodeExecutablePath(undefined, { platform: 'linux', existsSync: () => false });
+  assert.equal(resolved, resolveBundledClaudeExecutablePath() ?? 'claude');
+});
+
+test('resolveClaudeCodeExecutablePath preserves an explicit missing executable for an honest probe failure', () => {
+  assert.equal(resolveClaudeCodeExecutablePath('/missing/claude', { platform: 'linux', existsSync: () => false }), '/missing/claude');
 });

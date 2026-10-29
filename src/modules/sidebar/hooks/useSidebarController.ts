@@ -3,6 +3,7 @@ import type { TFunction } from 'i18next';
 
 import { api } from '@/shared/api';
 import { subscribeToUserPreferences } from '@/shared/userSettings';
+import { usePinnedSessions } from '@/modules/sidebar/hooks/usePinnedSessions';
 import { usePaletteOps } from '@/modules/command-palette';
 import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationProjectResult, ConversationSearchResults, LLMProvider, Project, ProjectSession, ProjectSortOrder, RecentConversationListItem, SearchProgress, ActiveSidebarRename, PendingSidebarDeletion, SessionTitleSearchResult, SessionWithProvider, SidebarSearchMode, SidebarSessionSelection } from '@/shared/types';
 import {
@@ -167,6 +168,9 @@ export function useSidebarController({
   const [archivedProjects, setArchivedProjects] = useState<ArchivedProjectListItem[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<ArchivedSessionListItem[]>([]);
   const [isArchivedSessionsLoading, setIsArchivedSessionsLoading] = useState(false);
+  const pinnedSessionIds = usePinnedSessions();
+  // A pin can move an unloaded session into a project's first page.
+  const previousPinsRef = useRef(pinnedSessionIds);
   const [recentConversations, setRecentConversations] = useState<RecentConversationListItem[]>([]);
   const [recentConversationsTotal, setRecentConversationsTotal] = useState(0);
   const [recentConversationsHasMore, setRecentConversationsHasMore] = useState(false);
@@ -392,7 +396,13 @@ export function useSidebarController({
     }
 
     reloadRecentConversations();
-  }, [debouncedSearchQuery, reloadRecentConversations, searchMode]);
+  }, [debouncedSearchQuery, reloadRecentConversations, searchMode, pinnedSessionIds]);
+
+  useEffect(() => {
+    if (previousPinsRef.current === pinnedSessionIds) return;
+    previousPinsRef.current = pinnedSessionIds;
+    void onRefreshRef.current();
+  }, [pinnedSessionIds]);
 
   // The Conversations list is only fetched when its tab opens, while `projects`
   // is patched the moment a session is renamed from the workspace header. Fold

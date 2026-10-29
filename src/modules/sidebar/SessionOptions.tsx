@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Check, Edit2, GitBranch, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { Check, Edit2, GitBranch, MoreHorizontal, Pin, PinOff, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { ActionMenu } from '@/shared/ui';
@@ -8,6 +8,7 @@ import type { LLMProvider } from '@/shared/types';
 import { useSessionForkingProviders } from '@/shared/hooks/useProviderCapabilities';
 import { useProviderSessionIdCopy } from '@/modules/sidebar/hooks/useProviderSessionIdCopy';
 import { PROVIDER_LABELS } from '@/modules/sidebar/utils/sidebarProjectFormatting';
+import { useSessionPin } from '@/modules/sidebar/hooks/usePinnedSessions';
 
 type SessionOptionsProps = {
   sessionId: string;
@@ -63,6 +64,7 @@ export default function SessionOptions({
   t,
 }: SessionOptionsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const pin = useSessionPin(sessionId);
   const providerLabel = PROVIDER_LABELS[provider];
   const { copyState, copyLabel, setOptionsOpen, handleCopyAction, isCopyPending, CopyStateIcon } =
     useProviderSessionIdCopy(sessionId, providerLabel);
@@ -143,7 +145,7 @@ export default function SessionOptions({
         <ActionMenu
           label="Session options"
           ariaLabel={`Session options for ${sessionName}`}
-          icon={MoreHorizontal}
+          icon={pin.pinned ? Pin : MoreHorizontal}
           iconOnly
           portal
           variant="ghost"
@@ -160,6 +162,16 @@ export default function SessionOptions({
             </div>
           )}
           items={[
+            {
+              key: 'pin',
+              label: t(pin.pinned ? 'sessions.unpin' : 'sessions.pin'),
+              icon: pin.pinned ? PinOff : Pin,
+              loading: pin.saving,
+              disabled: pin.saving,
+              closeOnSelect: false,
+              description: pin.error ? t('sessions.pinFailed') : undefined,
+              onSelect: () => { void pin.togglePin(); },
+            },
             ...(projectId !== null ? [{
               key: 'rename',
               label: 'Rename session',
