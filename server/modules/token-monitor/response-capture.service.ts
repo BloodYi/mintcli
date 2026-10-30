@@ -45,8 +45,8 @@ export async function startResponseCapture(upstream: string, sessionId: string |
         if (!['connection', 'content-length', 'content-encoding', 'transfer-encoding'].includes(key)) outgoing[key] = value;
       });
       reply.writeHead(response.status, outgoing);
-      const isSse = response.headers.get('content-type')?.includes('text/event-stream');
-      const isJson = response.headers.get('content-type')?.includes('application/json');
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      let format = contentType.includes('text/event-stream') ? 'sse' : contentType.includes('application/json') ? 'json' : 'unknown';
       const decoder = new TextDecoder();
       let pending = '', oversized = false;
       const models = new Map<string, string>();
@@ -62,9 +62,16 @@ export async function startResponseCapture(upstream: string, sessionId: string |
         } catch { /* An unsupported provider event never changes the response stream. */ }
       };
       if (response.body) for await (const chunk of response.body) {
-        if (response.ok && (isSse || isJson)) {
+        if (response.ok) {
           pending += decoder.decode(chunk, { stream: true });
-          if (isSse) {
+          // Some Codex backends omit Content-Type. Sniff only the protocol prefix;
+          // the original bytes still reach the CLI unchanged. Wait across split prefixes.
+          if (format === 'unknown') {
+            const prefix = pending.trimStart();
+            if (/^(?:data:|event:|:)/.test(prefix)) format = 'sse';
+            else if (prefix.startsWith('{')) format = 'json';
+          }
+          if (format === 'sse') {
             const lines = pending.split('\n'); pending = lines.pop() || '';
             for (const line of lines) {
               if (!oversized && line.startsWith('data:')) observe(line.slice(5).trim());
@@ -78,8 +85,8 @@ export async function startResponseCapture(upstream: string, sessionId: string |
       }
       pending += decoder.decode();
       if (!oversized && response.ok) {
-        if (isJson) observe(pending);
-        else if (isSse && pending.startsWith('data:')) observe(pending.slice(5).trim());
+        if (format === 'json') observe(pending);
+        else if (format === 'sse' && pending.startsWith('data:')) observe(pending.slice(5).trim());
       }
       reply.end();
     } catch {

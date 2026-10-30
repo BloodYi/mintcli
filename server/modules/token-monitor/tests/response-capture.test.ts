@@ -97,3 +97,27 @@ test('a later compatible reply without model never inherits a completed native t
     assert.equal(result.replies[0].model, null);
   } finally { await rm(directory, { recursive: true, force: true }); await rm(metadata, { force: true }); }
 });
+
+for (const format of ['sse', 'json'] as const) {
+  test(`response capture detects ${format} when upstream omits Content-Type`, async () => {
+    const sessionId = randomUUID();
+    const response = { object: 'response', id: 'headerless', model: 'actual-headerless-model', output: [] };
+    const body = format === 'sse' ? 'data: ' + JSON.stringify({ type: 'response.created', response }) + '\n\n' : JSON.stringify(response);
+    const upstream = createServer((_req, res) => {
+      res.writeHead(200);
+      res.write(body.slice(0, 2));
+      setTimeout(() => res.end(body.slice(2)), 10);
+    });
+    upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
+    const capture = await startResponseCapture(`http://127.0.0.1:${(upstream.address() as { port: number }).port}`, sessionId);
+    try {
+      const result = await fetch(capture.baseUrl + '/responses', { method: 'POST', body: '{}' });
+      assert.equal(result.headers.get('content-type'), null);
+      assert.equal(await result.text(), body);
+      assert.equal((await readResponseCapture(sessionId)).at(-1)?.model, 'actual-headerless-model');
+    } finally {
+      await capture.close(); upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve()));
+      await rm(path.join(os.homedir(), '.claude-code-ui/token-monitor', sessionId + '.jsonl'), { force: true });
+    }
+  });
+}
