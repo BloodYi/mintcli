@@ -22,6 +22,7 @@ import {
   createNormalizedMessage,
 } from '@/shared/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
+import { startResponseCapture } from '@/modules/token-monitor/index.js';
 import { getCodexModelCatalog, resolveCodexConnection, validateConnectionEndpoint, runCompatibleChat, abortCompatibleChat } from '@/modules/codex-connections/index.js';
 import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 
@@ -283,6 +284,7 @@ async function queryCodex(
     ? effort as ModelReasoningEffort
     : undefined;
 
+  let responseCapture: Awaited<ReturnType<typeof startResponseCapture>> | undefined;
   let codex: Codex;
   let thread: Thread;
   // Provider-native thread id (starts as the resume id, or is captured from
@@ -303,18 +305,27 @@ async function queryCodex(
 
   try {
     if (selectedConnection.kind === 'api') await validateConnectionEndpoint(selectedConnection.baseUrl!);
-    codex = new Codex(selectedConnection.kind === 'api' ? {
-      env: { ...selectedConnection.env, CODEX_API_KEY: selectedConnection.apiKey! },
-      apiKey: selectedConnection.apiKey,
-      config: { model_provider: 'cloudcli_api', model_providers: { cloudcli_api: {
-        name: selectedConnection.name, base_url: selectedConnection.baseUrl!,
-        env_key: 'CODEX_API_KEY', wire_api: 'responses', requires_openai_auth: false,
-      } } },
-    } : {
-      env: selectedConnection.env,
-      // Explicit standard mode overrides any inherited account-level Fast default.
-      config: { service_tier: options.fastMode === true ? 'fast' : 'default',
-        features: { fast_mode: options.fastMode === true } },
+    responseCapture = await startResponseCapture(
+      selectedConnection.kind === 'api' ? selectedConnection.baseUrl! : 'https://chatgpt.com/backend-api/codex',
+      sessionId,
+    );
+    codex = new Codex({
+      env: selectedConnection.kind === 'api'
+        ? { ...selectedConnection.env, CODEX_API_KEY: selectedConnection.apiKey! } : selectedConnection.env,
+      ...(selectedConnection.kind === 'api' ? { apiKey: selectedConnection.apiKey } : {}),
+      config: {
+        ...(selectedConnection.kind !== 'api' ? {
+          service_tier: options.fastMode === true ? 'fast' : 'default',
+          features: { fast_mode: options.fastMode === true },
+        } : {}),
+        model_provider: 'cloudcli_monitor',
+        model_providers: { cloudcli_monitor: {
+          name: selectedConnection.kind === 'api' ? selectedConnection.name : 'mintcli Codex', base_url: responseCapture.baseUrl,
+          ...(selectedConnection.kind === 'api' ? { env_key: 'CODEX_API_KEY' } : {}),
+          wire_api: 'responses', requires_openai_auth: selectedConnection.kind !== 'api',
+          supports_websockets: false,
+        } },
+      },
     });
 
     const threadOptions: ThreadOptions = {
@@ -498,6 +509,7 @@ async function queryCodex(
     }
 
   } finally {
+    await responseCapture?.close();
     // Update session status
     if (sessionKey()) {
       const session = activeCodexSessions.get(sessionKey() || '');

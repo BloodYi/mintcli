@@ -1,3 +1,4 @@
+import { readResponseCapture } from './response-capture.service.js';
 import { open, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -100,6 +101,8 @@ export function createTokenMonitorService(dependencies = { getSession: (id: stri
       }
       const rows: Row[] = [];
       for (const line of content.split('\n')) { try { if (line.trim()) { const value = JSON.parse(line); if (value && typeof value === 'object' && !Array.isArray(value)) rows.push(value); } } catch { /* A writer may not have finished the trailing row. */ } }
+      const captured = session.provider === 'codex' ? await readResponseCapture(sessionId) : [];
+      const newestCaptured = [...captured].reverse();
       const replies = new Map<string, { id: string; timestamp: string; model: string | null; content: string; raw: Row; truncated: boolean }>();
       const seenRows = new Set<string>();
       const seenBlocks = new Set<string>();
@@ -116,7 +119,10 @@ export function createTokenMonitorService(dependencies = { getSession: (id: stri
           : row.type === 'monitor_response' ? payload : null;
         if (!message) continue;
         // A turn_context.model is the requested model. Only response records may establish returnedModel.
-        const model = typeof message.model === 'string' && message.model.length <= 256 ? message.model : null;
+        const observed = newestCaptured.find(record => record.kind === 'response' && record.itemIds?.includes(message.id))
+          || newestCaptured.find(record => Date.parse(record.timestamp) <= Date.parse(row.timestamp));
+        const model = typeof message.model === 'string' && message.model.trim() && message.model.length <= 256
+          ? message.model : observed?.model || null;
         base.returnedModel = model;
         lastError = null;
         const text = textContent(message.content);
@@ -132,6 +138,11 @@ export function createTokenMonitorService(dependencies = { getSession: (id: stri
           raw: { ...(message.id ? { id: message.id } : {}), ...(model ? { model } : {}),
             ...(message.usage ? { usage: usageFields(message.usage) } : {}), role: 'assistant', content: fullContent.slice(0, 100000) }, truncated: fullContent.length > 100000 });
       }
+      // A new HTTP response may arrive before the CLI flushes its transcript.
+      // A turn marker clears older labels when the current response has no model.
+      const latestCapture = newestCaptured.find(record => record.kind !== 'end');
+      const latestReply = [...replies.values()].at(-1);
+      if (latestCapture && (!latestReply || Date.parse(latestCapture.timestamp) >= Date.parse(latestReply.timestamp))) base.returnedModel = latestCapture.model;
       const events = session.provider === 'codex' ? parser.parseCodexTranscript(content) : parser.parseClaudeTranscript(content);
       const usage = events.filter(event => event.kind === 'turn' && event.tokens);
       const alerts = lastError ? [lastError] : [];

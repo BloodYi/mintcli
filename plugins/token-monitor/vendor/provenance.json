@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/Javis603/token-monitor",
-  "version": "0.81.0",
-  "commit": "08eeb2d7145035dee94802b46e588d46973a9cc6",
+  "version": "0.82.0",
+  "commit": "7ccb0d5b28ccc4059cc6224dfd972a61ae2c1575",
   "entry": "src/shared/sessionDetail.js",
   "license": "MIT",
   "build": "esbuild --bundle --platform=node --format=cjs --packages=external --minify"
