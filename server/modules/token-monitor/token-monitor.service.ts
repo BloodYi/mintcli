@@ -1,3 +1,5 @@
+import { readSessionHistory } from './session-history.service.js';
+import { readAntigravityMonitor } from './antigravity-monitor.service.js';
 import { readResponseCapture } from './response-capture.service.js';
 import { open, readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -5,7 +7,7 @@ import { createRequire } from 'node:module';
 import { sessionsDb } from '@/modules/database/index.js';
 import { AppError, findApplicationRoot, getModuleDirectory } from '@/shared/index.js';
 
-type Row = Record<string, any>;
+import type { AnyRecord as Row } from '@/shared/index.js';
 type Tokens = { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; total: number };
 type UsageEvent = { kind: string; timestamp: string; tokens?: Tokens };
 const appRoot = findApplicationRoot(getModuleDirectory(import.meta.url));
@@ -48,11 +50,44 @@ function sumTokens(events: UsageEvent[]): Tokens {
 }
 
 /** Used by monitoring routes and focused tests; reads only DB-indexed transcripts, never caller-supplied paths. */
-export function createTokenMonitorService(dependencies = { getSession: (id: string) => sessionsDb.getSessionById(id) }) {
+export function createTokenMonitorService(dependencies: { getSession: (id: string) => Row | null; listSessions?: () => Row[] } = { getSession: (id: string) => sessionsDb.getSessionById(id), listSessions: () => sessionsDb.getMonitorSessions() }) {
   // Coalesce release checks across tabs and users; network failure is cached briefly, not reported as up-to-date.
   let releaseCache: { expires: number; value: Row } | null = null;
   let releasePending: Promise<Row> | null = null;
   return {
+    async sessions() {
+      const sessions = (dependencies.listSessions?.() || []).slice();
+      const results: Row[] = [];
+      // Bound disk/network concurrency; a broken or unreadable conversation must not hide the rest.
+      for (let offset = 0; offset < sessions.length; offset += 3) {
+        results.push(...await Promise.all(sessions.slice(offset, offset + 3).map(async session => {
+          const base = { sessionId: session.session_id, provider: session.provider, title: session.custom_name || session.session_id,
+            projectPath: session.project_path, archived: Boolean(session.isArchived), updatedAt: session.updated_at,
+            configuredModel: session.model || null };
+          try {
+            if (session.provider === 'antigravity') {
+              const snapshot = await readAntigravityMonitor(session);
+              return { ...base, status: snapshot.status, recordedModels: snapshot.recordedModels, reportedModels: snapshot.reportedModels,
+                returnedModel: snapshot.returnedModel, totals: snapshot.totals, totalsScope: snapshot.totalsScope };
+            }
+            if (!['codex', 'claude'].includes(session.provider) || !session.jsonl_path) throw new Error('unavailable');
+            const history = await readSessionHistory(session.session_id, session.jsonl_path);
+            const events = session.provider === 'codex' ? parser.parseCodexTranscript(history.projected) : parser.parseClaudeTranscript(history.projected);
+            let cumulative: Tokens | null = null;
+            if (session.provider === 'codex') for (const line of history.projected.split('\n')) {
+              if (!line) continue;
+              const row = JSON.parse(line); if (row.payload?.info?.total_token_usage) cumulative = codexTokens(row.payload.info.total_token_usage);
+            }
+            const usage = events.filter(event => event.kind === 'turn' && event.tokens);
+            return { ...base, status: 'ok', recordedModels: history.recordedModels, reportedModels: history.reportedModels,
+              totals: cumulative || (usage.length ? sumTokens(usage) : null), totalsScope: 'session' };
+          } catch {
+            return { ...base, status: 'unavailable', recordedModels: [], reportedModels: [], totals: null, totalsScope: 'unavailable' };
+          }
+        })));
+      }
+      return { sessions: results, checkedAt: Date.now() };
+    },
     async updates() {
       if (releaseCache && releaseCache.expires > Date.now()) return releaseCache.value;
       if (releasePending) return releasePending;
@@ -82,6 +117,10 @@ export function createTokenMonitorService(dependencies = { getSession: (id: stri
       const session = dependencies.getSession(sessionId);
       if (!session) throw new AppError('Session not found', { code: 'SESSION_NOT_FOUND', statusCode: 404 });
       const base = { sessionId, provider: session.provider, configuredModel: session.model || null, checkedAt: Date.now(), returnedModel: null as string | null };
+      if (session.provider === 'antigravity') {
+        try { return await readAntigravityMonitor({ ...session, session_id: sessionId }); }
+        catch { return { ...base, status: 'unavailable', reason: 'AGY 原始记录暂不可读，稍后重试', replies: [], usage: [], totals: null, limited: false, alerts: [] }; }
+      }
       if (!['codex', 'claude'].includes(session.provider) || !session.jsonl_path) {
         return { ...base, status: 'unavailable', reason: '此提供商尚未提供可读取的原始回复与用量记录', replies: [], usage: [], totals: null, limited: false, alerts: [] };
       }
@@ -143,12 +182,17 @@ export function createTokenMonitorService(dependencies = { getSession: (id: stri
       const latestCapture = newestCaptured.find(record => record.kind !== 'end');
       const latestReply = [...replies.values()].at(-1);
       if (latestCapture && (!latestReply || Date.parse(latestCapture.timestamp) >= Date.parse(latestReply.timestamp))) base.returnedModel = latestCapture.model;
-      const events = session.provider === 'codex' ? parser.parseCodexTranscript(content) : parser.parseClaudeTranscript(content);
+      const history = await readSessionHistory(sessionId, session.jsonl_path).catch(() => null);
+      const events = session.provider === 'codex' ? parser.parseCodexTranscript(history?.projected || content) : parser.parseClaudeTranscript(history?.projected || content);
+      if (history && session.provider === 'codex') for (const line of history.projected.split('\n')) {
+        if (!line) continue;
+        const row = JSON.parse(line); if (row.payload?.info?.total_token_usage) cumulative = codexTokens(row.payload.info.total_token_usage);
+      }
       const usage = events.filter(event => event.kind === 'turn' && event.tokens);
       const alerts = lastError ? [lastError] : [];
       if (replies.size && !usage.length && !cumulative) alerts.push('回复记录未包含 token 用量；接口或 CLI 可能需要更新，请检查协议与版本');
       return { ...base, status: 'ok', replies: [...replies.values()].slice(-30).reverse(), usage: usage.slice(-60).reverse(),
-        totals: cumulative || (usage.length ? sumTokens(usage) : null), limited, totalsScope: cumulative || !limited ? 'session' : 'recent', alerts };
+        totals: cumulative || (usage.length ? sumTokens(usage) : null), limited, totalsScope: history || cumulative || !limited ? 'session' : 'recent', recordedModels: history?.recordedModels || [], reportedModels: history?.reportedModels || [], alerts };
     },
   };
 }

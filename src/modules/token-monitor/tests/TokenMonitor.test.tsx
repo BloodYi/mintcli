@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { TokenMonitorProvider, MonitorButton } from '@/modules/token-monitor';
 import { AccountQuota } from '@/modules/agent-connections/AccountQuota';
 import { api } from '@/shared/api';
-vi.mock('@/shared/api', () => ({ api: { tokenMonitor: { snapshot: vi.fn(), updates: vi.fn() }, agentConnections: { quota: vi.fn() } }, readApiJson: async (response: Response) => response.json() }));
+vi.mock('@/shared/api', () => ({ api: { tokenMonitor: { snapshot: vi.fn(), updates: vi.fn(), sessions: vi.fn().mockImplementation(async () => Response.json({ sessions: [] })) }, agentConnections: { quota: vi.fn() } }, readApiJson: async (response: Response) => response.json() }));
 const snapshot = (sessionId: string, model: string | null) => ({ sessionId, provider: 'codex', configuredModel: 'configured', returnedModel: model, checkedAt: Date.now(), status: 'ok', limited: false, totals: null, alerts: [], replies: [], usage: [] });
 afterEach(() => { cleanup(); localStorage.clear(); });
 function Workbench({ id }: { id: string }) {
@@ -40,4 +40,21 @@ it('switching sessions discards slow previous model metadata', async () => {
   expect(screen.queryByText('返回：stale-model')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: '查看真实返回模型与 token' }));
   await screen.findByText('未报告（不使用所选模型推断）');
+});
+it('history can inspect an archived conversation without changing the active chat and can return', async () => {
+  vi.mocked(api.tokenMonitor.sessions).mockImplementation(async () => Response.json({ sessions: [
+    { sessionId: 'archived', title: '旧 Gemini 对话', provider: 'antigravity', archived: true, recordedModels: ['gemini-requested'], reportedModels: ['gemini-returned'], totals: { total: 1234 } },
+  ] }));
+  vi.mocked(api.tokenMonitor.snapshot).mockImplementation(async id => Response.json(snapshot(id, id === 'archived' ? 'gemini-returned' : 'current-returned')));
+  render(<Workbench id="current" />);
+  await screen.findByText('返回：current-returned');
+  fireEvent.click(screen.getByRole('button', { name: '开关监控窗口' }));
+  await screen.findByText('全部历史会话（1，含归档）');
+  fireEvent.click(screen.getByText('全部历史会话（1，含归档）'));
+  expect(screen.getByText('请求模型：gemini-requested')).toBeTruthy();
+  expect(screen.getByText('Token：1,234')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: /旧 Gemini 对话/ }));
+  await screen.findByText('gemini-returned', { selector: 'dd' });
+  fireEvent.click(screen.getByRole('button', { name: '返回当前会话' }));
+  await screen.findByText('current-returned', { selector: 'dd' });
 });

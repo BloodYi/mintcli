@@ -530,6 +530,13 @@ export const sessionsDb = {
     return normalizeSessionRow(row) ?? null;
   },
 
+  /** Used by Token Monitor to browse historical conversations, including archived sessions. */
+  getMonitorSessions(): SessionRow[] {
+    return normalizeSessionRows(getConnection().prepare(
+      `SELECT ${SESSION_ROW_COLUMNS} FROM sessions ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC`
+    ).all() as SessionRow[]);
+  },
+
   getAllSessions(): SessionRow[] {
     const db = getConnection();
     const rows = db

@@ -8,6 +8,10 @@ tokenMonitorRoutes.get('/updates', asyncHandler(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.json(await tokenMonitorService.updates());
 }));
+tokenMonitorRoutes.get('/sessions', asyncHandler(async (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(await tokenMonitorService.sessions());
+}));
 tokenMonitorRoutes.get('/sessions/:sessionId', asyncHandler(async (req, res) => {
   const sessionId = req.params.sessionId;
   if (typeof sessionId !== 'string' || !/^[a-zA-Z0-9._-]{1,120}$/.test(sessionId)) {

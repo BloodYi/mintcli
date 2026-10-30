@@ -37,6 +37,7 @@ test('session archive queries hide archived rows from active project views', asy
     sessionsDb.createSession('session-archived', 'claude', '/workspace/demo-project', 'Archived Session');
     sessionsDb.updateSessionIsArchived('session-archived', true);
 
+    assert.deepEqual(sessionsDb.getMonitorSessions().map(session => session.session_id).sort(), ['session-active', 'session-archived']);
     const activeSessions = sessionsDb.getAllSessions();
     const archivedSessions = sessionsDb.getArchivedSessions();
     const activeProjectSessions = sessionsDb.getSessionsByProjectPath('/workspace/demo-project');

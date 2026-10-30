@@ -199,6 +199,7 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 
 export const api = {
   tokenMonitor: {
+    sessions: (signal?: AbortSignal) => get('/api/token-monitor/sessions', { signal }),
     snapshot: (sessionId: string, signal?: AbortSignal) => get('/api/token-monitor/sessions/' + encodeURIComponent(sessionId), { signal }),
     updates: (signal?: AbortSignal) => get('/api/token-monitor/updates', { signal }),
   },

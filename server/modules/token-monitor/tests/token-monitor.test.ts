@@ -68,3 +68,44 @@ test('upstream release checks coalesce and compare semantic versions instead of 
   assert.equal(calls, 1);
   assert.equal(a.url, 'https://github.com/Javis603/token-monitor/releases/latest');
 });
+
+test('history includes archived conversations and distinguishes requested from response models', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'monitor-history-'));
+  const file = path.join(directory, 'old.jsonl');
+  await writeFile(file, [
+    { type: 'turn_context', payload: { model: 'historically-requested' } },
+    { type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 10, output_tokens: 2 }, total_token_usage: { input_tokens: 10, output_tokens: 2 } } } },
+    { type: 'response_item', payload: { role: 'assistant', model: 'reported-v1' } },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const sessions = [{ session_id: 'old', provider: 'codex', model: 'now-selected', isArchived: 1, jsonl_path: file },
+    { session_id: 'missing', provider: 'codex', jsonl_path: file + '.missing' }];
+  const service = createTokenMonitorService({ getSession: id => sessions.find(s => s.session_id === id) || null, listSessions: () => sessions });
+  try {
+    const result = await service.sessions();
+    assert.equal(result.sessions.length, 2);
+    assert.equal(result.sessions[0].archived, true);
+    assert.deepEqual(result.sessions[0].recordedModels, ['historically-requested']);
+    assert.deepEqual(result.sessions[0].reportedModels, ['reported-v1']);
+    assert.equal(result.sessions[0].totals.total, 12);
+    assert.equal(result.sessions[1].status, 'unavailable');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('full history totals survive a transcript tail containing no usage, with Claude response deduplication', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'monitor-full-'));
+  const file = path.join(directory, 'full.jsonl');
+  const row = { type: 'assistant', uuid: 'u1', message: { id: 'm1', model: 'claude-real', usage: { input_tokens: 10, output_tokens: 5 }, content: [] } };
+  await writeFile(file, [row, row, { type: 'assistant', uuid: 'u2', message: { ...row.message, content: [{ type: 'text', text: 'split' }] } },
+    { type: 'tool_payload', content: 'x'.repeat(4 * 1024 * 1024) },
+    { type: 'assistant', uuid: 'u3', message: { id: 'm2', content: [{ type: 'text', text: 'latest' }] } },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const service = createTokenMonitorService({ getSession: () => ({ provider: 'claude', jsonl_path: file }) });
+  try {
+    const result = await service.snapshot('full');
+    assert.equal(result.limited, true);
+    assert.equal(result.totals?.total, 15);
+    assert.equal('totalsScope' in result && result.totalsScope, 'session');
+    assert.equal(result.returnedModel, null);
+    assert.deepEqual('reportedModels' in result && result.reportedModels, ['claude-real']);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
