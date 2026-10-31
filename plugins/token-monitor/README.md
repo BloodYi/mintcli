@@ -17,3 +17,5 @@ node --input-type=module -e 'import { build } from "esbuild"; await build({ entr
 ```
 
 Update `vendor/provenance.json`, retain the upstream license, and run the monitor/compatible-chat tests plus the client/type/build checks before deploying. Install the manifest and entry in the runtime user's `~/.claude-code-ui/plugins/token-monitor/` directory; the packaged server also needs `plugins/token-monitor/vendor/` at the app root.
+
+Adapter 1.3.0 pins upstream 0.83.0 (the bundled session parser remains byte-identical to 0.82.0). While the history inspector is open, its complete session list refreshes serially every 15 seconds and cancels on close. Output-item events retain response/model-to-message links before oversized completion payloads. Existing AGY legacy reconstruction remains in the native bridge: full transcript usage and execution-linked model metadata enrich exact historical messages; live new conversations persist routeInfo and usage for future reads. Missing historical Codex response fields stay unavailable rather than borrowing requested model names.

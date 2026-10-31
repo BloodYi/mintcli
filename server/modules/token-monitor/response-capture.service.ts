@@ -53,6 +53,14 @@ export async function startResponseCapture(upstream: string, sessionId: string |
       const observe = (text: string) => {
         try {
           const event = JSON.parse(text);
+          // Output-item events preserve exact reply joins even when a large completed event
+          // exceeds the observer limit. Item content itself is never persisted.
+          if ((event.type === 'response.output_item.added' || event.type === 'response.output_item.done')
+            && typeof event.item?.id === 'string' && event.item.id.length <= 256) {
+            const responseId = typeof event.response_id === 'string' ? event.response_id : [...models.keys()].at(-1);
+            if (responseId && models.has(responseId)) persist({ kind: 'response', id: responseId,
+              model: models.get(responseId), itemIds: [event.item.id] });
+          }
           const data = event.response || (event.object === 'response' ? event : null);
           if (!data || typeof data.id !== 'string' || data.id.length > 256) return;
           const model = typeof data.model === 'string' && data.model.trim() && data.model.length <= 256 ? data.model : models.get(data.id) || null;

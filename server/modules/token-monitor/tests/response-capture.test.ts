@@ -121,3 +121,24 @@ for (const format of ['sse', 'json'] as const) {
     }
   });
 }
+
+test('output item events retain exact model association when completed payload is oversized', async () => {
+  const sessionId = randomUUID();
+  const upstream = createServer((_req, res) => {
+    res.setHeader('content-type', 'text/event-stream');
+    res.write('data: ' + JSON.stringify({ type: 'response.created', response: { id: 'resp-large', model: 'real-large' } }) + '\n\n');
+    res.write('data: ' + JSON.stringify({ type: 'response.output_item.added', item: { id: 'msg-large', content: 'private' } }) + '\n\n');
+    res.end('data: ' + JSON.stringify({ type: 'response.completed', response: { id: 'resp-large', model: 'real-large', content: 'x'.repeat(5 * 1024 * 1024) } }) + '\n\n');
+  });
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
+  const capture = await startResponseCapture(`http://127.0.0.1:${(upstream.address() as { port: number }).port}`, sessionId);
+  try {
+    await (await fetch(capture.baseUrl + '/responses', { method: 'POST', body: '{}' })).arrayBuffer();
+    const records = await readResponseCapture(sessionId);
+    assert.ok(records.some(record => record.model === 'real-large' && record.itemIds?.includes('msg-large')));
+    assert.ok(!JSON.stringify(records).includes('private'));
+  } finally {
+    await capture.close(); upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve()));
+    await rm(path.join(os.homedir(), '.claude-code-ui/token-monitor', sessionId + '.jsonl'), { force: true });
+  }
+});

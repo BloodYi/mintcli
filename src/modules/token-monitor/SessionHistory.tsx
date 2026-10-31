@@ -16,13 +16,16 @@ export function SessionHistory({ selectedId, onSelect, revision }: { selectedId?
   const [error, setError] = useState('');
   useEffect(() => {
     const controller = new AbortController(); let cancelled = false;
-    void (async () => {
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
       try {
         const data = await readApiJson<{ sessions: HistorySession[] }>(await api.tokenMonitor.sessions(controller.signal));
         if (!cancelled) { setSessions(data.sessions); setError(''); }
       } catch { if (!cancelled) setError('历史会话读取失败，请刷新监控重试。'); }
-    })();
-    return () => { cancelled = true; controller.abort(); };
+      finally { if (!cancelled) timer = setTimeout(poll, 15000); }
+    };
+    void poll();
+    return () => { cancelled = true; controller.abort(); clearTimeout(timer); };
   }, [revision]);
   const filtered = sessions?.filter(session => [session.title, session.provider, session.configuredModel, ...session.recordedModels, ...session.reportedModels].join(' ').toLowerCase().includes(query.toLowerCase()));
   return <details className="my-3 rounded-lg border border-border p-3">
