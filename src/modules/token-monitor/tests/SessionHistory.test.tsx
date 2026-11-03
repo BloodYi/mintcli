@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { SessionHistory } from '@/modules/token-monitor/SessionHistory';
 import { api } from '@/shared/api';
@@ -18,4 +18,27 @@ it('refreshes new conversations while open and stops requests after unmount', as
   view.unmount();
   await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
   expect(api.tokenMonitor.sessions).toHaveBeenCalledTimes(2);
+});
+it('combines tool and model search across archived history without changing the selected chat', async () => {
+  const onSelect = vi.fn();
+  vi.mocked(api.tokenMonitor.sessions).mockResolvedValue(Response.json({ sessions: [
+    { sessionId: 'codex', title: 'Codex 会话', provider: 'codex', recordedModels: [], reportedModels: ['same-model'], totals: null },
+    { sessionId: 'agy', title: '归档 AGY', provider: 'antigravity', archived: true, recordedModels: [], reportedModels: ['same-model'], totals: { total: 12 } },
+    { sessionId: 'claude', title: 'Claude 会话', provider: 'claude', recordedModels: [], reportedModels: ['other-model'], totals: null },
+  ] }));
+  render(<SessionHistory selectedId="codex" onSelect={onSelect} revision={0} />);
+  await screen.findByText('全部历史会话（3，含归档）');
+  fireEvent.click(screen.getByText('全部历史会话（3，含归档）'));
+  fireEvent.change(screen.getByRole('combobox', { name: '按工具筛选历史会话' }), { target: { value: 'antigravity' } });
+  fireEvent.change(screen.getByRole('textbox', { name: '搜索历史会话' }), { target: { value: 'same-model' } });
+  expect(screen.queryByRole('button', { name: /Codex 会话/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: /Claude 会话/ })).toBeNull();
+  expect(onSelect).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: /归档 AGY.*已归档/ }));
+  expect(onSelect).toHaveBeenCalledWith('agy');
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'claude' } });
+  expect(screen.getByText('没有匹配的会话。')).toBeTruthy();
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: '' } });
+  expect(screen.getByRole('button', { name: /Codex 会话/ }).getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByRole('button', { name: /归档 AGY/ })).toBeTruthy();
 });
