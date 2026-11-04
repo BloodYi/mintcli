@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { resolveCodexLauncher as resolveInstalledCodexLauncher } from '@/shared/index.js';
 import readline from 'node:readline';
 
 import { AppError } from '@/shared/utils.js';
@@ -43,16 +43,12 @@ export type CodexThreadFork = {
 };
 
 /**
- * Resolves the `codex` launcher shipped in node_modules.
- *
- * Deliberately not the `codex` on PATH: a machine can have a second, older
- * install, and the protocol this speaks is only guaranteed against the
- * version this package depends on.
+ * Resolves the same private or bundled Codex launcher that the chat runtime uses.
+ * A global PATH installation must never silently change the fork protocol.
  */
 function resolveCodexLauncher(): string {
-  const require_ = createRequire(import.meta.url);
   try {
-    return require_.resolve('@openai/codex/bin/codex.js');
+    return resolveInstalledCodexLauncher();
   } catch {
     throw new AppError('The Codex CLI package is not installed, so Codex conversations cannot be branched.', {
       code: 'CODEX_APP_SERVER_UNAVAILABLE',

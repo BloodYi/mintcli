@@ -1,13 +1,10 @@
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { ProviderModelsDefinition, ProviderModelOption } from '@/shared/types.js';
-import { AppError } from '@/shared/index.js';
+import { AppError, readCodexVersion } from '@/shared/index.js';
 import { refreshOfficialAccount } from './quota.service.js';
 
-const require = createRequire(import.meta.url);
-const version = (require('@openai/codex/package.json') as { version: string }).version;
 const pending = new Map<string, { fingerprint: string; expires: number; value: Promise<ProviderModelsDefinition> }>();
 const authError = () => new AppError('此账号的官方授权已失效，请在账号管理中重新授权。', { code: 'CODEX_REAUTH_REQUIRED', statusCode: 409 });
 
@@ -24,7 +21,7 @@ export async function readOfficialCatalog(home: string, env: Record<string, stri
   const cached = pending.get(home);
   if (cached && cached.fingerprint === fingerprint && cached.expires > Date.now()) return cached.value;
   const value = (async () => {
-    const request = async (tokens: NonNullable<typeof auth.tokens>) => fetch(`https://chatgpt.com/backend-api/codex/models?client_version=${encodeURIComponent(version)}`, {
+    const request = async (tokens: NonNullable<typeof auth.tokens>) => fetch(`https://chatgpt.com/backend-api/codex/models?client_version=${encodeURIComponent(readCodexVersion())}`, {
       headers: { Authorization: `Bearer ${tokens.access_token}`, ...(tokens.account_id ? { 'ChatGPT-Account-Id': tokens.account_id } : {}), originator: 'codex_cli_rs' },
       redirect: 'error', signal: AbortSignal.timeout(20000),
     });

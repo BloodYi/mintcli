@@ -167,6 +167,7 @@ afterEach(() => {
 const createService = (overrides: Parameters<typeof createProviderCliService>[0] = {}) => createProviderCliService({
   listBusyProviders: async () => [],
   platformMode: false,
+  managedUpdates: false,
   fetch: (async (input: string | URL | Request) => {
     unexpectedRegistryCalls.push(String(input));
     throw new Error('the registry must not be contacted in this test');
@@ -883,4 +884,52 @@ test('native Antigravity keeps its bridge and never runs a CLI updater', async (
   assert.equal(status.installedVersion, null);
   assert.equal(status.updateCommand, null);
   await rejectsWithAppError(service.updateCli('antigravity'), 'PROVIDER_CLI_UPDATE_UNAVAILABLE', 400);
+});
+
+// ----------------- isolated installations and explicit release checks ------------
+test('an explicit check bypasses the release cache without starting an updater', async () => {
+  await withIsolatedCliEnv(async binDir => {
+    const cli = await createFakeCli(binDir, 'claude');
+    await cli.set('version', '2.1.200');
+    let latest = '2.1.300';
+    const registry = createFakeRegistry(async () => jsonResponse({ version: latest }));
+    const service = createService({ fetch: registry.fetch });
+    assert.equal((await service.getCliStatus('claude')).latestVersion, latest);
+    latest = '2.1.301';
+    assert.equal((await service.getCliStatus('claude')).latestVersion, '2.1.300');
+    assert.equal((await service.getCliStatus('claude', true)).latestVersion, latest);
+    assert.equal(registry.calls.length, 2);
+    assert.equal(await cli.read('update-count'), null);
+  });
+});
+
+test('managed Codex offers the isolated installer instead of changing application dependencies', async () => {
+  const service = createService({ managedUpdates: true, fetch: createFakeRegistry(async () => jsonResponse({ version: '9.9.9' })).fetch });
+  const status = await service.getCliStatus('codex');
+  assert.equal(status.updateUnavailableReason, null);
+  assert.match(status.updateCommand!, /scripts[\\/]update-provider-cli\.mjs codex$/);
+  assert.doesNotMatch(status.updateCommand!, /install -g/);
+});
+
+test('managed Cursor checks the official installer and compares date versions', async () => {
+  await withIsolatedCliEnv(async binDir => {
+    const cli = await createFakeCli(binDir, 'cursor-agent');
+    await cli.set('version', '2026.10.20-abcdef0');
+    const registry = createFakeRegistry(async () => new Response('https://downloads.cursor.com/lab/2026.10.22-27dcf5f/${OS}/${ARCH}/agent-cli-package.tar.gz'));
+    const status = await createService({ managedUpdates: true, fetch: registry.fetch }).getCliStatus('cursor');
+    assert.equal(status.latestVersion, '2026.10.22-27dcf5f');
+    assert.equal(status.updateAvailable, true);
+    assert.deepEqual(registry.calls, [{ url: 'https://cursor.com/install' }]);
+  });
+});
+
+test('managed Antigravity reads the official manifest and offers the isolated installer', async () => {
+  const registry = createFakeRegistry(async () => jsonResponse({ version: '1.5.1' }));
+  const native = new (await import('@/modules/providers/list/antigravity/antigravity.provider.js')).AntigravityProvider();
+  const service = createService({ managedUpdates: true, fetch: registry.fetch, resolveProvider: () => ({ ...native, auth: { ...native.auth, checkInstalled: () => ({ installed: true, version: '1.5.0', exitCode: 0 }) } }) });
+  const status = await service.getCliStatus('antigravity');
+  assert.equal(status.latestVersion, '1.5.1');
+  assert.equal(status.updateAvailable, true);
+  assert.match(status.updateCommand!, /update-provider-cli\.mjs antigravity$/);
+  assert.match(registry.calls[0].url, /antigravity-cli-auto-updater.*manifests/);
 });

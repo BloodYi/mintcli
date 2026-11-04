@@ -15,7 +15,7 @@ type ProviderCliVersionProps = {
 
 type UpdateResultProps = {
   result: ProviderCliUpdateResult;
-  /** The newest npm release, when known; an unchanged version equal to it means there was nothing to update. */
+  /** The newest official release, when known; an unchanged version equal to it means there was nothing to update. */
   latestVersion: string | null;
 };
 
@@ -76,7 +76,7 @@ function UpdateResult({ result, latestVersion }: UpdateResultProps) {
  */
 export default function ProviderCliVersion({ agent, installedVersion, textClass, subtextClass }: ProviderCliVersionProps) {
   const { t } = useTranslation('settings');
-  const { status, statusFailed, updating, updateResult, updateError, runUpdate } = useProviderCliVersion(agent);
+  const { status, statusFailed, checking, updating, updateResult, updateError, runUpdate, checkForUpdates } = useProviderCliVersion(agent);
 
   // Nothing to say about a CLI that is not there; the status line above
   // already reports it. Unless an update this row showed left the CLI unable
@@ -142,6 +142,11 @@ export default function ProviderCliVersion({ agent, installedVersion, textClass,
             ) : null}
           </div>
         </div>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" onClick={() => void checkForUpdates()} disabled={checking || updating}>
+            {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            {checking ? t('agents.cli.checking') : t('agents.cli.checkUpdates')}
+          </Button>
         {/* The server refuses to update a CLI it cannot start. */}
         {updateCommand && !missing && (
           <Button
@@ -151,7 +156,7 @@ export default function ProviderCliVersion({ agent, installedVersion, textClass,
             onClick={() => {
               void runUpdate();
             }}
-            disabled={updating}
+            disabled={updating || checking}
             title={t('agents.cli.runsCommand', { command: updateCommand })}
           >
             {updating ? (
@@ -165,10 +170,13 @@ export default function ProviderCliVersion({ agent, installedVersion, textClass,
               ? t('agents.cli.updating')
               : status?.updateAvailable && status.latestVersion
                 ? t('agents.cli.updateTo', { version: status.latestVersion })
-                : t('agents.cli.runUpdater')}
+                : t('agents.cli.updateNow')}
           </Button>
         )}
+        </div>
       </div>
+      {statusFailed && <p role="alert" className="mt-3 text-sm text-red-600">{t('agents.cli.checkFailed')}</p>}
+      {!checking && !statusFailed && status?.installed && !status.latestVersion && <p role="status" className="mt-2 text-xs text-muted-foreground">{t('agents.cli.latestUnavailable')}</p>}
 
       {updating && (
         <p role="status" className="mt-3 break-words text-sm text-muted-foreground">

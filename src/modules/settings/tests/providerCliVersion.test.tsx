@@ -31,7 +31,8 @@ vi.mock('@/shared/api', async (importOriginal) => {
     ...actual,
     api: {
       providers: {
-        cliStatus: async (provider: string) => {
+        cliStatus: async (provider: string, refresh = false) => {
+          if (refresh) calls.push(`refresh:${provider}`);
           calls.push(`status:${provider}`);
           const next = responses.status.length > 1 ? responses.status.shift() : responses.status[0];
           if (next === 'pending') {
@@ -165,7 +166,7 @@ describe('ProviderCliVersion', () => {
     })];
     const { unmount } = renderRow('0.156.1');
     expect(await screen.findByText('Included with mintcli. Application updates are disabled.')).toBeTruthy();
-    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Update to|Update now/ })).toBeNull();
     unmount();
 
     responses.status = [claudeStatus({ installed: false, installedVersion: null, updateAvailable: false })];
@@ -198,7 +199,7 @@ describe('ProviderCliVersion', () => {
     });
     const { unmount } = renderRow('2.1.300');
     // Without an update hint the button says what it does: run the updater.
-    fireEvent.click(await screen.findByRole('button', { name: 'Run updater' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Update now' }));
     expect(await screen.findByText('Already up to date (v2.1.300).')).toBeTruthy();
     unmount();
 
@@ -220,7 +221,7 @@ describe('ProviderCliVersion', () => {
       }),
     });
     renderRow('2026.07.20-8cc9c0b');
-    fireEvent.click(await screen.findByRole('button', { name: 'Run updater' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Update now' }));
     expect(await screen.findByText(
       'The updater finished and the version is still v2026.07.20-8cc9c0b. Its output below says why.',
     )).toBeTruthy();
@@ -235,7 +236,7 @@ describe('ProviderCliVersion', () => {
     })];
     renderRow();
     expect(await screen.findByText('Managed by the hosting platform.')).toBeTruthy();
-    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Update to|Update now/ })).toBeNull();
   });
 
   it('stops saying it is checking when the version cannot be loaded', async () => {
@@ -386,7 +387,7 @@ describe('ProviderCliVersion', () => {
     expect(screen.getByText('The update failed (exit code 1). Its output is below.')).toBeTruthy();
     expect(screen.getByText(/ENOENT: no such file or directory/)).toBeTruthy();
     // The server refuses to update a CLI it cannot start.
-    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Update to|Update now/ })).toBeNull();
   });
 });
 
@@ -417,3 +418,23 @@ describe('AccountContent CLI version row', () => {
     expect(calls).toEqual(['status:claude']);
   });
 });
+
+ beforeEach(() => { calls.length = 0; });
+
+ it('manual checks fetch fresh releases and never run the installer', async () => {
+  responses.status = [claudeStatus(), claudeStatus({ latestVersion: '2.1.301' })];
+  renderRow();
+  fireEvent.click(await screen.findByRole('button', { name: 'Check for updates' }));
+  await screen.findByRole('button', { name: 'Update to v2.1.301' });
+  expect(calls).toContain('refresh:claude');
+  expect(calls).not.toContain('update:claude');
+ });
+
+ it('keeps the installed version and offers retry when a manual check fails', async () => {
+  responses.status = [claudeStatus(), json({ error: 'offline' }, 502)];
+  renderRow();
+  fireEvent.click(await screen.findByRole('button', { name: 'Check for updates' }));
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Could not check for updates. Please try again.');
+  expect(screen.getByText('Installed: v2.1.200')).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Check for updates' }) as HTMLButtonElement).disabled).toBe(false);
+ });

@@ -383,6 +383,10 @@
     },
     "connectionStatus": "连接状态",
     "cli": {
+      "checkUpdates": "检查更新",
+      "updateNow": "立即更新",
+      "checkFailed": "检查更新失败，请稍后重试。",
+      "latestUnavailable": "暂时无法获取最新版本，请重试检查更新。",
       "title": "CLI 版本",
       "checking": "正在检查版本…",
       "installed": "已安装：v{{version}}",

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { getCodexModelCatalog, resolveCodexConnection } from '@/modules/codex-connections/index.js';
-import { createRequire } from 'node:module';
+import { resolveCodexLauncher } from '@/shared/index.js';
 import path from 'node:path';
 
 import type { IProviderAuth } from '@/shared/interfaces.js';
@@ -17,13 +17,13 @@ type CodexCredentialsStatus = {
 export class CodexProviderAuth implements IProviderAuth {
   /**
    * Checks whether the Codex CLI that chats run is available, and which version
-   * it is. That is the `@openai/codex` package CloudCLI depends on, which
-   * `@openai/codex-sdk` resolves from node_modules, not a `codex` on PATH.
+   * it is. Managed installations use mintcli's selected private release;
+   * other hosts fall back to the application's bundled npm package.
    */
   checkInstalled(): CliVersionProbe {
     let launcherPath: string;
     try {
-      launcherPath = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js');
+      launcherPath = resolveCodexLauncher();
     } catch {
       return { installed: false, exitCode: null, version: null };
     }

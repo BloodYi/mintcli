@@ -641,7 +641,7 @@ router.get(
   '/:provider/cli',
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
-    res.json(createApiSuccessResponse(await providerCliService.getCliStatus(provider)));
+    res.json(createApiSuccessResponse(await providerCliService.getCliStatus(provider, req.query.refresh === 'true')));
   }),
 );
 

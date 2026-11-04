@@ -373,6 +373,10 @@
     },
     "connectionStatus": "Stav připojení",
     "cli": {
+      "checkUpdates": "Check for updates",
+      "updateNow": "Update now",
+      "checkFailed": "Could not check for updates. Please try again.",
+      "latestUnavailable": "The latest release is unavailable. Try checking again.",
       "title": "Verze CLI",
       "checking": "Ověřování verze…",
       "installed": "Nainstalováno: v{{version}}",

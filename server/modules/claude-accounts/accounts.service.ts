@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
 import * as pty from 'node-pty';
-import { AppError } from '@/shared/index.js';
+import { AppError, resolveManagedCli } from '@/shared/index.js';
 import type { AnyRecord } from '@/shared/types.js';
 
 type Account = { id: string; name: string; email?: string };
@@ -37,7 +37,7 @@ const busy = new Map<string, number>();
 const quotas = new Map<string, AnyRecord>();
 const logins = new Map<string, { process: pty.IPty; url?: string; status: string; timer: ReturnType<typeof setTimeout> }>();
 const quotaJobs = new Map<string, Promise<AnyRecord>>();
-const nativeBinary = () => process.env.CLAUDE_CLI_PATH || path.join(path.dirname(createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk-linux-x64/package.json')), 'claude');
+const nativeBinary = () => process.env.CLAUDE_CLI_PATH || resolveManagedCli('claude') || path.join(path.dirname(createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk-linux-x64/package.json')), 'claude');
 function ensureProfile(id: string) {
   const target = home(id);
   fs.mkdirSync(target, { recursive: true, mode: 0o700 });

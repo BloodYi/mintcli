@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
+import { resolveManagedCli } from '@/shared/index.js';
+import { probeCliVersion } from '@/shared/utils.js';
 import { antigravityBridge } from '@/modules/antigravity/index.js';
 import { sessionsDb } from '@/modules/database/index.js';
 import type { IProvider, IProviderRuntime } from '@/shared/interfaces.js';
@@ -128,8 +130,8 @@ export class AntigravityProvider implements IProvider {
     async getCurrentActiveModel() { return { model: (await this.getSupportedModels()).DEFAULT }; },
   };
   readonly auth = {
-    // Antigravity runs through the native bridge; it has no local CLI version to probe.
-    checkInstalled(): CliVersionProbe { return { installed: true, exitCode: null, version: null }; },
+    // Managed bridges use mintcli's own executable; legacy remote bridges expose no local version.
+    checkInstalled(): CliVersionProbe { const command = resolveManagedCli('antigravity'); return command ? probeCliVersion(command) : { installed: true, exitCode: null, version: null }; },
     async getStatus(): Promise<ProviderAuthStatus> { try { const data = await json(await antigravityBridge.request('GET', '/api/accounts')); const active = data.accounts?.find((item: AnyRecord) => item.active); return { provider, installedVersion: null, installed: true, authenticated: Boolean(active), email: active?.email || null, method: 'native' }; } catch { return { provider, installedVersion: null, installed: false, authenticated: false, email: null, method: null }; } } };
   readonly sessions = {
     normalizeMessage(raw: unknown, id: string | null) { return normalizeAgy(raw as AnyRecord, id); },

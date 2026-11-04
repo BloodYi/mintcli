@@ -1,3 +1,4 @@
+import { resolveManagedCli } from '@/shared/index.js';
 /**
  * OpenAI Codex SDK Integration
  * =============================
@@ -310,6 +311,7 @@ async function queryCodex(
       sessionId,
     );
     codex = new Codex({
+      ...(resolveManagedCli('codex') ? { codexPathOverride: resolveManagedCli('codex') } : {}),
       env: selectedConnection.kind === 'api'
         ? { ...selectedConnection.env, CODEX_API_KEY: selectedConnection.apiKey! } : selectedConnection.env,
       ...(selectedConnection.kind === 'api' ? { apiKey: selectedConnection.apiKey } : {}),

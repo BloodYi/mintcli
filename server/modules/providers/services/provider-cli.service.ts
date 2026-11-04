@@ -1,11 +1,13 @@
 import spawn from 'cross-spawn';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import { resolveBundledClaudeExecutablePath, resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type { CliVersionProbe, LLMProvider } from '@/shared/types.js';
-import { AppError, IS_PLATFORM, stripAnsiSequences } from '@/shared/utils.js';
+import { AppError, IS_PLATFORM, stripAnsiSequences, findApplicationRoot } from '@/shared/utils.js';
 
 /** How long the registry's answer is reused before it is asked again. */
 const LATEST_VERSION_TTL_MS = 60 * 60 * 1000;
@@ -44,7 +46,7 @@ type CliUpdater = {
 // installed (npm, a native installer, Homebrew, ...), which a blanket
 // `npm install -g` does not: on a native or Homebrew install it would add a
 // second copy that PATH may not even pick. Codex is absent on purpose: chats
-// run the @openai/codex build CloudCLI depends on, so it changes with CloudCLI.
+// use a separate managed install when enabled; otherwise Codex remains bundled.
 const CLI_UPDATERS: Partial<Record<LLMProvider, CliUpdater>> = {
   claude: {
     // undefined only on Windows when no CLI resolves: the SDK then runs its bundled binary.
@@ -87,7 +89,7 @@ type ProviderCliStatus = {
   provider: LLMProvider;
   installed: boolean;
   installedVersion: string | null;
-  /** The registry's `latest` release, or null when the CLI is not on npm or the lookup failed. */
+  /** Latest official release, or null when the release lookup is unavailable. */
   latestVersion: string | null;
   updateAvailable: boolean;
   /** What the update action runs, e.g. `claude update`; null when it is unavailable. */
@@ -129,6 +131,8 @@ type ProviderCliServiceDependencies = {
   listBusyProviders(): Promise<LLMProvider[]>;
   fetch: typeof fetch;
   platformMode: boolean;
+  /** Enable isolated installations; native updater behavior remains available for unmanaged hosts. */
+  managedUpdates: boolean;
   now(): number;
   latestVersionTimeoutMs: number;
   updateTimeoutMs: number;
@@ -140,6 +144,7 @@ const defaultDependencies: ProviderCliServiceDependencies = {
   listBusyProviders: async () => (await sessionsService.listRunningSessions()).map((session) => session.provider),
   fetch: (input, init) => fetch(input, init),
   platformMode: IS_PLATFORM,
+  managedUpdates: process.env.MINTCLI_MANAGED_CLIS === '1' && ['linux', 'darwin'].includes(process.platform),
   now: () => Date.now(),
   latestVersionTimeoutMs: LATEST_VERSION_TIMEOUT_MS,
   updateTimeoutMs: UPDATE_TIMEOUT_MS,
@@ -324,12 +329,18 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
   const lastUpdateResults = new Map<LLMProvider, ProviderCliUpdateResult>();
 
   const fetchLatestVersion = async (npmPackage: string): Promise<string | null> => {
-    const response = await dependencies.fetch(`${NPM_REGISTRY_URL}/${npmPackage.replace('/', '%2F')}/latest`, {
+    const source = npmPackage === 'cursor' ? 'https://cursor.com/install'
+      : npmPackage === 'antigravity' ? `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/${process.platform === 'darwin' ? 'darwin' : 'linux'}_${process.arch === 'x64' ? 'amd64' : process.arch}.json`
+      : `${NPM_REGISTRY_URL}/${npmPackage.replace('/', '%2F')}/latest`;
+    const response = await dependencies.fetch(source, {
       headers: { accept: 'application/json' },
       signal: AbortSignal.timeout(dependencies.latestVersionTimeoutMs),
     });
     if (!response.ok) {
       return null;
+    }
+    if (npmPackage === 'cursor') {
+      return (await response.text()).match(/downloads\.cursor\.com\/lab\/([\w.-]+)\//)?.[1] ?? null;
     }
     const manifest = (await response.json()) as { version?: unknown } | null;
     const version = typeof manifest?.version === 'string' ? manifest.version : null;
@@ -337,7 +348,8 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
   };
 
   /** Never throws: an unreachable registry only means no "update available" hint. */
-  const getLatestVersion = (npmPackage: string): Promise<string | null> => {
+  const getLatestVersion = (npmPackage: string, refresh = false): Promise<string | null> => {
+    if (refresh) latestVersionCache.delete(npmPackage);
     const cached = latestVersionCache.get(npmPackage);
     if (cached && cached.expiresAt > dependencies.now()) {
       return Promise.resolve(cached.version);
@@ -360,6 +372,19 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
   };
 
   const resolveUpdateCommand = (provider: LLMProvider): { command: string; args: string[] } | null => {
+    if (dependencies.managedUpdates) {
+      // Resolve from the package, never from the caller's working directory.
+      const root = findApplicationRoot(path.dirname(fileURLToPath(import.meta.url)));
+      const args = [path.join(root, 'scripts/update-provider-cli.mjs'), provider];
+      if (process.env.MINTCLI_CLI_SYSTEMD === '1' && process.platform === 'linux') {
+        // The gateway has a smaller memory budget than native package installation.
+        // Pass environment names only, so public command output cannot contain secrets.
+        const inherited = ['HOME', 'MINTCLI_CLI_ROOT', 'NODE_USE_ENV_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy']
+          .filter(name => process.env[name] !== undefined).map(name => `--setenv=${name}`);
+        return { command: 'systemd-run', args: ['--quiet', '--wait', '--pipe', '--collect', '--property=MemoryMax=1200M', '--property=TasksMax=200', '--property=RuntimeMaxSec=550s', '--property=TimeoutStopSec=10s', ...inherited, process.execPath, ...args] };
+      }
+      return { command: process.execPath, args };
+    }
     const updater = CLI_UPDATERS[provider];
     const command = updater?.resolveCommand();
     // SDK binaries must stay paired with the SDK; `claude update` would change a dependency in place.
@@ -394,7 +419,7 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
      * Installed version, newest npm release, whether this server can update
      * the CLI, and whether an update of it is running.
      */
-    async getCliStatus(providerName: LLMProvider): Promise<ProviderCliStatus> {
+    async getCliStatus(providerName: LLMProvider, refresh = false): Promise<ProviderCliStatus> {
       const provider = dependencies.resolveProvider(providerName);
       // While an updater runs, the version from just before it is reported
       // instead of probed. `--version` runs synchronously and holds up every
@@ -409,9 +434,10 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
         : update ? null : 'bundled';
 
       // Bundled CLIs still need version checks: hiding them made outdated dependencies look current.
-      const npmPackage = provider.id === 'codex' ? '@openai/codex' : CLI_UPDATERS[provider.id]?.npmPackage;
+      const npmPackage = provider.id === 'codex' ? '@openai/codex'
+        : dependencies.managedUpdates && ['cursor', 'antigravity'].includes(provider.id) ? provider.id : CLI_UPDATERS[provider.id]?.npmPackage;
       const latestVersion = installed && !dependencies.platformMode && npmPackage
-        ? await getLatestVersion(npmPackage)
+        ? await getLatestVersion(npmPackage, refresh)
         : null;
 
       // Read after the registry lookup, so a run that started meanwhile counts.
@@ -429,7 +455,9 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
         installed,
         installedVersion,
         latestVersion,
-        updateAvailable: Boolean(installedVersion && latestVersion && isNewerVersion(latestVersion, installedVersion)),
+        updateAvailable: Boolean(installedVersion && latestVersion && (provider.id === 'cursor'
+          ? /^\d{4}\.\d{2}\.\d{2}-[\w]+$/.test(installedVersion) && latestVersion !== installedVersion && latestVersion.slice(0, 10) >= installedVersion.slice(0, 10)
+          : isNewerVersion(latestVersion, installedVersion))),
         updateCommand: update && updateUnavailableReason === null ? formatCommand(update.command, update.args) : null,
         updateUnavailableReason,
         updateInProgress: Boolean(runAfterLookup),

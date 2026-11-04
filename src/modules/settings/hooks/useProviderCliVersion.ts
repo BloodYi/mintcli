@@ -29,8 +29,8 @@ type ProviderCliUpdateOutcome = {
 /** How often a row that follows a run it did not see finish asks whether the run is over. */
 const UPDATE_POLL_INTERVAL_MS = 3000;
 
-const fetchCliStatus = async (provider: AgentProvider): Promise<ProviderCliStatus> => {
-  const response = await api.providers.cliStatus(provider);
+const fetchCliStatus = async (provider: AgentProvider, refresh = false): Promise<ProviderCliStatus> => {
+  const response = await api.providers.cliStatus(provider, refresh);
   return (await readApiJson<ProviderCliStatusResponse>(response)).data;
 };
 
@@ -111,6 +111,8 @@ export function useProviderCliVersion(provider: AgentProvider) {
   // Set when the first status request failed, so the row stops saying it is
   // still checking the version.
   const [statusFailed, setStatusFailed] = useState(false);
+  // A manual check bypasses the release cache and prevents overlapping actions.
+  const [checking, setChecking] = useState(true);
   // An update run takes from seconds to minutes; this disables the button and
   // shows progress for the whole run, including one this row only follows.
   const [updating, setUpdating] = useState(false);
@@ -143,6 +145,7 @@ export function useProviderCliVersion(provider: AgentProvider) {
         }
         loaded = true;
         setStatus(initial);
+        setChecking(false);
         if (!initial.updateInProgress) {
           return;
         }
@@ -161,6 +164,7 @@ export function useProviderCliVersion(provider: AgentProvider) {
         if (cancelled) {
           return;
         }
+        setChecking(false);
         console.error(`Error loading the ${provider} CLI version:`, error);
         if (loaded) {
           // Lost track of a run this row was following.
@@ -179,6 +183,25 @@ export function useProviderCliVersion(provider: AgentProvider) {
     return () => {
       cancelled = true;
     };
+  }, [provider]);
+
+  const checkForUpdates = useCallback(async () => {
+    setChecking(true);
+    setStatusFailed(false);
+    try {
+      const current = await fetchCliStatus(provider, true);
+      if (!mountedRef.current) return;
+      setStatus(current);
+      if (current.updateInProgress) {
+        setUpdating(true);
+        const final = await waitForUpdateToEnd(provider, () => mountedRef.current);
+        if (final && mountedRef.current) { setStatus(final); setUpdateResult(final.lastUpdate); setUpdating(false); }
+      }
+    } catch {
+      if (mountedRef.current) { setStatusFailed(true); setUpdating(false); }
+    } finally {
+      if (mountedRef.current) setChecking(false);
+    }
   }, [provider]);
 
   const runUpdate = useCallback(async () => {
@@ -203,5 +226,5 @@ export function useProviderCliVersion(provider: AgentProvider) {
     }
   }, [provider]);
 
-  return { status, statusFailed, updating, updateResult, updateError, runUpdate };
+  return { status, statusFailed, checking, updating, updateResult, updateError, runUpdate, checkForUpdates };
 }

@@ -103,6 +103,7 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
       <h3 className="font-medium">统一账号管理</h3>
       <p className="text-sm text-muted-foreground">请回到聊天页，在上方“管理账号”中添加、登录和切换 agy 账号，并查看各账号额度。</p>
       <p role="status" className="text-sm text-muted-foreground">{authStatus.loading ? '正在检查 agy 连接…' : authStatus.authenticated ? `已连接${authStatus.email ? ' · ' + authStatus.email : ''}` : 'agy 尚未连接，请检查原生服务和账号授权。'}</p>
+      <ProviderCliVersion key={agent} agent={agent} installedVersion={authStatus.installedVersion ?? null} textClass="text-foreground" subtextClass="text-muted-foreground" />
       <p className="border-t border-border/50 pt-3 text-sm text-muted-foreground">agy 通过原生服务连接；权限、MCP 和技能由原生服务管理。</p>
     </div>;
   }

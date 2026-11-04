@@ -355,6 +355,10 @@
     },
     "connectionStatus": "Bağlantı Durumu",
     "cli": {
+      "checkUpdates": "Check for updates",
+      "updateNow": "Update now",
+      "checkFailed": "Could not check for updates. Please try again.",
+      "latestUnavailable": "The latest release is unavailable. Try checking again.",
       "title": "CLI sürümü",
       "checking": "Sürüm kontrol ediliyor…",
       "installed": "Kurulu: v{{version}}",

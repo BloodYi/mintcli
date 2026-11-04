@@ -21,15 +21,15 @@ const renderSettings = () => render(<AgentsSettingsTab
   codexPermissionMode="default" onCodexPermissionModeChange={vi.fn()} projects={[]}
 />);
 
-it('agy appears alongside all CLI providers and uses its native connection status without a CLI version row', async () => {
+it('agy appears alongside all CLI providers and uses its native connection status with a CLI version row', async () => {
   renderSettings();
   for (const name of ['Claude', 'Cursor', 'Codex', 'OpenCode', 'agy']) expect(screen.getByRole('button', { name })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'agy' }));
   expect(screen.getByRole('button', { name: 'agy' }).getAttribute('aria-pressed')).toBe('true');
   expect(screen.getByText('已连接 · agy@example.test')).toBeTruthy();
   expect(screen.getByText(/在上方“管理账号”中添加、登录和切换 agy 账号/)).toBeTruthy();
-  expect(screen.queryByTestId('provider-cli-version')).toBeNull();
-  expect(api.providers.cliStatus).not.toHaveBeenCalledWith('antigravity');
+  expect(screen.getByTestId('provider-cli-version')).toBeTruthy();
+  expect(api.providers.cliStatus).toHaveBeenCalledWith('antigravity', false);
   expect(screen.getAllByRole('tab')).toHaveLength(1);
 });
 

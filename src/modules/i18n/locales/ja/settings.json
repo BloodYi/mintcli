@@ -354,6 +354,10 @@
     },
     "connectionStatus": "接続状態",
     "cli": {
+      "checkUpdates": "Check for updates",
+      "updateNow": "Update now",
+      "checkFailed": "Could not check for updates. Please try again.",
+      "latestUnavailable": "The latest release is unavailable. Try checking again.",
       "title": "CLI のバージョン",
       "checking": "バージョンを確認中…",
       "installed": "インストール済み: v{{version}}",

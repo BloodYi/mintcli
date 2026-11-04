@@ -401,6 +401,10 @@
     },
     "connectionStatus": "סטטוס חיבור",
     "cli": {
+      "checkUpdates": "Check for updates",
+      "updateNow": "Update now",
+      "checkFailed": "Could not check for updates. Please try again.",
+      "latestUnavailable": "The latest release is unavailable. Try checking again.",
       "title": "גרסת CLI",
       "checking": "בודק גרסה…",
       "installed": "מותקנת: v{{version}}",

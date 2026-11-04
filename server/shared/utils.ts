@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import {
   access,
   lstat,
@@ -1460,4 +1461,31 @@ export function findApplicationRoot(startDirectory: string): string {
   return path.basename(parentDirectory) === 'dist-server'
     ? path.dirname(parentDirectory)
     : parentDirectory;
+}
+
+// ---------------------------
+//----------------- MANAGED CLI EXECUTABLES ------------
+/** Used by providers and account services to select only mintcli's isolated CLI installations. */
+export function resolveManagedCli(provider: string): string | undefined {
+  if (process.env.MINTCLI_MANAGED_CLIS !== '1') return undefined;
+  const root = process.env.MINTCLI_CLI_ROOT || path.join(os.homedir(), '.mintcli', 'cli');
+  const names: Record<string, string> = { claude: 'claude', codex: 'codex', cursor: 'cursor-agent', opencode: 'opencode', antigravity: 'agy' };
+  const name = names[provider];
+  const command = name ? path.join(root, 'bin', name) : undefined;
+  return command && fs.existsSync(command) ? command : undefined;
+}
+
+/** Used by the Codex auth, catalog and fork adapters so all probe the same launcher as chat. */
+export function resolveCodexLauncher(): string {
+  return resolveManagedCli('codex') || createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js');
+}
+
+/** Used by the account model catalog to send the installed CLI version after a managed update. */
+export function readCodexVersion(): string {
+  const managed = resolveManagedCli('codex');
+  if (managed) {
+    const root = process.env.MINTCLI_CLI_ROOT || path.join(os.homedir(), '.mintcli', 'cli');
+    return (JSON.parse(fs.readFileSync(path.join(root, 'codex/current/node_modules/@openai/codex/package.json'), 'utf8')) as { version: string }).version;
+  }
+  return (createRequire(import.meta.url)('@openai/codex/package.json') as { version: string }).version;
 }

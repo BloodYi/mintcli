@@ -400,6 +400,10 @@
     },
     "connectionStatus": "Status Koneksi",
     "cli": {
+      "checkUpdates": "Check for updates",
+      "updateNow": "Update now",
+      "checkFailed": "Could not check for updates. Please try again.",
+      "latestUnavailable": "The latest release is unavailable. Try checking again.",
       "title": "Versi CLI",
       "checking": "Memeriksa versi…",
       "installed": "Terpasang: v{{version}}",

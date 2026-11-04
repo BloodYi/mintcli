@@ -383,6 +383,10 @@
     },
     "connectionStatus": "연결 상태",
     "cli": {
+      "checkUpdates": "Check for updates",
+      "updateNow": "Update now",
+      "checkFailed": "Could not check for updates. Please try again.",
+      "latestUnavailable": "The latest release is unavailable. Try checking again.",
       "title": "CLI 버전",
       "checking": "버전 확인 중…",
       "installed": "설치됨: v{{version}}",

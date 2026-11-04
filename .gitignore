@@ -160,3 +160,7 @@ server/**/tests/file-tree-outside-*/
 *.sqlite-wal
 *.sqlite-shm
 .gh-askpass*
+
+# Python runtime cache for the private native bridge
+native/**/__pycache__/
+native/**/*.pyc

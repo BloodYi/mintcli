@@ -355,6 +355,10 @@
     },
     "connectionStatus": "連線狀態",
     "cli": {
+      "checkUpdates": "檢查更新",
+      "updateNow": "立即更新",
+      "checkFailed": "檢查更新失敗，請稍後重試。",
+      "latestUnavailable": "暫時無法取得最新版本，請重試檢查更新。",
       "title": "CLI 版本",
       "checking": "正在檢查版本…",
       "installed": "已安裝：v{{version}}",

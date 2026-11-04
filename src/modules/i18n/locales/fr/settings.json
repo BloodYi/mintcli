@@ -362,6 +362,10 @@
     },
     "connectionStatus": "Statut de la connexion",
     "cli": {
+      "checkUpdates": "Check for updates",
+      "updateNow": "Update now",
+      "checkFailed": "Could not check for updates. Please try again.",
+      "latestUnavailable": "The latest release is unavailable. Try checking again.",
       "title": "Version de la CLI",
       "checking": "Vérification de la version…",
       "installed": "Installée : v{{version}}",

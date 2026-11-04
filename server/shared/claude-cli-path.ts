@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
+import { resolveManagedCli } from './utils.js';
+
 const DEFAULT_CLAUDE_COMMAND = 'claude';
 const CLAUDE_SCRIPT_EXTENSIONS = new Set(['.cjs', '.js', '.jsx', '.mjs', '.ts', '.tsx']);
 const CLAUDE_WRAPPER_SEGMENTS = ['node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'] as const;
@@ -158,6 +160,7 @@ export function resolveClaudeCodeExecutablePath(
     readFileSync: dependencies.readFileSync ?? fs.readFileSync,
   };
 
+  configuredPath ||= resolveManagedCli('claude');
   const configuredExplicitly = Boolean(stripWrappingQuotes(configuredPath || ''));
   const normalizedPath = stripWrappingQuotes(configuredPath || DEFAULT_CLAUDE_COMMAND);
   if (deps.platform !== 'win32') {

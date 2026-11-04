@@ -53,6 +53,26 @@ npm run dev
 
 Installing the upstream npm package does not install the customizations in this repository; build this source tree to use them.
 
+## Check and update provider CLIs
+
+Open **Settings → Agents → select a provider → Account** (设置 → 智能体 → 选择引擎 → 账户). Each of the five providers has **Check for updates / 检查更新** and **Update now / 立即更新** controls. Checks query npm for Codex, Claude and OpenCode, the official Cursor installer, and the Antigravity release manifest. A manual check bypasses the version cache; failed lookups are shown as unavailable.
+
+Enable private managed installations on Linux or macOS before using the updater:
+
+```bash
+export MINTCLI_MANAGED_CLIS=1
+export MINTCLI_CLI_ROOT="$HOME/.mintcli/cli"
+export PATH="$MINTCLI_CLI_ROOT/bin:$PATH"
+npm run cli:install
+npm run server
+```
+
+Keep these variables in the server service environment. Updates install into a new provider-specific directory, validate the executable, then atomically switch its symlink. Previous releases stay available for recovery. Global npm packages and other projects are untouched. The CLI used by Codex chat, status, forks and the model catalog follows the same managed installation. Busy providers refuse updates; repeat requests share the running job and the interface recovers its result after navigation. For a systemd deployment with a small gateway memory limit, set `MINTCLI_CLI_SYSTEMD=1` to run installers in temporary units with their own memory and time limits.
+
+For Antigravity, start the private bridge with its own executable, HOME, account copies, conversation data and loopback port as described in its README, and configure `ANTIGRAVITY_WEB_URL` / `ANTIGRAVITY_ENV_FILE`. Do not attach managed updates to a different project's shared native service.
+
+Verified releases on 2026-11-04: Codex **0.166.0**, Claude Code **2.1.318**, OpenCode **1.19.5**, Cursor **2026.10.22-27dcf5f**, Antigravity **1.5.0**. The updater fetches the latest release each time; this list is a dated record.
+
 ## Cursor and OpenCode login
 
 Open **Manage Accounts** in the chat workspace and choose Cursor or OpenCode. Official login runs in an embedded terminal inside that same dialog; the previous Settings and onboarding login controls are replaced by the common account manager. These integrations use the native CLI-owned identity rather than copying credentials into a Codex profile.
@@ -74,7 +94,7 @@ See [.env.example](.env.example) for the upstream server settings. The custom in
 | `ANTIGRAVITY_ENV_FILE` | Path to the existing Antigravity environment file containing `BASIC_AUTH_USER` and `BASIC_AUTH_PASS`. Set this explicitly for your installation. |
 | `AGY_DEFAULT_PROJECT` | Default workspace for imported Antigravity conversations. Set this to your own project directory. |
 
-Antigravity support is an adapter for a separately running compatible backend. That backend, its credentials, and its account data are not bundled here. Antigravity MCP and skill configuration remain managed by its native backend.
+Antigravity support uses a separately running compatible backend. A source snapshot for a private bridge is included in [native/antigravity-bridge](native/antigravity-bridge/README.md); credentials and account data remain local. Antigravity MCP and skill configuration remain managed by its native backend.
 
 Saved credentials, account profiles, databases, conversation files, local proxy configuration, and deployment backups are runtime data and are not part of this repository.
 

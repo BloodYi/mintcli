@@ -464,8 +464,8 @@ export const api = {
     capabilities: () => get('/api/providers/capabilities'),
     authStatus: (provider: string) =>
       get(`/api/providers/${encodeURIComponent(provider)}/auth/status`),
-    cliStatus: (provider: string) =>
-      get(`/api/providers/${encodeURIComponent(provider)}/cli`),
+    cliStatus: (provider: string, refresh = false) =>
+      get(`/api/providers/${encodeURIComponent(provider)}/cli${refresh ? '?refresh=true' : ''}`),
     updateCli: (provider: string) =>
       post(`/api/providers/${encodeURIComponent(provider)}/cli/update`),
     claudeSettingsPermissions: () => get('/api/providers/claude/settings-permissions'),
