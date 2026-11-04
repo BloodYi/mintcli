@@ -377,11 +377,9 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
       const root = findApplicationRoot(path.dirname(fileURLToPath(import.meta.url)));
       const args = [path.join(root, 'scripts/update-provider-cli.mjs'), provider];
       if (process.env.MINTCLI_CLI_SYSTEMD === '1' && process.platform === 'linux') {
-        // The gateway has a smaller memory budget than native package installation.
-        // Pass environment names only, so public command output cannot contain secrets.
-        const inherited = ['HOME', 'MINTCLI_CLI_ROOT', 'NODE_USE_ENV_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy']
-          .filter(name => process.env[name] !== undefined).map(name => `--setenv=${name}`);
-        return { command: 'systemd-run', args: ['--quiet', '--wait', '--pipe', '--collect', '--property=MemoryMax=1200M', '--property=TasksMax=200', '--property=RuntimeMaxSec=550s', '--property=TimeoutStopSec=10s', ...inherited, process.execPath, ...args] };
+        // A scope inherits the gateway environment without putting proxy values
+        // into the command. It also stays in the subprocess group killed by our timeout.
+        return { command: 'systemd-run', args: ['--quiet', '--scope', '--property=MemoryMax=1200M', '--property=TasksMax=200', process.execPath, ...args] };
       }
       return { command: process.execPath, args };
     }
