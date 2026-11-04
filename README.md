@@ -73,6 +73,18 @@ For Antigravity, start the private bridge with its own executable, HOME, account
 
 Verified releases on 2026-11-04: Codex **0.166.0**, Claude Code **2.1.318**, OpenCode **1.19.5**, Cursor **2026.10.22-27dcf5f**, Antigravity **1.5.0**. The updater fetches the latest release each time; this list is a dated record.
 
+## Add an account through official authorization
+
+In **Manage Accounts → Add account / API** (管理账号 → 添加账号 / API), choose the CLI and click **Open official authorization / Add account** (打开官方授权 / 添加账号). The official page opens directly; the same link stays visible in the dialog if the browser blocks a popup. A preliminary manual save is no longer required.
+
+- **Codex:** Complete ChatGPT browser authorization, then paste the returned code or the full localhost callback address into the dialog if the browser cannot reach the server's callback. The server validates the state and forwards it only to the CLI's fixed loopback callback. Device-code login is also available.
+- **Claude:** Paste the code returned by the official Claude page into the dialog.
+- **agy:** Complete Google OAuth and paste the returned authorization code. The CLI runs in a fresh private home; only after success is the new account imported without switching the selected account.
+- **Cursor:** Confirm the official browser login; the CLI completes automatically.
+- **OpenCode:** The quick flow uses its native ChatGPT device authorization. Other providers remain available through the embedded native login terminal.
+
+Cursor and OpenCode retain their CLI-owned current identity rather than introducing a separate multi-profile account store. Existing account selection stays unchanged when a new isolated Codex, Claude or agy account is added. Cancelled or failed attempts never count an old credential as a new successful login. Access and refresh tokens remain on the server; only authorization links, one-time codes and status are returned to the browser.
+
 ## Cursor and OpenCode login
 
 Open **Manage Accounts** in the chat workspace and choose Cursor or OpenCode. Official login runs in an embedded terminal inside that same dialog; the previous Settings and onboarding login controls are replaced by the common account manager. These integrations use the native CLI-owned identity rather than copying credentials into a Codex profile.

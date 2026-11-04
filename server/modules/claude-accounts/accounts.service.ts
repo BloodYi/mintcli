@@ -117,7 +117,7 @@ export const claudeAccounts = {
   },
   loginStatus(id: string) {
     const account = resolve(id); const login = logins.get(id);
-    return { status: login?.status || (publicAccount(account).authorized ? 'authorized' : 'idle'), url: login?.url, authorized: login?.status === 'pending' ? false : publicAccount(account).authorized };
+    return { status: login?.status || (publicAccount(account).authorized ? 'authorized' : 'idle'), url: login?.url, authorized: login ? login.status === 'authorized' : publicAccount(account).authorized };
   },
   startLogin(id: string) {
     resolve(id);
@@ -134,7 +134,7 @@ export const claudeAccounts = {
         try { const url = new URL(candidate); if (['claude.ai', 'claude.com', 'console.anthropic.com', 'platform.claude.com'].includes(url.hostname) && /oauth|authorize/.test(url.pathname)) state.url = url.href; } catch { /* Ignore terminal fragments. */ }
       }
     });
-    child.onExit(() => { clearTimeout(state.timer); if (state.status === 'cancelled') return; try { state.status = publicAccount(resolve(id)).authorized ? 'authorized' : 'failed'; void refreshIdentity(id); } catch { state.status = 'cancelled'; } });
+    child.onExit(({ exitCode }) => { clearTimeout(state.timer); if (state.status === 'cancelled') return; try { state.status = exitCode === 0 && publicAccount(resolve(id)).authorized ? 'authorized' : 'failed'; void refreshIdentity(id); } catch { state.status = 'cancelled'; } });
     return this.loginStatus(id);
   },
   submitCode(id: string, code: unknown) {

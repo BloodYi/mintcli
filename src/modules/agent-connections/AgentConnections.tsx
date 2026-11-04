@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, readApiJson } from '@/shared/api';
 import { Dialog, DialogContent, DialogTitle } from '@/shared/ui';
-import type { AgentConnectionChoice, AgentConnectionsCatalog, LLMProvider } from '@/shared/types';
+import type { AgentConnectionChoice, AgentConnectionsCatalog, LLMProvider, OfficialAccountLogin } from '@/shared/types';
 import { CliAccountAccess } from '@/modules/agent-connections/CliAccountAccess';
+import { AccountAuthorization } from '@/modules/agent-connections/AccountAuthorization';
+import { NativeOfficialLogin } from '@/modules/agent-connections/NativeOfficialLogin';
+import { useAuthorizationPopup } from '@/modules/agent-connections/hooks/useAuthorizationPopup';
 import { AccountQuota } from '@/modules/agent-connections/AccountQuota';
 
 type Form = { id: string; kind: string; name: string; credentials: string; baseUrl: string; apiKey: string; protocol: string; model: string };
-type Login = { status: string; url?: string; code?: string; authorized?: boolean };
+type Login = OfficialAccountLogin;
 const empty: Form = { id: '', kind: 'chatgpt', name: '', credentials: '', baseUrl: '', apiKey: '', protocol: 'responses', model: '' };
 const labels: Record<string, string> = { chatgpt: 'Codex', api: '第三方 API', claude: 'Claude', antigravity: 'agy', cursor: 'Cursor', opencode: 'OpenCode' };
 /** The only account picker and manager in the shared workbench. Models remain in the existing composer. */
@@ -21,6 +24,7 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
   const [notice, setNotice] = useState('');
   const [login, setLogin] = useState<Login | null>(null);
   const [code, setCode] = useState('');
+  const { open: openAuthorization, navigate: showAuthorization, closePlaceholder } = useAuthorizationPopup();
   const initialized = useRef(false);
   const requestId = useRef(0);
   const initialProvider = useRef(onProviderChange);
@@ -31,15 +35,17 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
     || catalog.connections.find(item => item.provider === provider && item.current)
     || catalog.connections.find(item => item.provider === provider);
   useEffect(() => { onChoice(active || null); }, [active, onChoice]);
+  useEffect(() => { showAuthorization(login?.url); }, [login?.url, showAuthorization]);
   useEffect(() => {
-    if (!open || !form.id || !login || !['starting', 'pending'].includes(login.status)) return;
+    if (!open || !form.id || !login || !['starting', 'pending', 'completing'].includes(login.status)) return;
+    let cancelled = false;
     const timer = setInterval(() => {
       const request = form.kind === 'claude' ? api.agentConnections.claudeLoginStatus(form.id) : api.codexConnections.loginStatus(form.id);
-      void request.then(readApiJson<Login>).then(value => { setLogin(value); if (value.authorized) { setNotice('官方授权成功'); void reload(); window.dispatchEvent(new Event('codex-account-updated')); } }).catch(() => setNotice('授权状态暂时无法读取，请重试'));
+      void request.then(readApiJson<Login>).then(value => { if (cancelled) return; setLogin({ ...value, acceptsCode: form.kind === 'claude' ? value.status === 'pending' : value.acceptsCode }); if (['error', 'failed', 'expired', 'cancelled'].includes(value.status)) closePlaceholder(); if (value.authorized) { setNotice('官方授权成功'); void reload(); window.dispatchEvent(new Event('codex-account-updated')); } }).catch(() => setNotice('授权状态暂时无法读取，请重试'));
     }, 2000);
-    return () => clearInterval(timer);
-  }, [form.id, form.kind, login, open, reload]);
-  const run = async (action: () => Promise<void>) => { setPending(true); setNotice(''); try { await action(); } catch (error) { setNotice(error instanceof Error ? error.message : '操作失败'); } finally { setPending(false); } };
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [form.id, form.kind, login?.status, open, reload, closePlaceholder]);
+  const run = async (action: () => Promise<void>) => { setPending(true); setNotice(''); try { await action(); } catch (error) { closePlaceholder(); setNotice(error instanceof Error ? error.message : '操作失败'); } finally { setPending(false); } };
   const edit = (item?: AgentConnectionChoice) => { setForm(item ? { ...empty, id: item.accountId, kind: item.kind, name: item.name, baseUrl: item.baseUrl || '', protocol: item.protocol || 'responses', model: item.model || '' } : { ...empty }); setLogin(null); setCode(''); setNotice(''); setOpen(true); };
   const select = async (id: string) => { ++requestId.current; const result = await readApiJson<AgentConnectionsCatalog>(await api.agentConnections.select(id, sessionId)); ++requestId.current; setCatalog(result); const item = result.connections.find(value => value.id === id); if (item) onProviderChange(item.provider); window.dispatchEvent(new Event('codex-account-updated')); };
   const field = (key: keyof Form, value: string) => setForm(previous => ({ ...previous, [key]: value }));
@@ -48,6 +54,22 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
   const nativeCli = form.kind === 'cursor' || form.kind === 'opencode' ? form.kind : null;
   const onNativeChanged = useCallback(async () => { await reload(true); window.dispatchEvent(new Event('codex-account-updated')); }, [reload]);
   const selectedForm = catalog.connections.find(item => item.accountId === form.id && item.kind === form.kind);
+  const beginOfficialLogin = (method: 'browser' | 'device' = 'browser') => {
+    openAuthorization(); setLogin(null); setCode('');
+    void run(async () => {
+      let id = form.id;
+      const name = form.name.trim() || (form.kind === 'claude' ? 'Claude 新账号' : 'Codex 新账号');
+      if (!id) {
+        const saved = await readApiJson<{ id: string }>(await (form.kind === 'claude'
+          ? api.agentConnections.saveClaude({ name })
+          : api.codexConnections.save({ name, kind: 'chatgpt' })));
+        id = saved.id; setForm(previous => ({ ...previous, id, name, credentials: '' })); await reload();
+      }
+      const value = await readApiJson<Login>(await (form.kind === 'claude' ? api.agentConnections.claudeLogin(id) : api.codexConnections.login(id, method)));
+      setLogin({ ...value, acceptsCode: form.kind === 'claude' ? value.status === 'pending' : value.acceptsCode });
+    }).catch(() => closePlaceholder());
+  };
+
   return <>
     <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs" data-testid="agent-connections">
       <label htmlFor="agent-account">账号</label>
@@ -67,6 +89,7 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
         <p id="accounts-help" className="text-sm text-muted-foreground">Codex、Claude、Cursor、OpenCode、agy 和第三方 API 都在这里添加和切换。模型在聊天输入框旁选择。</p>
         <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2" aria-label="所有账号">{catalog.connections.map(item => <button type="button" key={item.id} className={button + ' text-left break-all'} onClick={() => edit(item)}><strong>{labels[item.kind]} · {item.name}</strong><span className="block text-xs text-muted-foreground">{item.email || (item.authorized ? '已保存授权' : '等待登录')}{active?.id === item.id ? ' · 当前使用' : ''}</span></button>)}</div>
         <button type="button" className={button} onClick={() => edit()}>＋ 添加账号 / API</button>
+        {(!nativeCli || !form.id) && <label className="block text-sm">账号类型<select className={input} disabled={Boolean(form.id)} value={form.kind} onChange={event => { field('kind', event.target.value); setLogin(null); setCode(''); }}><option value="chatgpt">Codex / ChatGPT</option><option value="claude">Claude 官方账号</option><option value="cursor">Cursor 原生账号</option><option value="opencode">OpenCode 原生账号</option><option value="antigravity">Antigravity · agy</option><option value="api">第三方模型 API</option></select></label>}
         {nativeCli ? <><CliAccountAccess key={nativeCli} provider={nativeCli} disabled={disabled} onChanged={onNativeChanged} />{selectedForm && <AccountQuota key={selectedForm.id + String(selectedForm.authorized)} id={selectedForm.id} />}{selectedForm && <button type="button" className={button} disabled={pending || disabled} onClick={() => void run(async () => { await select(selectedForm.id); setNotice('已切换账号'); })}>使用此账号</button>}</> : <form className="grid gap-3" onSubmit={event => { event.preventDefault(); void run(async () => {
           if (form.kind === 'antigravity') {
             if (form.id) { setNotice('现有 agy 账号可直接使用；重新导入授权可更新账号资料'); return; }
@@ -80,9 +103,9 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
           }
           await reload(); field('credentials', ''); setNotice('已保存；可在上方切换到这个账号'); window.dispatchEvent(new Event('codex-account-updated'));
         }); }}>
-          <label className="text-sm">账号类型<select className={input} disabled={Boolean(form.id)} value={form.kind} onChange={event => field('kind', event.target.value)}><option value="chatgpt">Codex / ChatGPT</option><option value="claude">Claude 官方账号</option><option value="antigravity">Antigravity · agy</option><option value="api">第三方模型 API</option></select></label>
+
           <label className="text-sm">名称<input required maxLength={80} className={input} value={form.name} onChange={event => field('name', event.target.value)} /></label>
-          {form.kind === 'antigravity' && !form.id && <label className="text-sm">agy 原生账号授权 JSON<textarea required rows={5} className={input + ' font-mono'} autoComplete="off" value={form.credentials} onChange={event => field('credentials', event.target.value)} /></label>}
+          {form.kind === 'antigravity' && !form.id && <><NativeOfficialLogin provider="antigravity" name={form.name} disabled={pending || disabled} onChanged={onNativeChanged} /><details><summary className="cursor-pointer text-sm">已有 agy 凭证文件？手动导入</summary><label className="text-sm">agy 原生账号授权 JSON<textarea rows={5} className={input + ' font-mono'} autoComplete="off" value={form.credentials} onChange={event => field('credentials', event.target.value)} /></label></details></>}
           {form.kind === 'claude' && <details><summary className="cursor-pointer text-sm">已有 Claude 原生登录文件？可导入</summary><label className="block text-sm">.credentials.json 内容<textarea rows={4} className={input + ' font-mono'} autoComplete="off" value={form.credentials} onChange={event => field('credentials', event.target.value)} /></label><p className="text-xs text-muted-foreground">也可以先保存账号，再点“官方登录”。授权资料只保存在服务器。</p></details>}
           {form.kind === 'api' && <>
             <label className="text-sm">API 地址<input type="url" required className={input} value={form.baseUrl} onChange={event => field('baseUrl', event.target.value)} /></label>
@@ -91,14 +114,20 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
             <label className="text-sm">默认模型<input className={input} value={form.model} placeholder="服务商提供的模型 ID" onChange={event => field('model', event.target.value)} /></label>
             <p className="text-xs text-muted-foreground">服务商没有提供统一的余额查询方式时，额度会显示暂不可用。</p>
           </>}
+          {['chatgpt', 'claude'].includes(form.kind) && !form.id && <p className="text-xs text-muted-foreground">无需先保存账号，直接点击“打开官方授权 / 添加账号”即可。</p>}
           <div className="flex flex-wrap gap-2">
             <button type="submit" className={button + ' bg-primary text-primary-foreground'} disabled={pending}>{pending ? '处理中…' : '保存账号'}</button>
             {selectedForm && <button type="button" className={button} disabled={pending || disabled} onClick={() => void run(async () => { await select(selectedForm.id); setNotice('已切换账号'); })}>使用此账号</button>}
-            {form.id && ['chatgpt', 'claude'].includes(form.kind) && <button type="button" className={button} disabled={pending || disabled} onClick={() => void run(async () => { setLogin(await readApiJson<Login>(await (form.kind === 'claude' ? api.agentConnections.claudeLogin(form.id) : api.codexConnections.login(form.id)))); })}>官方登录 / 重新授权</button>}
+            {['chatgpt', 'claude'].includes(form.kind) && <button type="button" className={button + ' bg-primary text-primary-foreground'} disabled={pending || disabled || Boolean(login && ['starting', 'pending', 'completing'].includes(login.status))} onClick={() => beginOfficialLogin()}>{form.id ? '官方登录 / 重新授权' : '打开官方授权 / 添加账号'}</button>}
             {form.id && form.kind !== 'antigravity' && <button type="button" className={button + ' text-destructive'} disabled={pending || disabled} onClick={() => void run(async () => { await readApiJson(await (form.kind === 'claude' ? api.agentConnections.removeClaude(form.id) : api.codexConnections.remove(form.id))); setForm({ ...empty }); await reload(); setNotice('账号已移除，聊天记录保留'); })}>移除账号</button>}
           </div>
         </form>}
-        {!nativeCli && login && <div className="grid gap-2 rounded border border-border p-3 text-sm" role="status"><p>授权状态：{login.authorized ? '已登录' : login.status}</p>{login.url && <a className="text-primary underline" href={login.url} target="_blank" rel="noopener noreferrer">打开官方授权页面</a>}{login.code && <p className="select-all font-mono text-lg">{login.code}</p>}{form.kind === 'claude' && login.status === 'pending' && <><label>授权页面返回的验证码<input className={input} value={code} autoComplete="off" onChange={event => setCode(event.target.value)} /></label><button type="button" disabled={pending || !code.trim()} className={button} onClick={() => void run(async () => { setLogin(await readApiJson<Login>(await api.agentConnections.claudeLoginCode(form.id, code))); setCode(''); })}>提交授权码</button></>}{['starting', 'pending'].includes(login.status) && <button type="button" className={button} onClick={() => void run(async () => { await (form.kind === 'claude' ? api.agentConnections.cancelClaudeLogin(form.id) : api.codexConnections.cancelLogin(form.id)); setLogin(null); })}>取消授权</button>}</div>}
+        {!nativeCli && login && <AccountAuthorization login={login} code={code} busy={pending} onCode={setCode}
+          hint={form.kind === 'claude' ? '在官方网页完成授权，复制返回的授权码并粘贴到下方。' : login.method === 'device' ? '将设备验证码输入官方网页，完成确认后这里会自动添加账号。' : '在官方网页完成授权。如跳转 localhost 后无法打开，请将地址栏完整回调地址或授权码粘贴到下方。'}
+          onSubmit={() => void run(async () => { const value = await readApiJson<Login>(await (form.kind === 'claude' ? api.agentConnections.claudeLoginCode(form.id, code.trim()) : api.codexConnections.loginCode(form.id, code.trim()))); setLogin({ ...value, acceptsCode: form.kind === 'claude' ? value.status === 'pending' : value.acceptsCode }); setCode(''); if (value.authorized) { await reload(); window.dispatchEvent(new Event('codex-account-updated')); } })}
+          onCancel={() => void run(async () => { await (form.kind === 'claude' ? api.agentConnections.cancelClaudeLogin(form.id) : api.codexConnections.cancelLogin(form.id)); setLogin(null); setCode(''); closePlaceholder(); })} />}
+        {form.kind === 'chatgpt' && (!login || !['starting', 'pending', 'completing'].includes(login.status)) && <button type="button" className="text-xs text-muted-foreground underline" disabled={pending || disabled} onClick={() => beginOfficialLogin('device')}>改用设备验证码登录</button>}
+
         {notice && <p role="status" className="text-sm">{notice}</p>}
       </DialogContent>
     </Dialog>

@@ -5,10 +5,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import type { ChildProcess } from 'node:child_process';
 import { lookup } from 'node:dns/promises';
 
-import { AppError } from '@/shared/index.js';
+import { AppError, resolveManagedCli, stripAnsiSequences } from '@/shared/index.js';
 import { readAccountQuota } from './quota.service.js';
 
 type Connection = {
@@ -17,7 +18,8 @@ type Connection = {
   protocol?: 'responses' | 'chat_completions';
 };
 type Store = { activeId: string; connections: Connection[] };
-type Login = { status: string; url?: string; code?: string; process?: ChildProcess };
+type Login = { status: string; method: 'browser' | 'device'; url?: string; code?: string; state?: string; redirectUri?: string; expiresAt: number; process?: ChildProcess };
+const BROWSER_LOGIN_PORT = 1455;
 const logins = new Map<string, Login>();
 const root = () => process.env.CODEX_CONNECTIONS_ROOT || path.join(os.homedir(), 'connections');
 const storePath = () => path.join(root(), 'store.json');
@@ -165,31 +167,105 @@ export const connectionService = {
   },
   loginStatus(id: string) {
     const item = connection(id), login = logins.get(id);
-    return { status: login?.status || 'idle', url: login?.url, code: login?.code, authorized: !login?.process && publicConnection(item).authorized };
+    return { status: login?.status || 'idle', method: login?.method, url: login?.url, code: login?.code,
+      acceptsCode: login?.method === 'browser' && login.status === 'pending', expiresAt: login?.expiresAt,
+      authorized: login ? login.status === 'authorized' : publicConnection(item).authorized };
   },
-  startLogin(id: string) {
+  async startLogin(id: string, method: 'browser' | 'device' = 'browser') {
     const item = connection(id);
-    if (item.kind !== 'chatgpt') failure('仅 ChatGPT 账号需要设备授权');
-    if (logins.get(id)?.process) return this.loginStatus(id);
-    const child = spawn('codex', ['login', '--device-auth'], { env: environment(item.home), stdio: ['ignore', 'pipe', 'pipe'] });
-    const login: Login = { status: 'starting', process: child };
+    if (item.kind !== 'chatgpt') failure('仅 ChatGPT 账号需要官方授权');
+    if (['starting', 'pending', 'completing'].includes(logins.get(id)?.status || '')) return this.loginStatus(id);
+    if (method === 'browser' && [...logins.values()].some(login => login.method === 'browser' && ['starting', 'pending', 'completing'].includes(login.status))) {
+      failure('已有一个 Codex 浏览器授权正在进行，请完成或取消后再添加其他账号', 409);
+    }
+    const login: Login = { status: 'starting', method, expiresAt: Date.now() + 15 * 60000 };
     logins.set(id, login);
+    if (method === 'browser') {
+      // The native CLI cancels an existing login listener when its port is occupied.
+      // Check without sending requests so this workbench cannot cancel another project's authorization.
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const probe = createServer();
+          probe.once('error', () => reject(new AppError('本机已有其他浏览器授权使用回调端口，请完成后重试，或改用设备验证码登录', { code: 'CODEX_CALLBACK_BUSY', statusCode: 409 })));
+          probe.listen(BROWSER_LOGIN_PORT, '127.0.0.1', () => probe.close(() => resolve()));
+        });
+      } catch (error) { login.status = 'error'; throw error; }
+    }
+    if (login.status === 'cancelled') return this.loginStatus(id);
+    const child = spawn(resolveManagedCli('codex') || 'codex', ['login', ...(method === 'device' ? ['--device-auth'] : []), '-c', 'cli_auth_credentials_store="file"'], {
+      env: { ...environment(item.home), BROWSER: '/bin/true' }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    login.process = child;
     let output = '';
     const consume = (chunk: Buffer) => {
-      output = (output + chunk.toString()).replace(/\x1b\[[0-9;]*m/g, '').slice(-16000);
-      login.url = output.match(/https:\/\/(?:auth\.openai\.com|chatgpt\.com)\/(?:codex\/device|auth\/device|device)\b/)?.[0];
-      login.code = output.match(/\b[A-Z0-9]{3,8}-[A-Z0-9]{3,8}(?:-[A-Z0-9]{3,8})?\b/)?.[0];
-      if (login.url && login.code) login.status = 'pending';
+      output = stripAnsiSequences(output + chunk.toString()).slice(-24000);
+      for (const match of output.matchAll(/https:\/\/[^\s<>\x00-\x1f]+/g)) {
+        try {
+          const url = new URL(match[0]);
+          if (!['auth.openai.com', 'chatgpt.com'].includes(url.hostname)) continue;
+          if (method === 'browser' && /\/oauth\/authorize$/.test(url.pathname)) {
+            const redirect = new URL(url.searchParams.get('redirect_uri') || '');
+            if (redirect.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(redirect.hostname) || redirect.port !== String(BROWSER_LOGIN_PORT) || redirect.pathname !== '/auth/callback') continue;
+            login.url = url.href; login.state = url.searchParams.get('state') || undefined; login.redirectUri = redirect.href;
+          } else if (method === 'device' && /\/(?:codex\/device|auth\/device|device)$/.test(url.pathname)) login.url = url.href;
+        } catch { /* Ignore wrapped or incomplete terminal URLs. */ }
+      }
+      if (method === 'device') login.code = output.match(/\b[A-Z0-9]{3,8}-[A-Z0-9]{3,8}(?:-[A-Z0-9]{3,8})?\b/)?.[0];
+      if (login.url && (method === 'browser' ? login.state : login.code)) login.status = 'pending';
     };
     child.stdout?.on('data', consume); child.stderr?.on('data', consume);
     child.on('error', () => { login.status = 'error'; login.process = undefined; });
-    child.on('close', code => { login.status = code === 0 && publicConnection(item).authorized ? 'logged_in' : 'error'; login.process = undefined; });
-    const timeout = setTimeout(() => child.kill(), 15 * 60000); timeout.unref();
+    child.on('close', code => {
+      if (!['cancelled', 'expired'].includes(login.status)) login.status = code === 0 && publicConnection(item).authorized ? 'authorized' : 'error';
+      login.process = undefined;
+    });
+    const timeout = setTimeout(() => { login.status = 'expired'; child.kill(); }, 15 * 60000); timeout.unref();
     child.on('close', () => clearTimeout(timeout));
     return this.loginStatus(id);
   },
+  async submitLoginCode(id: string, value: unknown) {
+    connection(id);
+    const login = logins.get(id);
+    if (!login?.process || login.method !== 'browser' || login.status !== 'pending' || !login.state || !login.redirectUri || login.expiresAt < Date.now()) failure('授权已结束或过期，请重新打开官方授权');
+    if (typeof value !== 'string' || !value.trim() || value.length > 8192 || /[\x00-\x20\x7f]/.test(value.trim())) failure('请粘贴官方授权返回的完整地址或授权码');
+    const text = value.trim();
+    const callback = new URL(login.redirectUri);
+    let code = text;
+    if (/^https?:/i.test(text)) {
+      let received: URL;
+      try { received = new URL(text); } catch { return failure('回调地址格式不正确'); }
+      if (received.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(received.hostname) || received.port !== String(BROWSER_LOGIN_PORT) || received.pathname !== '/auth/callback' || received.username || received.password || received.hash || received.searchParams.get('state') !== login.state) failure('回调地址与本次授权不匹配，请重新打开当前授权链接');
+      code = received.searchParams.get('code') || '';
+    }
+    if (!code || code.length > 4096 || /[\s\x00-\x1f]/.test(code)) failure('回调中没有找到有效的授权码');
+    callback.hostname = '127.0.0.1'; callback.searchParams.set('code', code); callback.searchParams.set('state', login.state);
+    // The destination comes only from the CLI's fixed loopback callback, never from pasted input.
+    login.status = 'completing';
+    try {
+      const response = await fetch(callback, { redirect: 'manual', signal: AbortSignal.timeout(30000) });
+      const location = response.headers.get('location');
+      await response.body?.cancel();
+      if (response.status >= 400) failure('官方授权码未通过验证，请检查是否使用了本次授权返回的地址');
+      if (response.status >= 300 && response.status < 400 && location) {
+        const target = new URL(location, callback);
+        if (target.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(target.hostname) && target.port === String(BROWSER_LOGIN_PORT) && target.pathname === '/success' && !target.username && !target.password) {
+          // Codex waits for its local success page before exiting. The redirect query
+          // can contain credentials: request only the fixed path, never expose or forward it.
+          const success = await fetch(`http://127.0.0.1:${BROWSER_LOGIN_PORT}/success`, { redirect: 'manual', signal: AbortSignal.timeout(10000) });
+          await success.body?.cancel();
+          if (success.status >= 400) failure('CLI 尚未确认授权完成，请检查登录状态');
+        }
+      }
+    } catch (error) {
+      if (login.process && login.status === 'completing') login.status = 'pending';
+      if (error instanceof AppError) throw error;
+      failure('CLI 暂时未能完成授权，请稍后检查登录状态或重新授权');
+    }
+    return this.loginStatus(id);
+  },
   cancelLogin(id: string) {
-    const login = logins.get(id); login?.process?.kill(); logins.delete(id);
+    connection(id);
+    const login = logins.get(id); if (login) { login.status = 'cancelled'; login.process?.kill(); }
     return { status: 'cancelled' };
   },
   async quota(id: string) {

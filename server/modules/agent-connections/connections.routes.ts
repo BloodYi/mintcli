@@ -1,9 +1,21 @@
 import express from 'express';
 import { claudeAccounts } from '@/modules/claude-accounts/index.js';
 import { AppError, asyncHandler } from '@/shared/index.js';
+import { officialLoginService } from './official-login.service.js';
+import type { LLMProvider } from '@/shared/types.js';
 import { agentConnectionsService } from './connections.service.js';
 
 const router = express.Router();
+router.post('/official-logins', asyncHandler(async (req, res) => {
+  const provider = req.body?.provider;
+  const name = req.body?.name ?? '';
+  if (!['cursor', 'opencode', 'antigravity'].includes(provider) || typeof name !== 'string' || name.length > 80) throw new AppError('官方账号类型或名称无效', { code: 'INVALID_ACCOUNT_LOGIN', statusCode: 400 });
+  res.json(await officialLoginService.start(provider as LLMProvider, name.trim()));
+}));
+router.get('/official-logins/:flowId', asyncHandler(async (req, res) => { res.json(officialLoginService.status(String(req.params.flowId))); }));
+router.post('/official-logins/:flowId/code', asyncHandler(async (req, res) => { res.json(officialLoginService.submit(String(req.params.flowId), req.body?.code)); }));
+router.delete('/official-logins/:flowId', asyncHandler(async (req, res) => { res.json(officialLoginService.cancel(String(req.params.flowId))); }));
+
 router.get('/', asyncHandler(async (_req, res) => { res.json(await agentConnectionsService.catalog(_req.query.refresh === 'true')); }));
 router.post('/:id/select', asyncHandler(async (req, res) => {
   const sessionId = req.body?.sessionId;

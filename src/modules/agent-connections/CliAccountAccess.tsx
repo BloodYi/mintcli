@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { NativeOfficialLogin } from '@/modules/agent-connections/NativeOfficialLogin';
 import { StandaloneShell } from '@/modules/standalone-shell';
 import { api, readApiJson } from '@/shared/api';
 
@@ -26,8 +27,10 @@ export function CliAccountAccess({ provider, disabled, onChanged }: { provider: 
   return <section className="space-y-3 rounded-lg border border-border p-3" aria-label={`${names[provider]} 官方账号`}>
     <h3 className="font-medium">{names[provider]} 官方账号</h3>
     <p role="status" className="text-sm text-muted-foreground">{busy ? '正在检查登录…' : !status ? error : !status.installed ? 'CLI 尚未安装' : status.authenticated ? `已登录${status.email ? ' · ' + status.email : ''}` : '未登录'}</p>
+    <p className="text-xs text-muted-foreground">此 CLI 使用原生当前账号；完成新的官方授权后会更新该 CLI 的登录身份。</p>
+    <NativeOfficialLogin provider={provider} disabled={disabled || busy || !status?.installed} onChanged={complete} />
     <div className="flex flex-wrap gap-2">
-      <button type="button" disabled={disabled || busy || !status?.installed} className="rounded border border-border px-3 py-2 text-sm disabled:opacity-50" onClick={() => setLoggingIn(true)}>官方登录 / 重新授权</button>
+      <button type="button" disabled={disabled || busy || !status?.installed} className="rounded border border-border px-3 py-2 text-sm disabled:opacity-50" onClick={() => setLoggingIn(true)}>使用原生登录终端（其他方式）</button>
       <button type="button" disabled={busy} className="rounded border border-border px-3 py-2 text-sm disabled:opacity-50" onClick={() => void complete()}>检查登录状态</button>
       {loggingIn && <button type="button" className="rounded border border-border px-3 py-2 text-sm" onClick={() => setLoggingIn(false)}>关闭登录终端</button>}
     </div>

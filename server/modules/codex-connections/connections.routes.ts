@@ -1,5 +1,5 @@
 import express from 'express';
-import { asyncHandler } from '@/shared/index.js';
+import { AppError, asyncHandler } from '@/shared/index.js';
 import { connectionService } from './connections.service.js';
 
 const router = express.Router();
@@ -8,7 +8,8 @@ router.post('/', asyncHandler(async (req, res) => { res.json(await connectionSer
 router.post('/:id/select', asyncHandler(async (req, res) => { res.json(connectionService.select(String(req.params.id))); }));
 router.delete('/:id', asyncHandler(async (req, res) => { res.json(connectionService.remove(String(req.params.id))); }));
 router.get('/:id/login', asyncHandler(async (req, res) => { res.json(connectionService.loginStatus(String(req.params.id))); }));
-router.post('/:id/login', asyncHandler(async (req, res) => { res.json(connectionService.startLogin(String(req.params.id))); }));
+router.post('/:id/login', asyncHandler(async (req, res) => { const method = req.body?.method ?? 'device'; if (!['browser', 'device'].includes(method)) throw new AppError('授权方式无效', { code: 'INVALID_LOGIN_METHOD', statusCode: 400 }); res.json(await connectionService.startLogin(String(req.params.id), method)); }));
+router.post('/:id/login/code', asyncHandler(async (req, res) => { res.json(await connectionService.submitLoginCode(String(req.params.id), req.body?.code)); }));
 router.delete('/:id/login', asyncHandler(async (req, res) => { res.json(connectionService.cancelLogin(String(req.params.id))); }));
 router.get('/:id/quota', asyncHandler(async (req, res) => { res.json(await connectionService.quota(String(req.params.id))); }));
 router.get('/:id/models', asyncHandler(async (req, res) => { res.json(await connectionService.models(String(req.params.id))); }));

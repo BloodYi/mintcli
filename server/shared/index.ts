@@ -9,3 +9,6 @@ export { findApplicationRoot, getModuleDirectory } from './utils.js';
 
 // Used by provider and account modules to share the isolated CLI selection.
 export { resolveManagedCli, resolveCodexLauncher, readCodexVersion } from './utils.js';
+
+// Used by account authorization services to parse safe fields from native CLI output.
+export { stripAnsiSequences } from './utils.js';

@@ -1925,3 +1925,19 @@ export type AntigravityStreamEvent = {
   tool?: string; name?: string; error?: string; message?: AntigravityMessage;
 };
 // ---------------------------
+
+// ---------------------------
+//----------------- OFFICIAL ACCOUNT AUTHORIZATION ------------
+/** Safe CLI OAuth progress shared by the account manager and login cards; never contains access or refresh tokens. */
+export type OfficialAccountLogin = {
+  id?: string;
+  status: string;
+  url?: string;
+  code?: string;
+  method?: 'browser' | 'device';
+  acceptsCode?: boolean;
+  authorized?: boolean;
+  expiresAt?: number;
+  accountId?: string;
+  email?: string;
+};

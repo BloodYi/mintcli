@@ -13,7 +13,7 @@ it.each([['cursor', 'cursor-agent login'], ['opencode', 'opencode auth login']] 
   render(<CliAccountAccess provider={provider} disabled={false} onChanged={onChanged} />);
   await screen.findByText('未登录');
   expect(screen.queryByText(`terminal: ${command}`)).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: '官方登录 / 重新授权' }));
+  fireEvent.click(screen.getByRole('button', { name: '使用原生登录终端（其他方式）' }));
   vi.mocked(api.providers.authStatus).mockImplementation(async () => Response.json({ data: { installed: true, authenticated: true, email: 'fixture@example.test' } }));
   fireEvent.click(await screen.findByRole('button', { name: `terminal: ${command}` }));
   await screen.findByText('已登录 · fixture@example.test');
