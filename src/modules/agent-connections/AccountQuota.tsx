@@ -38,12 +38,12 @@ export function AccountQuota({ id }: { id?: string }) {
     <strong>额度{current?.planType ? ' · ' + current.planType : ''}</strong>
     <button type="button" aria-expanded={!collapsed} aria-label={collapsed ? '展开账号额度' : '收起账号额度'} className="rounded border border-border px-2 py-1" onClick={toggleCollapsed}>{collapsed ? '展开 ▾' : '收起 ▴'}</button>
     {!collapsed && <>
-    {groups.size > 0 && <div className="w-full max-w-sm divide-y divide-border rounded-xl border border-border bg-background px-3" aria-label="agy 模型额度分组">
-      {[...groups].map(([name, windows]) => <section key={name} className="py-2">
-        <h3 className="mb-1 text-muted-foreground">{groupName(name)}</h3>
+    {groups.size > 0 && <div className="flex w-full min-w-0 max-w-full divide-x divide-border overflow-x-auto rounded-xl border border-border bg-background lg:w-auto lg:flex-1" aria-label="agy 模型额度分组">
+      {[...groups].map(([name, windows]) => <section key={name} className="min-w-[10rem] flex-1 px-3 py-2">
+        <h3 className="mb-1 whitespace-nowrap text-muted-foreground">{groupName(name)}</h3>
         {[...windows].sort((a, b) => order(a.type) - order(b.type)).map((window, index) => <div key={index} className="flex items-center gap-2 py-1" title={window.resetsAt ? '重置：' + new Date(window.resetsAt * 1000).toLocaleString() : '未返回重置时间'}>
-          <span className="mr-auto">{/argon/i.test(name) ? window.bucket : window.type === 'weekly' ? '每周配额剩余' : window.type === 'five_hour' ? '5 小时配额剩余' : window.type === 'daily' ? '每日配额剩余' : window.bucket}</span>
-          <span>{window.remainingPercent === null ? '未返回' : window.remainingPercent + '%'}</span>
+          <span className="mr-auto whitespace-nowrap">{window.type === 'weekly' ? '每周配额剩余' : window.type === 'five_hour' ? '5 小时配额剩余' : window.type === 'daily' ? '每日配额剩余' : window.bucket}</span>
+          <span className="shrink-0 tabular-nums">{window.remainingPercent === null ? '未返回' : window.remainingPercent + '%'}</span>
           <span aria-hidden="true" className={'inline-block h-3.5 w-3.5 shrink-0 rounded-full border-2 ' + (window.remainingPercent === null ? 'border-muted-foreground' : window.remainingPercent < 20 ? 'border-red-500' : 'border-green-600')} />
         </div>)}
       </section>)}

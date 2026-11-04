@@ -8,6 +8,30 @@ import path from 'node:path';
 import os from 'node:os';
 import { startResponseCapture, readResponseCapture } from '../response-capture.service.js';
 
+test('relay forwards GET models and its query while rejecting other routes and methods', async () => {
+  const calls: string[] = [];
+  const upstream = createServer((req, res) => {
+    calls.push(req.url!);
+    assert.equal(req.headers.authorization, 'Bearer test-model-auth');
+    res.setHeader('content-type', 'application/json');
+    res.end('{"models":[{"slug":"test-model"}]}');
+  });
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
+  const capture = await startResponseCapture(`http://127.0.0.1:${(upstream.address() as { port: number }).port}/backend`, undefined);
+  try {
+    const response = await fetch(capture.baseUrl + '/models?client_version=0.160.1', { headers: { Authorization: 'Bearer test-model-auth' } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { models: [{ slug: 'test-model' }] });
+    for (const suffix of ['/models/other', '/models-elsewhere', '/unrelated']) {
+      assert.equal((await fetch(capture.baseUrl + suffix)).status, 404);
+    }
+    assert.equal((await fetch(capture.baseUrl + '/models', { method: 'POST' })).status, 404);
+    assert.deepEqual(calls, ['/backend/models?client_version=0.160.1']);
+  } finally {
+    await capture.close(); upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve()));
+  }
+});
+
 test('Responses relay preserves split SSE bytes and auth while recording only response metadata', async () => {
   const sessionId = randomUUID();
   const events = [

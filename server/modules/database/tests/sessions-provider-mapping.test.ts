@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection } from '@/modules/database/connection.js';
+import { closeConnection, getConnection } from '@/modules/database/connection.js';
 import { initializeDatabase } from '@/modules/database/init-db.js';
 import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
 
@@ -105,5 +105,44 @@ test('legacy provider-keyed rows stay resolvable through both lookups', async ()
 
     assert.equal(sessionsDb.getSessionById('legacy-1')?.provider, 'opencode');
     assert.equal(sessionsDb.getSessionByProviderSessionId('legacy-1')?.session_id, 'legacy-1');
+  });
+});
+
+test('full startup preserves pending, detached and handoff mappings across repeated restarts', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('pending-app', 'codex', '/workspace/demo');
+    sessionsDb.createAppSession('detached-app', 'codex', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('detached-app', 'old-native');
+    sessionsDb.detachProviderSession('detached-app');
+    sessionsDb.createSession('original-agy', 'antigravity', '/workspace/demo', 'Keep title');
+    sessionsDb.switchSessionProvider('original-agy', 'codex', [], 'Keep handoff prefix');
+    sessionsDb.createSession('real-native', 'codex', '/workspace/demo');
+
+    for (let restart = 0; restart < 2; restart++) {
+      closeConnection();
+      await initializeDatabase();
+      for (const id of ['pending-app', 'detached-app', 'original-agy']) {
+        assert.equal(sessionsDb.getSessionById(id)?.provider_session_id, null, id + ' must start a new native thread');
+      }
+      assert.equal(sessionsDb.getSessionById('real-native')?.provider_session_id, 'real-native');
+      assert.equal(sessionsDb.getSessionById('original-agy')?.custom_name, 'Keep title');
+      assert.equal(sessionsDb.getSessionHandoff('original-agy')?.promptPrefix, 'Keep handoff prefix');
+    }
+  });
+});
+
+test('legacy tables get native ids once without backfilling later app-created rows', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createSession('legacy-native', 'codex', '/workspace/demo');
+    // Reproduce a database from before provider-native mapping was added.
+    getConnection().exec('DROP INDEX idx_sessions_provider_session_id; ALTER TABLE sessions DROP COLUMN provider_session_id');
+    closeConnection();
+    await initializeDatabase();
+    assert.equal(sessionsDb.getSessionById('legacy-native')?.provider_session_id, 'legacy-native');
+    sessionsDb.createAppSession('created-after-upgrade', 'codex', '/workspace/demo');
+    closeConnection();
+    await initializeDatabase();
+    assert.equal(sessionsDb.getSessionById('created-after-upgrade')?.provider_session_id, null);
+    assert.equal(sessionsDb.getSessionById('legacy-native')?.provider_session_id, 'legacy-native');
   });
 });

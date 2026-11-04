@@ -23,7 +23,7 @@ it('groups native agy allowances and removes paid Argon when switching to a free
     ...(id === 'antigravity:paid' ? [{ model: 'Gemini 4 Argon', type: 'weekly', bucket: 'Gemini 4 Argon Weekly Limit', remainingPercent: 0, resetsAt: null }] : []),
   ] }));
   const view = render(<AccountQuota id="antigravity:paid" />);
-  await screen.findByText('Gemini 4 Argon Weekly Limit');
+  await screen.findByText('Gemini 4 Argon');
   expect(screen.getByText('Gemini 模型')).toBeTruthy();
   expect(screen.getByText('Claude 与 GPT 模型')).toBeTruthy();
   const gemini = screen.getByText('Gemini 模型').parentElement!;
@@ -32,5 +32,5 @@ it('groups native agy allowances and removes paid Argon when switching to a free
   view.rerender(<AccountQuota id="antigravity:free" />);
   expect(screen.queryByText('Gemini 4 Argon')).toBeNull();
   await screen.findByText('Gemini 模型');
-  expect(screen.queryByText('Gemini 4 Argon Weekly Limit')).toBeNull();
+  expect(screen.queryByText('Gemini 4 Argon')).toBeNull();
 });

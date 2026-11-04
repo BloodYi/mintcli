@@ -1,6 +1,7 @@
 import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
 import { normalizeProjectPath } from '@/shared/utils.js';
+import type { NormalizedMessage } from '@/shared/types.js';
 
 type SessionRow = {
   session_id: string;
@@ -92,6 +93,12 @@ export const sessionsDb = {
     jsonlPath?: string | null
   ): string {
     const db = getConnection();
+    // An earlier engine's transcript still exists, but must never take back
+    // the stable app row or appear as a second conversation after a handoff.
+    const superseded = db.prepare(
+      'SELECT session_id FROM superseded_provider_sessions WHERE provider_session_id = ? AND provider = ?'
+    ).get(providerSessionId, provider) as { session_id: string } | undefined;
+    if (superseded) return superseded.session_id;
     const createdAtValue = normalizeTimestamp(createdAt);
     const updatedAtValue = normalizeTimestamp(updatedAt);
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
@@ -240,6 +247,11 @@ export const sessionsDb = {
         input.effort,
         input.forkedFromSessionId,
       );
+      // A fork of a conversation that changed engines also owns the earlier
+      // transcript prefix; its native artifact only contains the latest part.
+      db.prepare(`INSERT INTO session_handoffs (session_id, messages_json, prompt_prefix)
+        SELECT ?, messages_json, prompt_prefix FROM session_handoffs WHERE session_id = ?`)
+        .run(input.sessionId, input.forkedFromSessionId);
     })();
 
     return input.sessionId;
@@ -339,6 +351,41 @@ export const sessionsDb = {
          updated_at = CURRENT_TIMESTAMP
        WHERE session_id = ?`
     ).run(sessionId);
+  },
+
+  /** Used by Providers to restore the full transcript and first-turn context after a handoff. */
+  getSessionHandoff(sessionId: string): { messages: NormalizedMessage[]; promptPrefix: string } | null {
+    const row = getConnection().prepare(
+      'SELECT messages_json, prompt_prefix FROM session_handoffs WHERE session_id = ?'
+    ).get(sessionId) as { messages_json: string; prompt_prefix: string } | undefined;
+    return row ? { messages: JSON.parse(row.messages_json) as NormalizedMessage[], promptPrefix: row.prompt_prefix } : null;
+  },
+
+  /** Used by Providers to bound an older handoff prompt without modifying its full transcript or mapping. */
+  setSessionHandoffPrompt(sessionId: string, promptPrefix: string): void {
+    getConnection().prepare('UPDATE session_handoffs SET prompt_prefix = ? WHERE session_id = ?')
+      .run(promptPrefix, sessionId);
+  },
+
+  /** Used by Providers after reserving an idle session; the snapshot and engine change commit together. */
+  switchSessionProvider(sessionId: string, provider: string, messages: NormalizedMessage[], promptPrefix: string): void {
+    const db = getConnection();
+    db.transaction(() => {
+      const previous = sessionsDb.getSessionById(sessionId);
+      if (!previous) throw new Error('Session no longer exists');
+      if (previous.provider_session_id) {
+        sessionsDb.markProviderSessionSuperseded({
+          providerSessionId: previous.provider_session_id, provider: previous.provider,
+          sessionId, jsonlPath: previous.jsonl_path,
+        });
+      }
+      db.prepare(`INSERT INTO session_handoffs (session_id, messages_json, prompt_prefix) VALUES (?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET messages_json = excluded.messages_json, prompt_prefix = excluded.prompt_prefix`)
+        .run(sessionId, JSON.stringify(messages), promptPrefix);
+      db.prepare(`UPDATE sessions SET provider = ?, provider_session_id = NULL, jsonl_path = NULL,
+        model = NULL, effort = NULL, fast_mode = 0, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?`)
+        .run(provider, sessionId);
+    })();
   },
 
   /**

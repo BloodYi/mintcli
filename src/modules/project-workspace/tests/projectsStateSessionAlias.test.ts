@@ -103,6 +103,20 @@ afterEach(() => {
   vi.resetModules();
 });
 
+test('an engine switch updates the current provider without changing the session or URL', async () => {
+  respondWith([buildProject([{ id: APP_SESSION_ID, summary: '同一聊天', __provider: 'antigravity' } as ProjectSession])]);
+  const navigate = vi.fn();
+  const { result } = await renderProjectsState(navigate, APP_SESSION_ID);
+  await waitFor(() => assert.equal(result.current.projects[0]?.sessions?.[0]?.id, APP_SESSION_ID));
+  act(() => { result.current.handleSessionSelect({ id: APP_SESSION_ID, __provider: 'antigravity' } as ProjectSession); });
+  navigate.mockClear();
+  await act(async () => { emit({ ...buildUpsert(null), provider: 'codex' }); });
+  assert.equal(result.current.selectedSession?.id, APP_SESSION_ID);
+  assert.equal(result.current.selectedSession?.__provider, 'codex');
+  assert.equal(result.current.projects[0]?.sessions?.length, 1);
+  assert.deepEqual(navigate.mock.calls, []);
+});
+
 test('an upsert carrying the provider id replaces the aliased row and rewrites the url', async () => {
   respondWith([buildProject([
     { id: PROVIDER_SESSION_ID, summary: 'indexed from disk' } as ProjectSession,

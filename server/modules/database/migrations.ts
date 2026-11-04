@@ -8,6 +8,7 @@ import {
   PROVIDER_MODELS_TABLE_SCHEMA_SQL,
   PUSH_SUBSCRIPTIONS_TABLE_SCHEMA_SQL,
   SESSION_DRAFTS_TABLE_SCHEMA_SQL,
+  SESSION_HANDOFFS_TABLE_SCHEMA_SQL,
   SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL,
   SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL,
   SESSIONS_TABLE_SCHEMA_SQL,
@@ -399,6 +400,11 @@ const addProviderSessionIdMapping = (db: Database): void => {
   const sessionsTableInfo = getTableInfo(db, 'sessions');
   const columnNames = sessionsTableInfo.map((column) => column.name);
 
+  // NULL is intentional for app-created, detached and handed-off sessions.
+  // Backfill only while adding the mapping column to a truly legacy table;
+  // repeating this on startup invents native ids that have no transcript.
+  if (columnNames.includes('provider_session_id')) return;
+
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'provider_session_id', 'TEXT');
   db.exec(`
     UPDATE sessions
@@ -536,6 +542,7 @@ export const runMigrations = (db: Database) => {
     addColumnToTableIfNotExists(db, 'sessions', getTableInfo(db, 'sessions').map(column => column.name),
       'fast_mode', 'INTEGER NOT NULL DEFAULT 0');
     addForkedFromSessionIdColumn(db);
+    db.exec(SESSION_HANDOFFS_TABLE_SCHEMA_SQL);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
 

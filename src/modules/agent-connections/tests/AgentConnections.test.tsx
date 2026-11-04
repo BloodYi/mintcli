@@ -29,6 +29,7 @@ it('all native providers share the account manager and selection carries the raw
   await screen.findByRole('option', { name: 'agy · agy A' });
   fireEvent.change(screen.getByLabelText('切换账号'), { target: { value: 'antigravity:a' } });
   await waitFor(() => expect(onChoice).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'antigravity', accountId: 'a' })));
+  expect(api.agentConnections.select).toHaveBeenCalledWith('antigravity:a', 'old-session');
   expect((screen.getByLabelText('切换账号') as HTMLSelectElement).value).toBe('antigravity:a');
   fireEvent.click(screen.getByRole('button', { name: '管理账号' }));
   const dialog = await screen.findByRole('dialog', { name: '账号管理' });

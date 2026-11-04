@@ -41,7 +41,7 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
   }, [form.id, form.kind, login, open, reload]);
   const run = async (action: () => Promise<void>) => { setPending(true); setNotice(''); try { await action(); } catch (error) { setNotice(error instanceof Error ? error.message : '操作失败'); } finally { setPending(false); } };
   const edit = (item?: AgentConnectionChoice) => { setForm(item ? { ...empty, id: item.accountId, kind: item.kind, name: item.name, baseUrl: item.baseUrl || '', protocol: item.protocol || 'responses', model: item.model || '' } : { ...empty }); setLogin(null); setCode(''); setNotice(''); setOpen(true); };
-  const select = async (id: string) => { ++requestId.current; const result = await readApiJson<AgentConnectionsCatalog>(await api.agentConnections.select(id)); ++requestId.current; setCatalog(result); const item = result.connections.find(value => value.id === id); if (item) onProviderChange(item.provider); window.dispatchEvent(new Event('codex-account-updated')); };
+  const select = async (id: string) => { ++requestId.current; const result = await readApiJson<AgentConnectionsCatalog>(await api.agentConnections.select(id, sessionId)); ++requestId.current; setCatalog(result); const item = result.connections.find(value => value.id === id); if (item) onProviderChange(item.provider); window.dispatchEvent(new Event('codex-account-updated')); };
   const field = (key: keyof Form, value: string) => setForm(previous => ({ ...previous, [key]: value }));
   const input = 'mt-1 w-full rounded-md border border-border bg-background p-2 text-sm';
   const button = 'rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50';

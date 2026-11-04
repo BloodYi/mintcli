@@ -11,7 +11,6 @@ import { TranscriptSessionContext } from '@/modules/chat/context/TranscriptSessi
 import { api } from '@/shared/api';
 import { AgentConnections } from '@/modules/agent-connections';
 import { TokenMonitorProvider } from '@/modules/token-monitor';
-import { useNavigate } from 'react-router-dom';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import type {
   ChatMessage,
@@ -70,7 +69,6 @@ function ChatInterface({
   sendMessage,
   onFileOpen,
   onNavigateToSession,
-  onStartNewSession,
   onSessionEstablished,
   onShowSettings,
   showRawParameters,
@@ -85,7 +83,6 @@ function ChatInterface({
   const { t } = useTranslation('chat');
   // API connections own their configured model; hide the native CLI model controls for them.
   const [activeConnection, setActiveConnection] = useState<AgentConnectionChoice | null>(null);
-  const navigate = useNavigate();
   const processingSessions = useProcessingSessions();
   const {
     markSessionProcessing: onSessionProcessing,
@@ -195,11 +192,14 @@ function ChatInterface({
     if (next !== provider) {
       writeSelectedProvider(next);
       setProvider(next);
-      setCurrentSessionId(null);
-      onStartNewSession?.();
-      navigate('/');
+      // The server has already handed the existing conversation to this
+      // engine. Keep its id, draft and URL while updating workspace metadata.
+      const sessionId = currentSessionId || selectedSession?.id;
+      if (sessionId && selectedProject) {
+        onSessionEstablished?.(sessionId, { provider: next, project: selectedProject, summary: selectedSession?.summary });
+      }
     }
-  }, [navigate, provider, setProvider, setCurrentSessionId, onStartNewSession]);
+  }, [currentSessionId, onSessionEstablished, provider, selectedProject, selectedSession, setProvider]);
 
   const supportsFastMode = provider === 'codex' && !usingApiConnection;
   const { fastMode, selectFastMode, fastModePending, fastModeError } = useCodexFastMode(

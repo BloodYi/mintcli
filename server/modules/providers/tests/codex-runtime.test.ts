@@ -8,6 +8,33 @@ import type { Thread, ThreadOptions } from '@openai/codex-sdk';
 import { codexRuntime } from '@/modules/providers/list/codex/codex-runtime.provider.js';
 import type { ProviderRuntimeContext } from '@/shared/index.js';
 
+for (const accepted of [false, true]) {
+  test(`Codex ${accepted ? 'persists an accepted' : 'does not persist a rejected'} first-turn thread id`, async (t) => {
+    const messages: any[] = [];
+    const ids: string[] = [];
+    const thread = { id: 'allocated-id', async runStreamed() {
+      return { events: (async function* () {
+        yield { type: 'thread.started', thread_id: 'allocated-id' };
+        if (!accepted) throw new Error('Input exceeds the maximum length of 1048576 characters');
+        yield { type: 'item.completed', item: { id: 'reply', type: 'agent_message', text: 'ok' } };
+        yield { type: 'turn.completed', usage: {} };
+      })() };
+    } } as unknown as Thread;
+    t.mock.method(Codex.prototype, 'startThread', () => thread);
+    const context: ProviderRuntimeContext = {
+      resolveProviderSessionId: () => null, resolveResumeModel: async () => 'test-model',
+      getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'test-model' }),
+      normalizeMessage: () => [], isProviderInstalled: async () => true,
+    };
+    await codexRuntime.run('hello', { cwd: process.cwd() }, {
+      isWebSocketWriter: true, send: value => messages.push(value), setSessionId: id => ids.push(id),
+    }, context);
+    assert.deepEqual(ids, accepted ? ['allocated-id'] : []);
+    assert.equal(messages.filter(value => value.kind === 'session_created').length, accepted ? 1 : 0);
+    assert.ok(messages.some(value => value.kind === 'complete' && value.exitCode === (accepted ? 0 : 1)));
+  });
+}
+
 for (const resumed of [false, true]) {
   for (const permissionMode of [undefined, 'default', 'unknown', 'acceptEdits', 'bypassPermissions']) {
     test(`Codex ${resumed ? 'resumes' : 'starts'} with supported permissions (${permissionMode ?? 'omitted'})`, async (t) => {

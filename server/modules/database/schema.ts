@@ -258,6 +258,16 @@ CREATE TABLE IF NOT EXISTS superseded_provider_sessions (
 );
 `;
 
+/** Durable transcript prefix retained when one conversation changes engines. */
+export const SESSION_HANDOFFS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS session_handoffs (
+    session_id TEXT PRIMARY KEY,
+    messages_json TEXT NOT NULL,
+    prompt_prefix TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;

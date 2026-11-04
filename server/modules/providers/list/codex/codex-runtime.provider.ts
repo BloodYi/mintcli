@@ -382,15 +382,16 @@ async function queryCodex(
           capturedSessionId = discoveredSessionId;
           registerSession(sessionKey());
 
-          if (ws.setSessionId && typeof ws.setSessionId === 'function') {
-            ws.setSessionId(capturedSessionId);
-          }
-
-          if (!providerSessionId && !sessionCreatedSent) {
-            sessionCreatedSent = true;
-            sendMessage(ws, createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'codex' }));
-          }
         }
+        // Codex allocates an id before validating the input. A rejected first
+        // prompt may never create a rollout, so do not persist this id yet.
+        continue;
+      }
+      if (capturedSessionId && !providerSessionId && !sessionCreatedSent
+        && (event.type.startsWith('item.') || event.type === 'turn.completed')) {
+        sessionCreatedSent = true;
+        ws.setSessionId?.(capturedSessionId);
+        sendMessage(ws, createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'codex' }));
       }
 
       // Check if session was aborted

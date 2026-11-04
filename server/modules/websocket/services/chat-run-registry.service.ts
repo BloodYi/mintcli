@@ -58,6 +58,8 @@ const MAX_BUFFERED_EVENTS_PER_RUN = 5000;
  * path all consult it instead of asking each provider runtime individually.
  */
 const runs = new Map<string, ChatRun>();
+// Handoffs block sends without pretending to be an interruptible model run.
+const sessionLocks = new Set<string>();
 
 /**
  * Answers whether a completed run must stay registered a while longer. Set by
@@ -179,6 +181,18 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
  * regardless of which provider runtime produced them.
  */
 export const chatRunRegistry = {
+  /** Used by Providers to reserve an idle conversation during an engine handoff.
+   * The lock is separate from runs so Stop and scheduled interrupts cannot
+   * cancel it. Release with true after committing to discard the old replay.
+   */
+  tryLockSession(appSessionId: string): ((discardReplay?: boolean) => void) | null {
+    if (sessionLocks.has(appSessionId) || runs.get(appSessionId)?.status === 'running') return null;
+    sessionLocks.add(appSessionId);
+    return (discardReplay = false) => {
+      if (discardReplay) runs.delete(appSessionId);
+      sessionLocks.delete(appSessionId);
+    };
+  },
   /** Installs the check that keeps a completed run registered while its session still has background work. */
   setRetentionGuard(guard: (appSessionId: string) => boolean): void {
     retainCompletedRun = guard;
@@ -202,7 +216,7 @@ export const chatRunRegistry = {
     userId: string | number | null;
   }): ChatRun | null {
     const existing = runs.get(input.appSessionId);
-    if (existing && existing.status === 'running') {
+    if (sessionLocks.has(input.appSessionId) || (existing && existing.status === 'running')) {
       return null;
     }
 
@@ -330,5 +344,6 @@ export const chatRunRegistry = {
    */
   clearAll(): void {
     runs.clear();
+    sessionLocks.clear();
   },
 };

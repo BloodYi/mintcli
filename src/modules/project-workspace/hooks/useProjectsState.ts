@@ -848,6 +848,11 @@ export function useProjectsState({
         typeof upsert.providerSessionId === 'string' && upsert.providerSessionId !== upsert.sessionId
           ? upsert.providerSessionId
           : null;
+      // An engine handoff updates the same app id, so there is no alias or
+      // navigation. The composer must still receive the new session provider.
+      if (currentSelectedSession?.id === upsert.sessionId && currentSelectedSession.__provider !== upsert.provider) {
+        setSelectedSession(previous => previous?.id === upsert.sessionId ? { ...previous, __provider: upsert.provider } : previous);
+      }
       if (!aliasedSelectedSessionId) {
         return;
       }

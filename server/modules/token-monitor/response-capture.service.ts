@@ -28,7 +28,8 @@ export async function startResponseCapture(upstream: string, sessionId: string |
     if (!request.url?.startsWith(prefix + '/')) { reply.writeHead(404).end(); return; }
     const suffix = request.url.slice(prefix.length);
     // This listener is a per-turn relay to one fixed endpoint, never an open proxy.
-    if (!/^\/responses(?:\/(?:compact|input_tokens))?(?:\?|$)/.test(suffix)) { reply.writeHead(404).end(); return; }
+    const isModelsRequest = request.method === 'GET' && /^\/models(?:\?|$)/.test(suffix);
+    if (!isModelsRequest && !/^\/responses(?:\/(?:compact|input_tokens))?(?:\?|$)/.test(suffix)) { reply.writeHead(404).end(); return; }
     const controller = new AbortController();
     reply.on('close', () => { if (!reply.writableEnded) controller.abort(); });
     try {

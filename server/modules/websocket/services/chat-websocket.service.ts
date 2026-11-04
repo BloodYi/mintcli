@@ -298,7 +298,22 @@ async function dispatchRun(
     // be taken back. Inside the try so a rewind that throws still releases the
     // run instead of leaving the session processing forever.
     await beforeRun?.(run);
-    await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
+    const prefix = !sessionsService.resolveProviderSessionId(sessionId)
+      ? await sessionsService.prepareHandoffPrompt(sessionId) : '';
+    // Only the first turn on a new engine receives the previous transcript.
+    // Hide that transport prefix from live user echoes, just as history does.
+    const writer = prefix ? new Proxy(run.writer, {
+      get(target, property) {
+        if (property === 'send') return (value: unknown) => {
+          const message = value as AnyRecord | null;
+          target.send(message?.role === 'user' && typeof message.content === 'string' && message.content.startsWith(prefix)
+            ? { ...message, content: message.content.slice(prefix.length) } : value);
+        };
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) : run.writer;
+    await dependencies.runtime.run(provider, prefix + command, runtimeOptions, writer);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
     console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });

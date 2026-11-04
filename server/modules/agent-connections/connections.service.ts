@@ -6,7 +6,8 @@ import { claudeAccounts } from '@/modules/claude-accounts/index.js';
 import { antigravityBridge } from '@/modules/antigravity/index.js';
 import { antigravityQuotaSnapshot } from './antigravity-quota.service.js';
 import { AppError } from '@/shared/index.js';
-import type { AnyRecord } from '@/shared/types.js';
+import { sessionsService } from '@/modules/providers/index.js';
+import type { AnyRecord, LLMProvider } from '@/shared/types.js';
 
 import { cliAccounts } from './cli-accounts.service.js';
 const selectionFile = () => path.join(process.env.AGENT_CONNECTIONS_ROOT || path.join(os.homedir(), 'unified'), 'selection.json');
@@ -32,12 +33,16 @@ async function catalog(force = false) {
 /** Used by authenticated routes to keep account selection and quotas outside transport handlers. */
 export const agentConnectionsService = {
   catalog,
-  async select(id: string) {
+  async select(id: string, sessionId?: string) {
     const { provider, account } = parse(id);
-    if (provider === 'codex') connectionService.select(account);
-    if (provider === 'claude') claudeAccounts.select(account);
-    if (provider === 'antigravity') await nativeJson(await antigravityBridge.switchAccount({ id: account }));
-    remember(id);
+    const selectAccount = async () => {
+      if (provider === 'codex') connectionService.select(account);
+      if (provider === 'claude') claudeAccounts.select(account);
+      if (provider === 'antigravity') await nativeJson(await antigravityBridge.switchAccount({ id: account }));
+      remember(id);
+    };
+    if (sessionId) await sessionsService.switchSessionProvider(sessionId, provider as LLMProvider, selectAccount);
+    else await selectAccount();
     return catalog();
   },
   async quota(id: string, force: boolean) {

@@ -223,7 +223,7 @@ export const api = {
   },
   agentConnections: {
     list: (force = false) => get('/api/agent-connections' + (force ? '?refresh=true' : '')),
-    select: (id: string) => post('/api/agent-connections/' + encodeURIComponent(id) + '/select'),
+    select: (id: string, sessionId?: string | null) => post('/api/agent-connections/' + encodeURIComponent(id) + '/select', sessionId ? { sessionId } : {}),
     quota: (id: string, force = false) => get('/api/agent-connections/' + encodeURIComponent(id) + '/quota' + query({ force })),
     saveClaude: (body: unknown) => post('/api/agent-connections/claude/accounts', body),
     removeClaude: (id: string) => del('/api/agent-connections/claude/accounts/' + encodeURIComponent(id)),

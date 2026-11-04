@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 
-import { render } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { fireEvent, render } from '@testing-library/react';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { test, vi } from 'vitest';
 
 import '@/modules/i18n';
-import type { Project, ProjectSession, ServerEvent } from '@/shared/types';
+import type { LLMProvider, Project, ProjectSession, ServerEvent } from '@/shared/types';
 
 /**
  * The scheduled-message banner follows the server's `scheduled_messages_changed`
@@ -18,6 +18,8 @@ import type { Project, ProjectSession, ServerEvent } from '@/shared/types';
 
 const harness = vi.hoisted(() => ({
   sessionId: 'session-a',
+  setProvider: vi.fn(),
+  setCurrentSessionId: vi.fn(),
   // The websocket context's own function; ChatInterface must pass this one on, not a stand-in.
   subscribe: (_listener: (event: ServerEvent) => void) => () => {},
   useScheduledMessages: vi.fn((_sessionId: string | null, _subscribe?: unknown) => ({
@@ -47,13 +49,13 @@ vi.mock('@/modules/task-master', () => ({
 }));
 vi.mock('@/modules/command-palette', () => ({ usePaletteOpsRegister: () => {} }));
 vi.mock('@/modules/chat/hooks/useChatProviderState', () => ({
-  useChatProviderState: () => ({ provider: 'claude', pendingPermissionRequests: [] }),
+  useChatProviderState: () => ({ provider: 'antigravity', setProvider: harness.setProvider, pendingPermissionRequests: [] }),
 }));
 vi.mock('@/modules/chat/hooks/useChatSessionState', () => ({
   useChatSessionState: () => ({
     chatMessages: [],
     currentSessionId: harness.sessionId,
-    setCurrentSessionId: () => {},
+    setCurrentSessionId: harness.setCurrentSessionId,
     requestLatestMessages: async () => {},
   }),
 }));
@@ -65,6 +67,11 @@ vi.mock('@/modules/chat/hooks/useSessionStore', () => ({ useSessionStore: () => 
 vi.mock('@/modules/chat/transcript/ChatMessagesPane', () => ({ default: () => null }));
 vi.mock('@/modules/chat/composer/ChatComposer', () => ({ default: () => null }));
 vi.mock('@/modules/chat/modals/CommandResultModal', () => ({ default: () => null }));
+vi.mock('@/modules/agent-connections', () => ({
+  AgentConnections: ({ onProviderChange }: { onProviderChange: (provider: LLMProvider) => void }) => (
+    <button onClick={() => onProviderChange('codex')}>切换到 GPT 账号</button>
+  ),
+}));
 
 const { default: ChatInterface } = await import('@/modules/chat/ChatInterface');
 
@@ -92,4 +99,23 @@ test('ChatInterface gives useScheduledMessages the websocket subscribe, so the b
       'useScheduledMessages must get the websocket context\'s subscribe, or scheduled_messages_changed is never heard',
     );
   }
+});
+
+test('switching an agy conversation to GPT keeps its session, URL and workspace selection', () => {
+  const startNew = vi.fn();
+  const established = vi.fn();
+  function Location() { return <output data-testid="location">{useLocation().pathname}</output>; }
+  const view = render(
+    <MemoryRouter initialEntries={['/session/session-a']}><Location /><ChatInterface
+      isActive selectedProject={project} selectedSession={{ ...session, __provider: 'antigravity' }}
+      ws={null} sendMessage={() => {}} onStartNewSession={startNew} onSessionEstablished={established}
+    /></MemoryRouter>,
+  );
+  fireEvent.click(view.getByRole('button', { name: '切换到 GPT 账号' }));
+  assert.equal(view.getByTestId('location').textContent, '/session/session-a');
+  assert.equal(startNew.mock.calls.length, 0);
+  assert.equal(harness.setCurrentSessionId.mock.calls.length, 0);
+  assert.deepEqual(harness.setProvider.mock.calls.at(-1), ['codex']);
+  assert.equal(established.mock.calls[0]?.[0], 'session-a');
+  assert.equal(established.mock.calls[0]?.[1].provider, 'codex');
 });
