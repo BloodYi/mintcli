@@ -71,7 +71,7 @@ export function createTokenMonitorService(dependencies: { getSession: (id: strin
                 returnedModel: snapshot.returnedModel, totals: snapshot.totals, totalsScope: snapshot.totalsScope };
             }
             if (!['codex', 'claude'].includes(session.provider) || !session.jsonl_path) throw new Error('unavailable');
-            const history = await readSessionHistory(session.session_id, session.jsonl_path);
+            const history = await readSessionHistory(session.session_id, session.jsonl_path, session.provider);
             const events = session.provider === 'codex' ? parser.parseCodexTranscript(history.projected) : parser.parseClaudeTranscript(history.projected);
             let cumulative: Tokens | null = null;
             if (session.provider === 'codex') for (const line of history.projected.split('\n')) {
@@ -112,6 +112,17 @@ export function createTokenMonitorService(dependencies: { getSession: (id: strin
         return value;
       })().finally(() => { releasePending = null; });
       return releasePending;
+    },
+    async replyModels(sessionId: string) {
+      const session = dependencies.getSession(sessionId);
+      if (!session) throw new AppError('Session not found', { code: 'SESSION_NOT_FOUND', statusCode: 404 });
+      if (session.provider === 'antigravity') {
+        const native = await readAntigravityMonitor(session);
+        return { sessionId, status: 'ok', models: native.replyModels };
+      }
+      if (!['codex', 'claude'].includes(session.provider) || !session.jsonl_path) return { sessionId, status: 'unavailable', models: [] };
+      try { return { sessionId, status: 'ok', models: (await readSessionHistory(sessionId, session.jsonl_path, session.provider)).replyModels }; }
+      catch { return { sessionId, status: 'unavailable', models: [] }; }
     },
     async snapshot(sessionId: string) {
       const session = dependencies.getSession(sessionId);
@@ -182,7 +193,7 @@ export function createTokenMonitorService(dependencies: { getSession: (id: strin
       const latestCapture = newestCaptured.find(record => record.kind !== 'end');
       const latestReply = [...replies.values()].at(-1);
       if (latestCapture && (!latestReply || Date.parse(latestCapture.timestamp) >= Date.parse(latestReply.timestamp))) base.returnedModel = latestCapture.model;
-      const history = await readSessionHistory(sessionId, session.jsonl_path).catch(() => null);
+      const history = await readSessionHistory(sessionId, session.jsonl_path, session.provider).catch(() => null);
       const events = session.provider === 'codex' ? parser.parseCodexTranscript(history?.projected || content) : parser.parseClaudeTranscript(history?.projected || content);
       if (history && session.provider === 'codex') for (const line of history.projected.split('\n')) {
         if (!line) continue;

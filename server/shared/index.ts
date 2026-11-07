@@ -12,3 +12,5 @@ export { resolveManagedCli, resolveCodexLauncher, readCodexVersion } from './uti
 
 // Used by account authorization services to parse safe fields from native CLI output.
 export { stripAnsiSequences } from './utils.js';
+
+export type { ReplyModelEvidence } from './types.js';

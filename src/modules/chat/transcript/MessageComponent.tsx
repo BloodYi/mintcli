@@ -1,3 +1,5 @@
+import { ReplyModelDetails } from '@/modules/token-monitor';
+import { useTranscriptSessionId } from '@/modules/chat/context/TranscriptSessionContext';
 import { memo, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { GitBranchIcon, PencilIcon } from 'lucide-react';
@@ -49,6 +51,7 @@ const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
  */
 const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
+  const transcriptSessionId = useTranscriptSessionId();
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
       (prevMessage.type === 'user') ||
@@ -425,6 +428,8 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 {!isGrouped && <span>{formattedTime}</span>}
               </div>
             )}
+            {!isExporting && message.type === 'assistant' && !message.isThinking && !message.isToolUse && !message.isLocalCommandStdout && !message.isCompactSummary && <ReplyModelDetails
+              sessionId={transcriptSessionId} messageId={message.modelSourceId} timestamp={message.timestamp} model={message.model} provider={provider} />}
           </div>
         </div>
       )}

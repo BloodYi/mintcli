@@ -1654,3 +1654,11 @@ export type CliApplication = {
 export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
 };
+
+//----------------- PER-REPLY MODEL EVIDENCE ------------
+/** Used by Token Monitor's full-file projection and native AGY adapter. IDs identify
+ * only the matching reply; requested and response-reported identities stay separate.
+ * Contains no reply text, tools, credentials or reasoning. */
+export type ReplyModelEvidence = {
+  messageIds: string[]; timestamp: string; requestedModel: string | null; reportedModel: string | null;
+};

@@ -372,6 +372,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
 
     const convertedStart = converted.length;
     const sharedMetadata = {
+      modelSourceId: msg.id,
       displayText: msg.displayText,
       commandName: msg.commandName,
       commandMessage: msg.commandMessage,

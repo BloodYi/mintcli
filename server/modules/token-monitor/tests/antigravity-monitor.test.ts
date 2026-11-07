@@ -19,3 +19,17 @@ test('AGY history reads returned evidence and latest cumulative metrics without 
   assert.deepEqual(list.sessions[0].reportedModels, ['gemini-real', 'gemini-real-v2']);
   assert.deepEqual(list.sessions[0].recordedModels, ['requested-gemini']);
 });
+
+test('AGY per-reply index includes older replies outside the 30-body display limit', async t => {
+  t.mock.method(antigravityBridge, 'request', async () => Response.json({ messages: Array.from({length: 40}, (_, index) => ({
+    id: 'agy-' + index, role: 'assistant', requestedModel: 'selected-' + index, content: 'private-body',
+    routeInfo: { returned_models: index === 39 ? [] : ['returned-' + index] },
+  })) }));
+  const service = createTokenMonitorService({ getSession: () => ({ session_id: 'agy-full', provider: 'antigravity' }) });
+  const result = await service.replyModels('agy-full');
+  assert.equal(result.models.length, 40);
+  assert.equal(result.models[0].requestedModel, 'selected-0');
+  assert.equal(result.models[0].reportedModel, 'returned-0');
+  assert.equal(result.models[39].reportedModel, null);
+  assert.ok(!JSON.stringify(result).includes('private-body'));
+});

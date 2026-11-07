@@ -367,6 +367,8 @@ export type SubagentInfo = {
 
 /** One rendered entry in a chat transcript — user turn, assistant turn, tool call and result, local command output, or subagent container — and the shape the chat message list and message components consume. */
 export type ChatMessage = {
+  /** Normalized row identity for per-reply evidence joins; legacy generated IDs require an exact unique timestamp, never the active model picker. */
+  modelSourceId?: string;
   type: string;
   content?: string;
   displayText?: string;
@@ -1941,3 +1943,12 @@ export type OfficialAccountLogin = {
   accountId?: string;
   email?: string;
 };
+
+//----------------- PER-REPLY MODEL EVIDENCE ------------
+/** Numeric/model-only monitor record for one reply; aliases cover native text blocks.
+ * A null reported model must never be replaced by the selected/requested model. */
+export type ReplyModelEvidence = {
+  messageIds: string[]; timestamp: string; requestedModel: string | null; reportedModel: string | null;
+};
+/** Session-scoped model metadata shared by the monitor provider and reply annotations. */
+export type ReplyModelIndex = { sessionId: string; status: string; models: ReplyModelEvidence[] };

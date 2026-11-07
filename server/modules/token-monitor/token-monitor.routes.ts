@@ -32,3 +32,12 @@ tokenMonitorRoutes.post('/update-task', asyncHandler(async (req, res) => {
   const user = (req as typeof req & { user?: AnyRecord }).user;
   res.status(202).json({ task: await monitorUpdateTaskService.start(user?.id ?? user?.userId ?? null) });
 }));
+
+tokenMonitorRoutes.get('/sessions/:sessionId/models', asyncHandler(async (req, res) => {
+  const sessionId = req.params.sessionId;
+  if (typeof sessionId !== 'string' || !/^[a-zA-Z0-9._-]{1,120}$/.test(sessionId)) {
+    throw new AppError('Invalid session id', { code: 'INVALID_SESSION_ID', statusCode: 400 });
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(await tokenMonitorService.replyModels(sessionId));
+}));

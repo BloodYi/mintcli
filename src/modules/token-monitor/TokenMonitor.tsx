@@ -1,3 +1,4 @@
+import { ReplyModelProvider } from '@/modules/token-monitor/ReplyModels';
 import { MonitorUpdater } from '@/modules/token-monitor/MonitorUpdater';
 import { SessionHistory } from '@/modules/token-monitor/SessionHistory';
 import { createContext, useContext, useEffect, useState } from 'react';
@@ -92,7 +93,7 @@ export function TokenMonitorProvider({ sessionId, model, children }: { sessionId
   const current = snapshot?.sessionId === inspectedId ? snapshot : null;
   const currentError = error && error.sessionId === inspectedId ? error.message : null;
   const warning = Boolean(currentError || current?.alerts.length || update?.updateAvailable);
-  return <MonitorContext.Provider value={{ open, toggle: () => setOpen(value => !value), snapshot: current, warning }}>
+  return <ReplyModelProvider sessionId={sessionId}><MonitorContext.Provider value={{ open, toggle: () => setOpen(value => !value), snapshot: current, warning }}>
     <div className="flex h-full min-h-0 flex-col">
     {warning && <div role="status" className="flex shrink-0 items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs">
       <span className="min-w-0 flex-1">{currentError ? '监控接口异常，请检查接口是否需要更新' : current?.alerts[0] || 'Token Monitor 有新版本，可检查更新'}</span>
@@ -126,5 +127,5 @@ export function TokenMonitorProvider({ sessionId, model, children }: { sessionId
         <div className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground"><a href="https://github.com/Javis603/token-monitor" target="_blank" rel="noopener noreferrer" className="underline">Javis603/token-monitor</a> · mintcli 适配版{update && <> · 解析器 {update.installedVersion}<div className="mt-1 flex items-start gap-2"><p className="min-w-0 flex-1">{update.status !== 'ok' ? '上游版本检查暂不可用，稍后自动重试' : update.updateAvailable ? `发现上游新版本 ${update.latestVersion}，可更新适配器并检查接口兼容性` : `上游版本已检查：${update.latestVersion}`} · <a href={update.url} target="_blank" rel="noopener noreferrer" className="underline">查看更新</a></p><MonitorUpdater available={update.status === 'ok' && update.updateAvailable} /></div></>}</div>
       </DialogContent>
     </Dialog>
-  </MonitorContext.Provider>;
+  </MonitorContext.Provider></ReplyModelProvider>;
 }

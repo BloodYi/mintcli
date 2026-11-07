@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, mkdir, appendFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createTokenMonitorService } from '../token-monitor.service.js';
@@ -108,4 +109,66 @@ test('full history totals survive a transcript tail containing no usage, with Cl
     assert.equal(result.returnedModel, null);
     assert.deepEqual('reportedModels' in result && result.reportedModels, ['claude-real']);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('per-reply models cover full history, retain turn requests and never borrow a later model', async () => {
+  const rows: unknown[] = [{ type: 'turn_context', payload: { model: 'first-request' } }];
+  for (let index = 0; index < 45; index++) {
+    if (index === 30) rows.push({ type: 'turn_context', payload: { model: 'second-request' } });
+    rows.push({ type: 'response_item', timestamp: new Date(1700000000000 + index * 1000).toISOString(), payload: {
+      id: 'reply-' + index, role: 'assistant', ...(index < 44 ? { model: 'actual-' + index } : {}),
+      content: [{ type: 'output_text', text: 'private-reply-body' }],
+    } });
+  }
+  const { service, dispose } = await fixture('codex', rows);
+  try {
+    const result = await service.replyModels('full-model-index');
+    assert.equal(result.models.length, 45);
+    assert.equal(result.models[0].requestedModel, 'first-request');
+    assert.equal(result.models[0].reportedModel, 'actual-0');
+    assert.ok(result.models[0].messageIds.includes('reply-0'));
+    assert.equal(result.models[44].requestedModel, 'second-request');
+    assert.equal(result.models[44].reportedModel, null);
+    assert.ok(!JSON.stringify(result).includes('private-reply-body'));
+    assert.equal((await service.snapshot('full-model-index')).replies.length, 30);
+  } finally { await dispose(); }
+});
+
+test('Claude model index retains block aliases while excluding private content and synthetic names', async () => {
+  const { service, dispose } = await fixture('claude', [
+    { type: 'assistant', uuid: 'row', timestamp: '2026-01-01T00:00:00Z', message: { id: 'native-message', model: 'claude-reported', content: [{ type: 'thinking', thinking: 'secret-thought' }, { type: 'text', text: 'secret-body' }] } },
+    { type: 'assistant', uuid: 'synthetic-row', message: { model: '<synthetic>', content: [{ type: 'text', text: 'notice' }] } },
+  ]);
+  try {
+    const result = await service.replyModels('claude-model-index');
+    assert.ok(result.models[0].messageIds.includes('row_1'));
+    assert.equal(result.models[0].reportedModel, 'claude-reported');
+    assert.equal(result.models[1].reportedModel, null);
+    assert.ok(!JSON.stringify(result).includes('secret-'));
+  } finally { await dispose(); }
+});
+
+test('live captured ids gain model labels before transcript replies flush, including same-ms captures', async () => {
+  const id = randomUUID();
+  const { service, dispose } = await fixture('codex', [{type:'turn_context',timestamp:'2026-01-01T00:00:00Z',payload:{model:'live-request'}}]);
+  const file = path.join(os.homedir(), '.claude-code-ui/token-monitor', id + '.jsonl');
+  await mkdir(path.dirname(file), {recursive:true});
+  const capture = (item: string) => JSON.stringify({kind:'response',turnId:'turn',timestamp:'2026-01-01T00:00:01Z',model:'live-returned',itemIds:[item]}) + '\n';
+  try {
+    await writeFile(file, capture('live-one'));
+    const first = await service.replyModels(id);
+    assert.equal(first.models[0].reportedModel, 'live-returned');
+    assert.equal(first.models[0].requestedModel, 'live-request');
+    await appendFile(file, capture('live-two'));
+    const next = await service.replyModels(id);
+    assert.ok(next.models.some(record => record.messageIds.includes('live-two')));
+    const claude = await fixture('claude', [{type:'assistant',uuid:'claude-row',timestamp:'2026-01-01T00:00:02Z',message:{content:[{type:'text',text:'new engine reply'}]}}]);
+    try {
+      assert.equal((await claude.service.replyModels(id)).models[0].reportedModel, null);
+      const summary = await claude.service.snapshot(id);
+      assert.ok('reportedModels' in summary);
+      assert.ok(summary.reportedModels?.includes('live-returned'));
+    } finally { await claude.dispose(); }
+
+  } finally { await dispose(); await rm(file, {force:true}); }
 });
