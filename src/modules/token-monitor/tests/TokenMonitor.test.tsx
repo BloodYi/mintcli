@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { TokenMonitorProvider, MonitorButton } from '@/modules/token-monitor';
 import { AccountQuota } from '@/modules/agent-connections/AccountQuota';
 import { api } from '@/shared/api';
-vi.mock('@/shared/api', () => ({ api: { tokenMonitor: { snapshot: vi.fn(), updates: vi.fn(), sessions: vi.fn().mockImplementation(async () => Response.json({ sessions: [] })) }, agentConnections: { quota: vi.fn() } }, readApiJson: async (response: Response) => response.json() }));
+vi.mock('@/shared/api', () => ({ api: { tokenMonitor: { updateTask: vi.fn().mockImplementation(async () => Response.json({ task: null })), startUpdate: vi.fn(), snapshot: vi.fn(), updates: vi.fn(), sessions: vi.fn().mockImplementation(async () => Response.json({ sessions: [] })) }, agentConnections: { quota: vi.fn() } }, readApiJson: async (response: Response) => response.json() }));
 const snapshot = (sessionId: string, model: string | null) => ({ sessionId, provider: 'codex', configuredModel: 'configured', returnedModel: model, checkedAt: Date.now(), status: 'ok', limited: false, totals: null, alerts: [], replies: [], usage: [] });
 afterEach(() => { cleanup(); localStorage.clear(); });
 function Workbench({ id }: { id: string }) {

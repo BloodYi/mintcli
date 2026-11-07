@@ -1,3 +1,4 @@
+import { MonitorUpdater } from '@/modules/token-monitor/MonitorUpdater';
 import { SessionHistory } from '@/modules/token-monitor/SessionHistory';
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -122,7 +123,7 @@ export function TokenMonitorProvider({ sessionId, model, children }: { sessionId
           {current?.status === 'ok' && !current.replies.length && <p className="text-sm text-muted-foreground">尚未记录到模型回复。</p>}
           {current && <p className="text-xs text-muted-foreground">更新于 {new Date(current.checkedAt).toLocaleTimeString()}</p>}
         </>}
-        <div className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground"><a href="https://github.com/Javis603/token-monitor" target="_blank" rel="noopener noreferrer" className="underline">Javis603/token-monitor</a> · mintcli 适配版{update && <> · 解析器 {update.installedVersion}<p className="mt-1">{update.status !== 'ok' ? '上游版本检查暂不可用，稍后自动重试' : update.updateAvailable ? `发现上游新版本 ${update.latestVersion}，可更新适配器并检查接口兼容性` : `上游版本已检查：${update.latestVersion}`} · <a href={update.url} target="_blank" rel="noopener noreferrer" className="underline">查看更新</a></p></>}</div>
+        <div className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground"><a href="https://github.com/Javis603/token-monitor" target="_blank" rel="noopener noreferrer" className="underline">Javis603/token-monitor</a> · mintcli 适配版{update && <> · 解析器 {update.installedVersion}<div className="mt-1 flex items-start gap-2"><p className="min-w-0 flex-1">{update.status !== 'ok' ? '上游版本检查暂不可用，稍后自动重试' : update.updateAvailable ? `发现上游新版本 ${update.latestVersion}，可更新适配器并检查接口兼容性` : `上游版本已检查：${update.latestVersion}`} · <a href={update.url} target="_blank" rel="noopener noreferrer" className="underline">查看更新</a></p><MonitorUpdater available={update.status === 'ok' && update.updateAvailable} /></div></>}</div>
       </DialogContent>
     </Dialog>
   </MonitorContext.Provider>;
