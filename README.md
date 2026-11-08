@@ -6,6 +6,10 @@ Based on [siteboon/claudecodeui](https://github.com/siteboon/claudecodeui), with
 
 mintcli is maintained independently. Upstream release polling and application update execution are disabled, including the system API and CLI update command. The interface has no upstream GitHub Star badge, issue-report link, or community link.
 
+## Android app
+
+An Android client and native phone tools are available in [mobile/android](mobile/android/README.md). The app connects to an existing mintcli workspace and also edits authorized phone files, inspects process memory, and manages system settings using the permissions available on the device. Networking uses the phone's existing connection, including an independently configured Clash VPN; no proxy nodes or subscription are bundled.
+
 ## What this version adds
 
 - **Unified account management:** Add, authorize, and switch Codex and Claude accounts, native Cursor and OpenCode identities, Antigravity identities, and third-party API connections from the chat workspace.

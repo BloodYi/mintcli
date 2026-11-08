@@ -1,0 +1,51 @@
+# Copy to .github/workflows/android-app.yml to enable on a workflow-authorized account.
+name: Android App
+
+on:
+  push:
+    branches: [main, 'mobile/**']
+    paths: ['mobile/android/**', '.github/workflows/android-app.yml']
+  pull_request:
+    paths: ['mobile/android/**', '.github/workflows/android-app.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Test, lint and build APK
+        run: gradle -p mobile/android --no-daemon testDebugUnitTest lintDebug assembleDebug
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mintcli-android-debug
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Upload validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-validation
+          path: |
+            mobile/android/app/build/reports/tests/
+            mobile/android/app/build/reports/lint-results-debug.*
+          if-no-files-found: ignore
