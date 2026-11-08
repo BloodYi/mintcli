@@ -117,7 +117,7 @@ export const egressService = {
   },
   async sync() {
     if (!syncing) syncing = runFile('/usr/local/libexec/mintcli-egress-sync', [], { timeout: 90000, maxBuffer: 65536 })
-      .catch(() => { throw fail('订阅更新失败，已保留原节点；请检查聚合服务或代理内核', 502); })
+      .catch(() => { throw fail('本地节点刷新失败，已保留现有配置；请检查订阅链接或代理内核', 502); })
       .finally(() => { syncing = null; });
     await syncing; return this.status();
   },

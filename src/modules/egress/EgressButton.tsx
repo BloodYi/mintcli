@@ -47,12 +47,12 @@ export function EgressButton({ connectionId }: { connectionId?: string }) {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-h-[88dvh] w-[calc(100%-1.5rem)] space-y-4 overflow-y-auto p-4 sm:max-w-3xl sm:p-6" aria-describedby="egress-help">
         <DialogTitle>代理节点</DialogTitle>
-        <p id="egress-help" className="text-sm text-muted-foreground">为各 CLI 和第三方 API 分别选择出口，选择后自动保存，对后续请求生效。正在生成的回复继续使用原节点。此设置在这台 EC2 上共享。</p>
+        <p id="egress-help" className="text-sm text-muted-foreground">为各 CLI 和第三方 API 分别选择出口，选择后自动保存，对后续请求生效。正在生成的回复继续使用原节点。仅影响这台 VPS 的 AI CLI，不修改你的 Clash 聚合订阅。</p>
         {notice && <p role="status" className="rounded-lg border border-border bg-muted p-3 text-sm">{notice}</p>}
         {busy === 'load' && <p role="status">正在读取节点…</p>}
         {data && <>
           {!data.routing.configured && <p role="status" className="text-sm text-amber-600">代理服务尚未配置，请先配置订阅。</p>}
-          {data.routing.source === 'snapshot' && <p className="rounded-lg bg-muted p-3 text-xs text-muted-foreground">当前使用本地保留的 {data.routing.nodes.length - 2} 个节点快照。原聚合链接暂时返回 404；可先检测并使用节点，订阅恢复后点击更新。</p>}
+          {data.routing.source === 'snapshot' && <p className="rounded-lg bg-muted p-3 text-xs text-muted-foreground">当前使用已保存的本地配置，共 {data.routing.nodes.length} 个出口选项。聚合链接暂不可用；刷新只读取订阅，失败时保留现有配置。</p>}
           <div className="space-y-2" aria-label="各服务出口">
             {data.targets.map(target => {
               const selected = data.routing.selections[target.id] || 'legacy';
@@ -67,7 +67,7 @@ export function EgressButton({ connectionId }: { connectionId?: string }) {
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
             <div><h3 className="text-sm font-medium">节点检测</h3><p className="text-xs text-muted-foreground">检测 HTTPS 连通性和出口 IP；模型 API 是否允许此出口，需实际请求确认。</p></div>
-            <button type="button" className={button + ' flex items-center gap-1'} disabled={Boolean(busy)} onClick={() => void run('sync', async () => { const routing = await readApiJson<Routing>(await api.egress.sync()); setData(previous => previous ? { ...previous, routing } : previous); setProbes({}); setNotice('订阅已更新'); })}><RefreshCw className={'h-3.5 w-3.5 ' + (busy === 'sync' ? 'animate-spin' : '')} />{busy === 'sync' ? '更新中…' : '更新订阅'}</button>
+            <button type="button" className={button + ' flex items-center gap-1'} disabled={Boolean(busy)} onClick={() => void run('sync', async () => { const routing = await readApiJson<Routing>(await api.egress.sync()); setData(previous => previous ? { ...previous, routing } : previous); setProbes({}); setNotice('本地节点已刷新'); })}><RefreshCw className={'h-3.5 w-3.5 ' + (busy === 'sync' ? 'animate-spin' : '')} />{busy === 'sync' ? '刷新中…' : '刷新本地节点'}</button>
           </div>
           <div className="space-y-1">
             {data.routing.nodes.map(node => <div key={node.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border p-2 text-xs">
