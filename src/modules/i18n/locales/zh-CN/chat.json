@@ -121,6 +121,8 @@
     "loading": "加载中…"
   },
   "input": {
+    "sendNow": "立即发送",
+    "sendNowHint": "中止当前轮，结合这条补充消息继续处理",
     "placeholder": "输入 / 调用命令，@ 选择文件，或向 {{provider}} 提问...",
     "placeholderDefault": "输入您的消息...",
     "disabled": "输入已禁用",

@@ -77,6 +77,7 @@ type ChatComposerProps = {
   hasInput: boolean;
   onClearInput: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>) => void;
+  onSendNow?: (event: MouseEvent<HTMLButtonElement>) => void;
   isDragActive: boolean;
   queuedDraft: QueuedDraft | null;
   backgroundSendPrompt: BackgroundSendPrompt | null;
@@ -159,6 +160,7 @@ export default function ChatComposer({
   hasInput,
   onClearInput,
   onSubmit,
+  onSendNow,
   isDragActive,
   queuedDraft,
   backgroundSendPrompt,
@@ -544,6 +546,18 @@ export default function ChatComposer({
               providerLabel={providerLabel}
             />
 
+            {canQueueDraft && onSendNow && (
+              <PromptInputButton
+                type="button"
+                onClick={onSendNow}
+                aria-label={t('input.sendNow', { defaultValue: 'Send now' })}
+                title={t('input.sendNowHint', { defaultValue: 'Interrupt the current turn and continue with this message' })}
+                className="gap-1 px-2"
+              >
+                <Zap className="h-4 w-4" />
+                <span>{t('input.sendNow', { defaultValue: 'Send now' })}</span>
+              </PromptInputButton>
+            )}
             <PromptInputSubmit
               onClick={
                 canQueueDraft

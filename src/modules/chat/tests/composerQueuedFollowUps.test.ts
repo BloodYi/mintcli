@@ -148,6 +148,7 @@ type Props = {
 
 const render = (initialProps: Partial<Props> = {}) => {
   const errors: ChatMessage[] = [];
+  const sent: Array<Record<string, unknown>> = [];
   const view = renderHook(
     ({ session, isLoading, model, processingSessions }: Props) => useChatComposerState({
       selectedProject: PROJECT,
@@ -163,7 +164,7 @@ const render = (initialProps: Partial<Props> = {}) => {
       processingSessions,
       canAbortSession: false,
       tokenBudget: null,
-      sendMessage: () => undefined,
+      sendMessage: (message) => { sent.push(message as Record<string, unknown>); },
       scrollToBottom: () => undefined,
       addMessage: (message) => {
         if (message.type === 'error') errors.push(message);
@@ -173,7 +174,7 @@ const render = (initialProps: Partial<Props> = {}) => {
     }),
     { initialProps: { session: SESSION_1, isLoading: true, model: 'model-1', ...initialProps } },
   );
-  return { view, errors };
+  return { view, errors, sent };
 };
 
 type View = ReturnType<typeof render>['view'];
@@ -698,4 +699,23 @@ test('a session switch during the upload keeps a draft that changed in the sessi
 
   assert.equal(queuedOnServer('session-1')?.content, 'follow-up B');
   assert.equal(readDraftText('session-1'), 'written on the laptop');
+});
+
+
+test('send now bypasses the busy queue and uploads the follow-up attachments once', async () => {
+  const { view, sent } = render();
+  await act(async () => {
+    view.result.current.setInput('new constraint');
+    view.result.current.setAttachedFiles([new File(['notes'], 'b.txt', { type: 'text/plain' })]);
+  });
+  await act(async () => {
+    await view.result.current.handleSendNow({ preventDefault: () => undefined } as never);
+  });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, 'chat.send-now');
+  assert.equal(sent[0].sessionId, 'session-1');
+  assert.equal(sent[0].content, 'new constraint');
+  assert.deepEqual((sent[0].options as Record<string, unknown>).attachments, [{ name: 'b.txt', path: '/uploads/b.txt' }]);
+  assert.equal(queuedOnServer(), null);
+  assert.equal(view.result.current.input, '');
 });

@@ -134,6 +134,8 @@
     "loading": "Loading…"
   },
   "input": {
+    "sendNow": "Send now",
+    "sendNowHint": "Interrupt the current turn and continue with this message",
     "placeholder": "Type / for commands, @ for files, or ask {{provider}} anything...",
     "placeholderDefault": "Type your message...",
     "disabled": "Input disabled",

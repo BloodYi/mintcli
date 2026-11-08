@@ -90,6 +90,8 @@ type CommandExecutionResult = {
 
 
 type SubmitOptions = {
+  /** Interrupt the active turn and resume with this follow-up immediately. */
+  sendNow?: boolean;
   /**
    * Send the text as a chat message even when it starts with "/" (or is
    * "help"). Set only for the re-submit of a custom command's expanded body:
@@ -887,7 +889,7 @@ export function useChatComposerState({
       // A turn is already in flight: stash this message instead of sending it.
       // Upload attached files now so the queued record contains durable image
       // descriptors that can be sent even if another session is open later.
-      if (isLoading) {
+      if (isLoading && !submitOptions?.sendNow) {
         // A run can restart in the tiny gap between scheduling and flushing a
         // queued submission. Put the same durable draft back without uploading
         // its files again.
@@ -1040,7 +1042,7 @@ export function useChatComposerState({
       // call, but not one to make for them — and queueing behind the work,
       // which the server holds until it finishes, is the safe alternative.
       const backgroundActivity = processingSessionsRef.current?.get(targetSessionId);
-      if (backgroundActivity?.background) {
+      if (backgroundActivity?.background && !isLoading) {
         const work = ownBackgroundTasks(backgroundActivity.tasks ?? [])
           .map((task) => describeBackgroundTask(task, t));
         const choice = await askBeforeSendingOverBackgroundWork(work);
@@ -1096,7 +1098,7 @@ export function useChatComposerState({
         // Replacing an already-sent message is its own frame: it changes the
         // shape of the conversation, so it gets validated separately and can
         // report why it was refused.
-        type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
+        type: editingAnchorId ? 'chat.edit-send' : submitOptions?.sendNow ? 'chat.send-now' : 'chat.send',
         sessionId: targetSessionId,
         ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
         content: messageContent,
@@ -1180,6 +1182,12 @@ export function useChatComposerState({
       }
     },
     [submitMessage],
+  );
+
+  const handleSendNow = useCallback(
+    (event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent) =>
+      handleSubmit(event, undefined, { sendNow: true, skipCommandInterception: true }),
+    [handleSubmit],
   );
 
   useEffect(() => {
@@ -1546,6 +1554,7 @@ export function useChatComposerState({
     isDragActive,
     openAttachmentPicker: open,
     handleSubmit,
+    handleSendNow,
     backgroundSendPrompt,
     resolveBackgroundSendPrompt,
     queuedDraft,
