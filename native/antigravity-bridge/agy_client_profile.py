@@ -17,7 +17,7 @@ import urllib.request
 
 class DesktopProfileProxy:
     def __init__(self, upstream: str = "https://daily-cloudcode-pa.googleapis.com",
-                 version: str = "2.22.0", timeout: int = 1800):
+                 version: str = "2.22.0", timeout: int = 1800, proxy_url: str | None = None):
         target = urllib.parse.urlsplit(upstream)
         if (target.scheme != "https" or target.hostname not in
                 {"daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"}
@@ -26,6 +26,7 @@ class DesktopProfileProxy:
             raise ValueError("Desktop profile requires an official Cloud Code HTTPS endpoint")
         if not re.fullmatch(r"\d+\.\d+\.\d+", version):
             raise ValueError("Invalid AGY_DESKTOP_VERSION")
+        self.proxy_url = proxy_url
         self.host, self.version = target.hostname, version
         self.timeout = None if timeout == 0 else (timeout if timeout > 0 else 1800)
         self.prefix = "/" + secrets.token_urlsafe(32)
@@ -130,7 +131,7 @@ class DesktopProfileProxy:
     def upstream_connection(self):
         """Keep TLS end to end through the configured HTTP CONNECT proxy."""
         proxies = urllib.request.getproxies()
-        proxy_url = proxies.get("https") or proxies.get("all")
+        proxy_url = self.proxy_url if self.proxy_url is not None else proxies.get("https") or proxies.get("all")
         if not proxy_url or urllib.request.proxy_bypass(self.host):
             return http.client.HTTPSConnection(self.host, timeout=self.timeout)
         proxy = urllib.parse.urlsplit(proxy_url)

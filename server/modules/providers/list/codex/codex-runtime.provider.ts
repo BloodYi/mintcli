@@ -1,3 +1,4 @@
+import { egressFetch } from '@/modules/egress/index.js';
 import { resolveManagedCli } from '@/shared/index.js';
 /**
  * OpenAI Codex SDK Integration
@@ -308,7 +309,7 @@ async function queryCodex(
     if (selectedConnection.kind === 'api') await validateConnectionEndpoint(selectedConnection.baseUrl!);
     responseCapture = await startResponseCapture(
       selectedConnection.kind === 'api' ? selectedConnection.baseUrl! : 'https://chatgpt.com/backend-api/codex',
-      sessionId,
+      sessionId, egressFetch(selectedConnection.kind === 'api' ? 'api:' + selectedConnection.id : 'codex', selectedConnection.env),
     );
     codex = new Codex({
       ...(resolveManagedCli('codex') ? { codexPathOverride: resolveManagedCli('codex') } : {}),

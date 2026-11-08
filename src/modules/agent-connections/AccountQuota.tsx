@@ -1,3 +1,4 @@
+import { EgressButton } from '@/modules/egress';
 import { useEffect, useState } from 'react';
 import { api, readApiJson } from '@/shared/api';
 import { MonitorButton } from '@/modules/token-monitor';
@@ -55,6 +56,7 @@ export function AccountQuota({ id }: { id?: string }) {
     </>}
     <div className="ml-auto flex items-center gap-2">
     <button type="button" disabled={busy || !id} className="ml-auto rounded border border-border px-2 py-1 disabled:opacity-50" onClick={() => setRevision(value => value + 1)}>刷新额度</button>
+    <EgressButton connectionId={id} />
     <MonitorButton />
     </div>
   </div>;

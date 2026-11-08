@@ -1135,9 +1135,12 @@ def _build_argv(
     return argv
 
 
+from egress import egress_environment
+
+
 def _agy_environment() -> dict[str, str]:
     """Run chat turns with known-stalled MCP servers removed."""
-    env = os.environ.copy()
+    env = egress_environment(os.environ.copy())
     if not AGY_DISABLE_MCP and not AGY_DISABLED_MCP_SERVERS:
         return env
 
@@ -1397,6 +1400,7 @@ async def _stream_agy(
             profile_proxy = DesktopProfileProxy(
                 run_env.get("CLOUD_CODE_URL", "https://daily-cloudcode-pa.googleapis.com"),
                 run_env.get("AGY_DESKTOP_VERSION", "2.22.0"), turn_timeout,
+                proxy_url=run_env.get("HTTPS_PROXY", ""),
             )
             run_env["CLOUD_CODE_URL"] = profile_proxy.url
         proc = await asyncio.create_subprocess_exec(
@@ -1894,6 +1898,7 @@ async def _fetch_profile_models(run_env: dict[str, str], profile: str) -> list[d
                 profile_proxy = DesktopProfileProxy(
                     env.get("CLOUD_CODE_URL", "https://daily-cloudcode-pa.googleapis.com"),
                     env.get("AGY_DESKTOP_VERSION", "2.22.0"), 30,
+                    proxy_url=env.get("HTTPS_PROXY", ""),
                 )
                 env["CLOUD_CODE_URL"] = profile_proxy.url
             proc = await asyncio.create_subprocess_exec(

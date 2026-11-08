@@ -1,3 +1,4 @@
+import { egressFetch } from '@/modules/egress/index.js';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -21,7 +22,7 @@ export async function readOfficialCatalog(home: string, env: Record<string, stri
   const cached = pending.get(home);
   if (cached && cached.fingerprint === fingerprint && cached.expires > Date.now()) return cached.value;
   const value = (async () => {
-    const request = async (tokens: NonNullable<typeof auth.tokens>) => fetch(`https://chatgpt.com/backend-api/codex/models?client_version=${encodeURIComponent(readCodexVersion())}`, {
+    const request = async (tokens: NonNullable<typeof auth.tokens>) => egressFetch('codex', env)(`https://chatgpt.com/backend-api/codex/models?client_version=${encodeURIComponent(readCodexVersion())}`, {
       headers: { Authorization: `Bearer ${tokens.access_token}`, ...(tokens.account_id ? { 'ChatGPT-Account-Id': tokens.account_id } : {}), originator: 'codex_cli_rs' },
       redirect: 'error', signal: AbortSignal.timeout(20000),
     });

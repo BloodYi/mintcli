@@ -1,3 +1,4 @@
+import { EgressButton } from '@/modules/egress';
 import { useEffect, useState } from 'react';
 import { api } from '@/shared/api';
 
@@ -44,5 +45,6 @@ export function CodexQuota({ connectionId }: { connectionId?: string }) {
     </span>)}
     {(!current || !current.windows.length) && <span className="min-w-0 text-muted-foreground" role="status">{current?.reason || (busy ? '正在读取官方额度…' : '暂无额度信息')}</span>}
     <button type="button" className="ml-auto shrink-0 rounded border border-border px-2 py-1 disabled:opacity-50" disabled={busy} onClick={() => setRevision(value => value + 1)} aria-label="刷新当前账号额度">{busy ? '读取中…' : '刷新额度'}</button>
+    <EgressButton connectionId={connectionId ? "codex:" + connectionId : undefined} />
   </div>;
 }

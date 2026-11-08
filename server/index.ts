@@ -10,6 +10,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import cors from 'cors';
 import { codexConnectionsRoutes } from './modules/codex-connections/index.js';
 import { agentConnectionsRoutes } from './modules/agent-connections/index.js';
+import { egressRoutes } from './modules/egress/index.js';
 import { tokenMonitorRoutes } from './modules/token-monitor/index.js';
 import { antigravityRoutes } from './modules/antigravity/index.js';
 
@@ -162,6 +163,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/codex-connections', authenticateToken, codexConnectionsRoutes);
 app.use('/api/antigravity', authenticateToken, antigravityRoutes);
 app.use('/api/agent-connections', authenticateToken, agentConnectionsRoutes);
+app.use('/api/egress', authenticateToken, egressRoutes);
 app.use('/api/token-monitor', authenticateToken, tokenMonitorRoutes);
 
 // File Tree API Routes (protected)

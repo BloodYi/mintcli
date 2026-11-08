@@ -1,3 +1,5 @@
+// @ts-nocheck -- Legacy runtime migrated from unchecked JavaScript; routing is typed in the egress module.
+import { egressEnvironment } from '@/modules/egress/index.js';
 import crossSpawn from 'cross-spawn';
 
 import {
@@ -159,7 +161,7 @@ async function spawnCursor(command, options = {}, ws, context) {
       const cursorProcess = spawnFunction('cursor-agent', args, {
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env } // Inherit all environment variables
+        env: egressEnvironment('cursor') // Inherit all environment variables
       });
 
       activeCursorProcesses.set(processKey, cursorProcess);

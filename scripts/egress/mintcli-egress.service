@@ -1,0 +1,22 @@
+[Unit]
+Description=MintCLI independently selectable VPS egress listeners
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=mintcli-egress
+LoadCredential=config.yaml:/etc/mintcli-egress/config.yaml
+ExecStart=/usr/local/libexec/cloudcli-mihomo -d /var/lib/mintcli-egress -f ${CREDENTIALS_DIRECTORY}/config.yaml
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

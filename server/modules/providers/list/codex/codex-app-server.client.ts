@@ -1,3 +1,4 @@
+import { egressEnvironment } from '@/modules/egress/index.js';
 import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import { resolveCodexLauncher as resolveInstalledCodexLauncher } from '@/shared/index.js';
@@ -71,7 +72,7 @@ async function withAppServer<T>(
 ): Promise<T> {
   const launcher = resolveCodexLauncher();
   const child = spawn(process.execPath, [launcher, 'app-server'], {
-    env: process.env,
+    env: egressEnvironment('codex'),
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 

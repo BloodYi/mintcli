@@ -198,6 +198,12 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 // import a named method instead of assembling URLs of their own.
 
 export const api = {
+  egress: {
+    status: (signal?: AbortSignal) => get('/api/egress', { signal }),
+    select: (target: string, nodeId: string) => put('/api/egress', { target, nodeId }),
+    probe: (nodeId: string) => post('/api/egress/probe', { nodeId }),
+    sync: () => post('/api/egress/sync', {}),
+  },
   tokenMonitor: {
     replyModels: (sessionId: string, signal?: AbortSignal) => get('/api/token-monitor/sessions/' + encodeURIComponent(sessionId) + '/models', { signal }),
     updateTask: (signal?: AbortSignal) => get('/api/token-monitor/update-task', { signal }),

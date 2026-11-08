@@ -1,3 +1,4 @@
+import { egressFetch } from '@/modules/egress/index.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -79,7 +80,8 @@ export async function runCompatibleChat(command: string, options: AnyRecord, wri
     append('event_msg', { type: 'task_started', turn_id: turnId });
     append('event_msg', { type: 'user_message', message: command, images: [] });
     append('response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text: command }] });
-    const request = (includeUsage: boolean) => fetch(selected.baseUrl + '/chat/completions', {
+    const fetchSelected = egressFetch('api:' + selected.id, selected.env);
+    const request = (includeUsage: boolean) => fetchSelected(selected.baseUrl + '/chat/completions', {
       method: 'POST', redirect: 'error', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + selected.apiKey },
       body: JSON.stringify({ model, stream: true, ...(includeUsage ? { stream_options: { include_usage: true } } : {}), messages: [...history, { role: 'user', content: command }] }),

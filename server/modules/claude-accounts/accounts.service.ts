@@ -1,3 +1,4 @@
+import { egressEnvironment } from '@/modules/egress/index.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -58,7 +59,7 @@ function accountEnv(id: string): Record<string, string> {
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
   for (const key of Object.keys(env)) if (/^(?:ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CODE_USE_(?:BEDROCK|VERTEX|FOUNDRY))/.test(key)) delete env[key];
   delete env.CLAUDECODE;
-  return { ...env, CLAUDE_CONFIG_DIR: home(id), BROWSER: '/bin/true' };
+  return { ...egressEnvironment('claude', env), CLAUDE_CONFIG_DIR: home(id), BROWSER: '/bin/true' };
 }
 async function refreshIdentity(id: string) {
   await new Promise<void>(done => execFile(nativeBinary(), ['auth', 'status'], { env: accountEnv(id), timeout: 15000, maxBuffer: 65536 }, (_error, stdout) => {

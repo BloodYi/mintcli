@@ -1,0 +1,28 @@
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { EgressButton } from '@/modules/egress/EgressButton';
+import { api } from '@/shared/api';
+vi.mock('@/shared/api', () => ({ api: { egress: { status: vi.fn(), select: vi.fn(), sync: vi.fn(), probe: vi.fn() }, codexConnections: { list: vi.fn() } }, readApiJson: async (response: Response) => { const value = await response.json(); if (!response.ok) throw new Error(value.error); return value; } }));
+const routing = { configured: true, updatedAt: null, nodes: [{ id: 'legacy', name: '原固定出口', port: 17890 }, { id: 'direct', name: '本机（EC2 直连）', port: 0 }, { id: 'a', name: '东京', port: 18080 }], selections: { codex: 'legacy', 'api:test': 'a' } };
+afterEach(() => { cleanup();vi.clearAllMocks(); });
+it('opens on demand, saves API and CLI independently and retains confirmed choice on error', async () => {
+  vi.mocked(api.egress.status).mockResolvedValue(Response.json(routing));
+  vi.mocked(api.codexConnections.list).mockResolvedValue(Response.json({ connections: [{ id: 'test', kind: 'api', name: '测试 API' }] }));
+  render(<EgressButton connectionId="codex:test" />);
+  expect(api.egress.status).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '选择代理节点' }));
+  const codex = await screen.findByLabelText('Codex CLI 的出口节点');
+  const third = screen.getByLabelText('测试 API · API 的出口节点') as HTMLSelectElement;
+  expect(third.value).toBe('a');
+  vi.mocked(api.egress.select).mockResolvedValueOnce(Response.json({ ...routing, selections: { ...routing.selections, codex: 'direct' } }));
+  fireEvent.change(codex, { target: { value: 'direct' } });
+  await screen.findByText('Codex CLI 已保存，后续请求使用所选出口');
+  expect(api.egress.select).toHaveBeenCalledWith('codex', 'direct');expect(third.value).toBe('a');
+  vi.mocked(api.egress.select).mockResolvedValueOnce(Response.json({ error: '保存失败' }, { status: 500 }));
+  fireEvent.change(third, { target: { value: 'direct' } });
+  await screen.findByText('保存失败');expect(third.value).toBe('a');
+  vi.mocked(api.egress.probe).mockResolvedValueOnce(Response.json({ nodeId: 'a', ok: true, ip: '203.0.113.1', country: 'JP', latencyMs: 30 }));
+  fireEvent.click(screen.getByRole('button', { name: '检测 东京' }));
+  await screen.findByText('203.0.113.1 · JP · 30 ms');
+  await waitFor(() => expect(api.egress.probe).toHaveBeenCalledWith('a'));
+});

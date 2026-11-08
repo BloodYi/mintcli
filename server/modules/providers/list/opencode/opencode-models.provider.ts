@@ -1,3 +1,4 @@
+import { egressEnvironment } from '@/modules/egress/index.js';
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -338,6 +339,7 @@ const readInstalledOpenCodeModels = async (): Promise<string[]> => new Promise((
     resolve([...models]);
   };
   const child = spawn('opencode', ['models'], {
+    env: egressEnvironment('opencode'),
     stdio: ['ignore', 'pipe', 'ignore'],
     shell: false,
   });

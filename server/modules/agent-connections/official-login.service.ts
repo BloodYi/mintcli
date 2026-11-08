@@ -1,3 +1,4 @@
+import { egressEnvironment } from '@/modules/egress/index.js';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -44,7 +45,7 @@ export function createOfficialLoginService(overrides: { spawn?: typeof pty.spawn
       if (startedMeanwhile) return publicStatus(startedMeanwhile);
       const id = randomUUID();
       const home = provider === 'antigravity' ? await fs.mkdtemp(path.join(os.tmpdir(), 'mintcli-agy-login-')) : undefined;
-      const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+      const env = egressEnvironment(provider);
       env.BROWSER = '/bin/true'; env.NO_OPEN_BROWSER = '1';
       if (home) {
         env.HOME = home; env.XDG_CONFIG_HOME = path.join(home, '.config'); env.XDG_DATA_HOME = path.join(home, '.local/share');

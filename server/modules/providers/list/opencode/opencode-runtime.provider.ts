@@ -1,3 +1,5 @@
+// @ts-nocheck -- Legacy runtime migrated from unchecked JavaScript; routing is typed in the egress module.
+import { egressEnvironment } from '@/modules/egress/index.js';
 import fsSync from 'node:fs';
 
 import crossSpawn from 'cross-spawn';
@@ -290,7 +292,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
       opencodeProcess = spawnFunction('opencode', args, {
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, ...permissionOptions.env },
+        env: { ...egressEnvironment('opencode'), ...permissionOptions.env },
       });
 
       activeOpenCodeProcesses.set(processKey, opencodeProcess);

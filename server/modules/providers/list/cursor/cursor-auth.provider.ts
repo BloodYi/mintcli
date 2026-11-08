@@ -1,3 +1,4 @@
+import { egressEnvironment } from '@/modules/egress/index.js';
 import spawn from 'cross-spawn';
 
 import type { IProviderAuth } from '@/shared/interfaces.js';
@@ -78,7 +79,7 @@ export class CursorProviderAuth implements IProviderAuth {
       }, STATUS_TIMEOUT_MS);
 
       try {
-        childProcess = spawn('cursor-agent', ['status']);
+        childProcess = spawn('cursor-agent', ['status'], { env: egressEnvironment('cursor') });
       } catch {
         clearTimeout(timeout);
         processCompleted = true;

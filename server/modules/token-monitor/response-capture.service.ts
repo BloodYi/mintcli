@@ -11,7 +11,7 @@ function responseCapturePath(sessionId: string): string {
 }
 
 /** Used by Codex runtime to observe response model labels without persisting prompts, headers or reasoning. */
-export async function startResponseCapture(upstream: string, sessionId: string | undefined) {
+export async function startResponseCapture(upstream: string, sessionId: string | undefined, fetchUpstream: typeof globalThis.fetch = globalThis.fetch) {
   const secret = randomUUID();
   const prefix = '/' + secret;
   const turnId = randomUUID();
@@ -37,7 +37,7 @@ export async function startResponseCapture(upstream: string, sessionId: string |
       for (const [key, value] of Object.entries(request.headers)) {
         if (!['host', 'connection', 'transfer-encoding', 'accept-encoding'].includes(key) && value !== undefined) headers.set(key, Array.isArray(value) ? value.join(', ') : value);
       }
-      const response = await fetch(upstream.replace(/\/$/, '') + suffix, {
+      const response = await fetchUpstream(upstream.replace(/\/$/, '') + suffix, {
         method: request.method, headers, body: request.method === 'GET' ? undefined : request,
         duplex: 'half', signal: controller.signal, redirect: 'manual',
       } as RequestInit & { duplex: string });

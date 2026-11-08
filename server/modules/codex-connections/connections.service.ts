@@ -1,3 +1,4 @@
+import { egressEnvironment, egressFetch } from '@/modules/egress/index.js';
 import fs from 'node:fs';
 import { readOfficialCatalog } from './catalog.service.js';
 import type { ProviderModelsDefinition } from '@/shared/types.js';
@@ -60,13 +61,13 @@ function publicConnection(item: Connection) {
     protocol: item.protocol || 'responses', model: item.model || '', authorized, email, hasApiKey: Boolean(item.apiKey) };
 }
 
-function environment(home: string): Record<string, string> {
+function environment(home: string, target = 'codex'): Record<string, string> {
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
   // A process gets a credential home of its own. Switching accounts never
   // overwrites another running turn's credentials or the server environment.
   env.CODEX_HOME = home;
   for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL']) delete env[key];
-  return env;
+  return egressEnvironment(target, env);
 }
 
 function inputString(value: unknown, max: number): string {
@@ -101,7 +102,7 @@ export function resolveCodexConnection(id?: unknown) {
     return { id: 'default', name: 'Codex', kind: 'chatgpt' as const, home, env: environment(home), baseUrl: undefined, apiKey: undefined, protocol: undefined, model: undefined };
   }
   const item = connection(id);
-  return { ...item, env: environment(item.home) };
+  return { ...item, env: environment(item.home, item.kind === 'api' ? 'api:' + item.id : 'codex') };
 }
 
 /** Used by the authenticated connections router for account and API workflows. */
@@ -281,7 +282,7 @@ export const connectionService = {
       return { models: catalog.OPTIONS.map(option => option.value), catalog };
     }
     await validateConnectionEndpoint(item.baseUrl!);
-    const response = await fetch(item.baseUrl + '/models', { headers: { Authorization: 'Bearer ' + item.apiKey }, redirect: 'error', signal: AbortSignal.timeout(20000) });
+    const response = await egressFetch('api:' + item.id)(item.baseUrl + '/models', { headers: { Authorization: 'Bearer ' + item.apiKey }, redirect: 'error', signal: AbortSignal.timeout(20000) });
     if (!response.ok) failure(`模型接口返回 HTTP ${response.status}，请检查地址和密钥；也可手动填写模型名`);
     const data = await response.json() as { data?: { id?: unknown }[] };
     const models = (data.data || []).map(row => row.id).filter((id): id is string => typeof id === 'string' && id.length <= 160).slice(0, 2000);
