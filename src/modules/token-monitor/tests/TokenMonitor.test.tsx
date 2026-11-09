@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { TokenMonitorProvider, MonitorButton } from '@/modules/token-monitor';
 import { AccountQuota } from '@/modules/agent-connections/AccountQuota';
@@ -15,9 +15,10 @@ it('both entry points share one window and quota collapse persists while keeping
   vi.mocked(api.agentConnections.quota).mockResolvedValue(Response.json({ connectionId: 'codex:a', windows: [{ bucket: 'Codex', remainingPercent: 58 }] }));
   const view = render(<Workbench id="first" />);
   await screen.findByText('返回：returned-model');
-  await screen.findByText('Codex · 剩余 58%');
+  const quota = await screen.findByRole('region', { name: 'Codex额度' });
+  expect(within(quota).getByText('58%')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: '收起账号额度' }));
-  expect(screen.queryByText('Codex · 剩余 58%')).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Codex额度' })).toBeNull();
   expect(localStorage.getItem('account-quota-collapsed')).toBe('true');
   fireEvent.click(screen.getByRole('button', { name: '开关监控窗口' }));
   await screen.findByRole('dialog');

@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { api, readApiJson } from '@/shared/api';
 import type { AntigravityMessage } from '@/shared/types';
 import { useAntigravity } from '@/modules/antigravity/hooks/useAntigravity';
+import { QuotaWindow } from '@/shared/ui/QuotaWindow';
 
 const CONTROL = 'min-h-10 rounded-md border border-border bg-background px-3 py-2 text-sm disabled:opacity-50';
 
@@ -88,9 +89,11 @@ export function AntigravityWorkspace() {
       </div>
       <div aria-label="当前 Antigravity 账号额度" aria-busy={agent.quotaLoading} className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs">
         <span className="break-all font-medium">{active?.email && active.email !== 'unknown' ? active.email + ' · ' : ''}剩余额度</span>
-        {visibleQuota?.quotas.map((item, index) => <span key={item.model + item.type + index} className="rounded border border-border px-2 py-1" title={item.resets_at ? '重置：' + item.resets_at : '未返回重置时间'}>
-          {item.model} · {item.type === 'five_hour' ? '5 小时' : item.type === 'weekly' ? '每周' : '每日'} · {Number.isFinite(item.percentage) ? item.percentage + '%' : '未返回'}
-        </span>)}
+        {Boolean(visibleQuota?.quotas.length) && <div className="flex w-full min-w-0 gap-2 overflow-x-auto pb-1">
+          {visibleQuota?.quotas.map((item, index) => <div key={item.model + item.type + index} className="min-w-[14rem] flex-1"><QuotaWindow
+            label={`${item.model} · ${item.type === 'five_hour' ? '5 小时' : item.type === 'weekly' ? '每周' : '每日'}`}
+            remainingPercent={item.percentage} resetsAt={item.resets_at ? Date.parse(item.resets_at) / 1000 : null} /></div>)}
+        </div>}
         {!visibleQuota?.quotas.length && <span className="text-muted-foreground">{agent.quotaLoading ? '正在读取原生 agy 额度…' : '尚未取得额度，请刷新或检查账号登录。'}</span>}
         <button type="button" className="ml-auto min-h-9 shrink-0 rounded border border-border px-2 disabled:opacity-50" disabled={agent.quotaLoading || pending || agent.busy} onClick={() => void agent.refreshQuota(true)}>刷新额度</button>
       </div>

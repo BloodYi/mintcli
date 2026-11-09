@@ -8,18 +8,20 @@ afterEach(cleanup);
 const fixture = () => ({
   accounts: [{ id: 'a', email: 'a@example.com', name: '账号 A', active: true }, { id: 'b', email: 'b@example.com', name: '账号 B', active: false }],
   models: [{ id: 'native-model', name: '原生模型' }], conversations: [], messages: [],
-  quota: { email: 'a@example.com', timestamp: 1, quotas: [{ model: 'Gemini', type: 'weekly', label: '周额度', percentage: 73, resets_at: 'tomorrow' }] },
+  quota: { email: 'a@example.com', timestamp: 1, quotas: [{ model: 'Gemini', type: 'weekly', label: '周额度', percentage: 73, resets_at: '2030-02-06T18:00:00Z' }] },
   conversationId: null, busy: false, loading: false, notice: '', quotaLoading: false,
   setNotice: vi.fn(), send: vi.fn(), openConversation: vi.fn(), reloadAccounts: vi.fn(),
   refreshQuota: vi.fn(), switchAccount: vi.fn().mockResolvedValue(undefined), newConversation: vi.fn(), sync: vi.fn(), stop: vi.fn(),
 });
-beforeEach(() => vi.mocked(useAntigravity).mockReturnValue(fixture()));
+beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); vi.mocked(useAntigravity).mockReturnValue(fixture()); });
 
 describe('native Antigravity workspace', () => {
   it('shows the current account and its native quota, then switches the account selected by the user', async () => {
     const value = fixture(); vi.mocked(useAntigravity).mockReturnValue(value);
     render(<AntigravityWorkspace />);
-    expect(screen.getByText('Gemini · 每周 · 73%')).toBeTruthy();
+    const quota = screen.getByRole('region', { name: 'Gemini · 每周额度' });
+    expect(screen.getByText('73%')).toBeTruthy();
+    expect(quota.querySelector('time')?.getAttribute('datetime')).toBe('2030-02-06T18:00:00.000Z');
     fireEvent.change(screen.getByLabelText('agy 账号'), { target: { value: 'b' } });
     expect(value.switchAccount).toHaveBeenCalledWith('b');
   });
@@ -27,7 +29,8 @@ describe('native Antigravity workspace', () => {
     const value = fixture(); value.busy = true; value.quota.email = 'b@example.com';
     vi.mocked(useAntigravity).mockReturnValue(value);
     render(<AntigravityWorkspace />);
-    expect(screen.queryByText('Gemini · 每周 · 73%')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Gemini · 每周额度' })).toBeNull();
+    expect(screen.queryByText('73%')).toBeNull();
     expect((screen.getByLabelText('agy 账号') as HTMLSelectElement).disabled).toBe(true);
     expect(screen.getByText('停止生成')).toBeTruthy();
   });

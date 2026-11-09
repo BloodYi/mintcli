@@ -2,6 +2,7 @@ import { EgressButton } from '@/modules/egress';
 import { useEffect, useState } from 'react';
 import { api, readApiJson } from '@/shared/api';
 import { MonitorButton } from '@/modules/token-monitor';
+import { QuotaWindow } from '@/shared/ui/QuotaWindow';
 type Quota = { connectionId: string; status: string; planType?: string; checkedAt?: number; reason?: string; source?: string; dashboardUrl?: string; windows: { bucket: string; model?: string; type?: string; minutes?: number | null; remainingPercent: number | null; resetsAt: number | null }[] };
 /** Used by AgentConnections. Guards identity across slow quota responses and keeps unavailable values distinct from zero. */
 export function AccountQuota({ id }: { id?: string }) {
@@ -36,20 +37,22 @@ export function AccountQuota({ id }: { id?: string }) {
   const groupName = (name: string) => /^Gemini Models$/i.test(name) ? 'Gemini 模型' : /^Claude and GPT models$/i.test(name) ? 'Claude 与 GPT 模型' : name;
   const order = (type?: string) => type === 'weekly' ? 0 : type === 'five_hour' ? 1 : 2;
   return <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs" aria-label="当前账号额度" aria-busy={busy}>
-    <strong>额度{current?.planType ? ' · ' + current.planType : ''}</strong>
+    <strong>剩余额度{current?.planType ? ' · ' + current.planType : ''}</strong>
     <button type="button" aria-expanded={!collapsed} aria-label={collapsed ? '展开账号额度' : '收起账号额度'} className="rounded border border-border px-2 py-1" onClick={toggleCollapsed}>{collapsed ? '展开 ▾' : '收起 ▴'}</button>
     {!collapsed && <>
-    {groups.size > 0 && <div className="flex w-full min-w-0 max-w-full divide-x divide-border overflow-x-auto rounded-xl border border-border bg-background lg:w-auto lg:flex-1" aria-label="agy 模型额度分组">
-      {[...groups].map(([name, windows]) => <section key={name} className="min-w-[10rem] flex-1 px-3 py-2">
-        <h3 className="mb-1 whitespace-nowrap text-muted-foreground">{groupName(name)}</h3>
-        {[...windows].sort((a, b) => order(a.type) - order(b.type)).map((window, index) => <div key={index} className="flex items-center gap-2 py-1" title={window.resetsAt ? '重置：' + new Date(window.resetsAt * 1000).toLocaleString() : '未返回重置时间'}>
-          <span className="mr-auto whitespace-nowrap">{window.type === 'weekly' ? '每周配额剩余' : window.type === 'five_hour' ? '5 小时配额剩余' : window.type === 'daily' ? '每日配额剩余' : window.bucket}</span>
-          <span className="shrink-0 tabular-nums">{window.remainingPercent === null ? '未返回' : window.remainingPercent + '%'}</span>
-          <span aria-hidden="true" className={'inline-block h-3.5 w-3.5 shrink-0 rounded-full border-2 ' + (window.remainingPercent === null ? 'border-muted-foreground' : window.remainingPercent < 20 ? 'border-red-500' : 'border-green-600')} />
-        </div>)}
+    {groups.size > 0 && <div className="flex w-full min-w-0 max-w-full gap-3 overflow-x-auto pb-1" aria-label="agy 模型额度分组">
+      {[...groups].map(([name, windows]) => <section key={name} className="min-w-[14rem] flex-1 space-y-2">
+        <h3 className="px-1 font-medium text-muted-foreground">{groupName(name)}</h3>
+        {[...windows].sort((a, b) => order(a.type) - order(b.type)).map((window, index) => <QuotaWindow key={index}
+          label={window.type === 'weekly' ? '每周配额剩余' : window.type === 'five_hour' ? '5 小时配额剩余' : window.type === 'daily' ? '每日配额剩余' : window.bucket}
+          remainingPercent={window.remainingPercent} resetsAt={window.resetsAt} />)}
       </section>)}
     </div>}
-    {!groups.size && current?.windows.map((window, index) => <span key={index} className="rounded border border-border px-2 py-1" title={window.resetsAt ? '重置：' + new Date(window.resetsAt * 1000).toLocaleString() : '未返回重置时间'}>{window.bucket}{window.minutes ? ` · ${window.minutes >= 1440 ? window.minutes / 1440 + ' 天' : window.minutes / 60 + ' 小时'}` : ''} · 剩余 {window.remainingPercent === null ? '未返回' : window.remainingPercent + '%'}</span>)}
+    {!groups.size && Boolean(current?.windows.length) && <div className="grid w-full min-w-0 grid-cols-2 gap-2">
+      {current?.windows.map((window, index) => <QuotaWindow key={`${window.bucket}-${index}`}
+        label={window.bucket + (window.minutes ? ` · ${window.minutes >= 1440 ? window.minutes / 1440 + ' 天' : window.minutes / 60 + ' 小时'}` : '')}
+        remainingPercent={window.remainingPercent} resetsAt={window.resetsAt} />)}
+    </div>}
     {!current?.windows.length && <span className="text-muted-foreground" role="status">{current?.reason || (busy ? '正在读取原生额度…' : '请选择账号')}</span>}
     {current?.dashboardUrl && ['https://cursor.com/dashboard?tab=usage', 'https://opencode.ai/console'].includes(current.dashboardUrl) && <a href={current.dashboardUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline">查看官方额度</a>}
     {current?.checkedAt && <time className="text-muted-foreground" dateTime={new Date(current.checkedAt).toISOString()} title={current.source}>更新于 {new Date(current.checkedAt).toLocaleTimeString()}</time>}
