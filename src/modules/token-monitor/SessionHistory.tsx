@@ -30,12 +30,13 @@ export function SessionHistory({ selectedId, onSelect, revision }: { selectedId?
     return () => { cancelled = true; controller.abort(); clearTimeout(timer); };
   }, [revision]);
   const providers = [...new Set(sessions?.map(session => session.provider) || [])].sort();
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const filtered = sessions?.filter(session => (!provider || session.provider === provider)
-    && [session.title, session.provider, session.configuredModel, ...session.recordedModels, ...session.reportedModels].join(' ').toLowerCase().includes(query.toLowerCase()));
+    && terms.every(term => [session.sessionId, session.title, session.provider, session.provider === 'antigravity' ? 'AGY' : '', session.configuredModel, ...session.recordedModels, ...session.reportedModels].join(' ').toLowerCase().includes(term)));
   return <details className="my-3 rounded-lg border border-border p-3">
     <summary className="cursor-pointer text-sm font-medium">全部历史会话{sessions ? `（${sessions.length}，含归档）` : ''}</summary>
     <p className="my-2 text-xs text-muted-foreground">可直接查看其他对话；历史请求模型与接口返回模型分别标注。缺失的返回字段无法从所选模型还原。</p>
-    <input aria-label="搜索历史会话" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索标题、提供商或模型" className="mb-2 w-full rounded border border-border bg-background p-2 text-sm" />
+    <input aria-label="搜索历史会话" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索标题、工具、模型或会话 ID" className="mb-2 w-full rounded border border-border bg-background p-2 text-sm" />
     <label className="mb-2 flex items-center gap-2 text-xs">按工具筛选
       <select aria-label="按工具筛选历史会话" value={provider} onChange={event => setProvider(event.target.value)} className="min-w-0 flex-1 rounded border border-border bg-background p-2 text-sm">
         <option value="">全部工具</option>

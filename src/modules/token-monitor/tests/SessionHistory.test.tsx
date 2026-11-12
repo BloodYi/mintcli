@@ -42,3 +42,22 @@ it('combines tool and model search across archived history without changing the 
   expect(screen.getByRole('button', { name: /Codex 会话/ }).getAttribute('aria-pressed')).toBe('true');
   expect(screen.getByRole('button', { name: /归档 AGY/ })).toBeTruthy();
 });
+
+it('matches case-insensitive terms across archived titles, tool labels, models and IDs', async () => {
+  const onSelect = vi.fn();
+  vi.mocked(api.tokenMonitor.sessions).mockResolvedValue(Response.json({ sessions: [
+    { sessionId: 'Unique-Archive-42', title: '历史记录', provider: 'antigravity', archived: true, recordedModels: [], reportedModels: ['gemini-reported'], totals: null },
+    { sessionId: 'other', title: '其他记录', provider: 'codex', recordedModels: [], reportedModels: [], totals: null },
+  ] }));
+  render(<SessionHistory onSelect={onSelect} revision={0} />);
+  fireEvent.click(await screen.findByText('全部历史会话（2，含归档）'));
+  const search = screen.getByRole('textbox', { name: '搜索历史会话' });
+  fireEvent.change(search, { target: { value: '  ARCHIVE-42   AGY gemini  ' } });
+  expect(screen.getByRole('button', { name: /历史记录.*已归档/ })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /其他记录/ })).toBeNull();
+  expect(onSelect).not.toHaveBeenCalled();
+  fireEvent.change(search, { target: { value: 'archive-42 codex' } });
+  expect(screen.getByText('没有匹配的会话。')).toBeTruthy();
+  fireEvent.change(search, { target: { value: '   ' } });
+  expect(screen.getAllByRole('button')).toHaveLength(2);
+});
