@@ -1,9 +1,11 @@
+import { CodexResetButton } from '@/modules/codex-connections';
+import type { CodexResetCredits } from '@/shared/types';
 import { EgressButton } from '@/modules/egress';
 import { useEffect, useState } from 'react';
 import { api, readApiJson } from '@/shared/api';
 import { MonitorButton } from '@/modules/token-monitor';
 import { QuotaWindow } from '@/shared/ui/QuotaWindow';
-type Quota = { connectionId: string; status: string; planType?: string; checkedAt?: number; reason?: string; source?: string; dashboardUrl?: string; windows: { bucket: string; model?: string; type?: string; minutes?: number | null; remainingPercent: number | null; resetsAt: number | null }[] };
+type Quota = { resetCredits?: CodexResetCredits | null; connectionId: string; status: string; planType?: string; checkedAt?: number; reason?: string; source?: string; dashboardUrl?: string; windows: { bucket: string; model?: string; type?: string; minutes?: number | null; remainingPercent: number | null; resetsAt: number | null }[] };
 /** Used by AgentConnections. Guards identity across slow quota responses and keeps unavailable values distinct from zero. */
 export function AccountQuota({ id }: { id?: string }) {
   // Keep the user’s compact quota preference across refreshes and account switches.
@@ -60,6 +62,8 @@ export function AccountQuota({ id }: { id?: string }) {
     <div className="ml-auto flex items-center gap-2">
     <button type="button" disabled={busy || !id} className="ml-auto rounded border border-border px-2 py-1 disabled:opacity-50" onClick={() => setRevision(value => value + 1)}>刷新额度</button>
     <EgressButton connectionId={id} />
+    {id?.startsWith('codex:') && <CodexResetButton connectionId={id.slice(6)} credits={current?.resetCredits} onReset={() => setRevision(value => value + 1)} />}
+    {id?.startsWith('claude:') && <a href="https://claude.ai/settings/usage" target="_blank" rel="noopener noreferrer" className="rounded border border-border px-2 py-1" title="在 Claude 官方用量页使用重置卡；请核对登录账号，完成后刷新额度">使用重置卡 ↗</a>}
     <MonitorButton />
     </div>
   </div>;

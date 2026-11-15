@@ -23,7 +23,7 @@ function inventory(): Inventory { return read('inventory.json', { updatedAt: nul
 function selection(): Selection { return read('selection.json', { selections: {} }); }
 function nodeFor(target: string) {
   const id = selection().selections[target] || 'legacy';
-  if (id === 'direct') return { id, name: '本机（EC2 直连）', port: 0 };
+  if (id === 'direct') return { id, name: '本机直连', port: 0 };
   if (id === 'legacy') return { id, name: '诺联狗根', port: 17890 };
   const node = inventory().nodes.find(value => value.id === id);
   if (!node) throw fail('所选节点已不可用，请重新选择；请求未改走其他出口', 503);
@@ -87,7 +87,7 @@ let syncing: Promise<unknown> | null = null;
 export const egressService = {
   status() {
     const data = inventory();
-    return { updatedAt: data.updatedAt, source: data.source, configured: fs.existsSync(path.join(root(), 'inventory.json')), nodes: [{ id: 'legacy', name: '诺联狗根', port: 17890 }, { id: 'direct', name: '本机（EC2 直连）', port: 0 }, ...data.nodes], selections: selection().selections, probes: read<Record<string, unknown>>('probes.json', {}) };
+    return { updatedAt: data.updatedAt, source: data.source, configured: fs.existsSync(path.join(root(), 'inventory.json')), nodes: [{ id: 'legacy', name: '诺联狗根', port: 17890 }, { id: 'direct', name: '本机直连', port: 0 }, ...data.nodes], selections: selection().selections, probes: read<Record<string, unknown>>('probes.json', {}) };
   },
   save(target: string, nodeId: string) {
     if (!validEgressTarget(target)) throw fail('不支持的 CLI 或 API');

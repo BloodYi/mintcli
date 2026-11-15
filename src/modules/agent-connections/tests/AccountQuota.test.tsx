@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AccountQuota } from '@/modules/agent-connections/AccountQuota';
 import { api } from '@/shared/api';
-vi.mock('@/shared/api', () => ({ api: { agentConnections: { quota: vi.fn() } }, readApiJson: async (response: Response) => response.json() }));
+vi.mock('@/shared/api', () => ({ api: { agentConnections: { quota: vi.fn() }, codexConnections: { consumeReset: vi.fn() } }, readApiJson: async (response: Response) => response.json() }));
 vi.mock('@/modules/egress', () => ({ EgressButton: () => null }));
 vi.mock('@/modules/token-monitor', () => ({ MonitorButton: () => null }));
 beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); });
@@ -89,4 +89,31 @@ it('preserves collapse preferences and restores reset times when expanded', asyn
   fireEvent.click(screen.getByRole('button', { name: '展开账号额度' }));
   expect(view.container.querySelector('time')?.getAttribute('datetime')).toBe('2030-02-01T08:30:00.000Z');
   expect(localStorage.getItem('account-quota-collapsed')).toBe('false');
+});
+
+
+it('opens official Claude reset controls only for Claude accounts',async()=>{
+  vi.mocked(api.agentConnections.quota).mockImplementation(async id=>Response.json({connectionId:id,windows:[]}));
+  const view=render(<AccountQuota id="claude:fixture"/>);
+  expect(screen.getByRole('link',{name:'使用重置卡 ↗'}).getAttribute('href')).toBe('https://claude.ai/settings/usage');
+  view.rerender(<AccountQuota id="antigravity:fixture"/>);
+  expect(screen.queryByRole('link',{name:'使用重置卡 ↗'})).toBeNull();
+});
+
+
+it('unified quota bar exposes the official Codex reset and redeems only after confirmation',async()=>{
+  vi.mocked(api.agentConnections.quota).mockResolvedValue(Response.json({connectionId:'codex:fixture',windows:[],resetCredits:{availableCount:1,credits:null}}));
+  vi.mocked(api.codexConnections.consumeReset).mockResolvedValue(Response.json({connectionId:'fixture',resetOutcome:'nothingToReset'}));
+  render(<AccountQuota id="codex:fixture"/>);
+  fireEvent.click(await screen.findByRole('button',{name:'使用重置卡（1）'}));
+  expect(api.codexConnections.consumeReset).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button',{name:'确认使用一张'}));
+  await screen.findByText('当前额度无需重置，卡未消耗。');
+  expect(api.codexConnections.consumeReset).toHaveBeenCalledWith('fixture',expect.any(String),undefined);
+});
+
+it('API quota does not offer an official account reset',async()=>{
+  vi.mocked(api.agentConnections.quota).mockResolvedValue(Response.json({connectionId:'api:fixture',windows:[]}));
+  render(<AccountQuota id="api:fixture"/>);
+  expect(screen.queryByRole('button',{name:/使用重置卡/})).toBeNull();
 });

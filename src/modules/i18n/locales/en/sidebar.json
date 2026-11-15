@@ -137,6 +137,7 @@
     "modeConversations": "Conversations",
     "modeMore": "More",
     "conversationsPlaceholder": "Search in conversations...",
+    "allPlaceholder": "Search projects and conversations...",
     "searching": "Searching...",
     "sessionTitles": "Session",
     "conversationContents": "Conversation contents",

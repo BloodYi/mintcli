@@ -123,6 +123,7 @@ await copyRequired(stageDir, 'dist-server');
 await copyRequired(stageDir, 'public');
 await copyRequired(stageDir, 'shared');
 await copyRequired(stageDir, 'plugins/token-monitor');
+await copyRequired(stageDir, 'plugins/github');
 await copyRequired(stageDir, 'package-lock.json');
 await copyIfExists(stageDir, 'scripts/fix-node-pty.js');
 await writeServerPackageJson(stageDir);

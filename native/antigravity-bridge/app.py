@@ -28,7 +28,7 @@ from typing import Any
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel, Field, SecretStr, StrictBool
 from agy_metadata import read_session_models, read_session_thinking, read_session_historical_error
 from agy_client_profile import DesktopProfileProxy
 from project_updates import ProjectUpdater
@@ -1017,6 +1017,14 @@ class Message(BaseModel):
     attachments: list[dict] | None = None
 
 
+class ApiConnection(BaseModel):
+    """Server-resolved credentials held only by this turn's in-memory stream closure."""
+    base_url: str = Field(min_length=1, max_length=1000)
+    api_key: SecretStr
+    proxy_port: int = Field(default=0, ge=0, le=65535)
+    chat_compat: bool = False
+
+
 class ChatRequest(BaseModel):
     messages: list[Message]
     model: str | None = None
@@ -1032,6 +1040,31 @@ class ChatRequest(BaseModel):
     history_revision: str | None = None
     stream: StrictBool = False
     stream_options: dict[str, Any] | None = None
+    api_connection: ApiConnection | None = None
+
+
+def _api_environment(env: dict[str, str], api: ApiConnection) -> dict[str, str]:
+    """Pin API and egress settings on a child process without changing saved Google profiles."""
+    result = {key: value for key, value in env.items()
+              if not re.match(r"^(?:(?:http|https|all|ws|wss|no)_proxy|node_use_env_proxy)$", key, re.I)
+              and key not in {"GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "AGY_ADC_AUTH"}}
+    if api.proxy_port:
+        proxy = f"http://127.0.0.1:{api.proxy_port}"
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            result[key] = proxy
+    result.update(GEMINI_API_KEY=api.api_key.get_secret_value(), GOOGLE_GEMINI_BASE_URL=api.base_url,
+                  NO_PROXY="localhost,127.0.0.1,::1", no_proxy="localhost,127.0.0.1,::1")
+    return result
+
+
+def _redact_api_event(value, secret: str):
+    if isinstance(value, str):
+        return value.replace(secret, "[密钥已隐藏]") if secret else value
+    if isinstance(value, list):
+        return [_redact_api_event(item, secret) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_api_event(item, secret) for key, item in value.items()}
+    return value
 
 
 # --------------------------------------------------------------------------- #
@@ -1362,6 +1395,7 @@ async def _stream_agy(
     effort: str | None = None,
     persist_conversation: bool = True,
     timeout: int | None = None,
+    api_connection: ApiConnection | None = None,
 ):
     """Run agy and yield structured events (dict) as NDJSON or text chunks arrive."""
     turn_timeout = AGY_TIMEOUT if timeout is None else timeout
@@ -1370,7 +1404,9 @@ async def _stream_agy(
         target_cwd = str(SCRATCH)
 
     argv = _build_argv(
-        model,
+        # The CLI validates its own model id. The relay independently pins the user's
+        # actual upstream model; keep the requested model unchanged in turn metadata.
+        "gemini-3.1-pro" if api_connection and api_connection.chat_compat else model,
         prompt=prompt,
         conversation_id=conversation_id,
         continue_last=continue_last,
@@ -1378,6 +1414,8 @@ async def _stream_agy(
         effort=effort,
         timeout=timeout,
     )
+    if api_connection:
+        argv[1:1] = ["--settings", json.dumps({"modelProvider": "gemini"})]
     route_info = _new_route_info(uuid.uuid4().hex, model)
     log_dir = tempfile.TemporaryDirectory(prefix="agy-route-", dir=str(SCRATCH))
     log_path = Path(log_dir.name) / "cli.log"
@@ -1389,7 +1427,9 @@ async def _stream_agy(
         if updater:
             update_lease = updater.acquire_turn()
         run_env = _agy_environment()
-        profile = run_env.get("AGY_UPSTREAM_PROFILE", "native").lower()
+        if api_connection:
+            run_env = _api_environment(run_env, api_connection)
+        profile = "native" if api_connection else run_env.get("AGY_UPSTREAM_PROFILE", "native").lower()
         if profile == "desktop" and model and model != "default":
             # The menu includes native-only models. Use the profile that actually
             # advertised this exact id; never substitute a different model.
@@ -1550,6 +1590,8 @@ async def _stream_agy(
                 await asyncio.wait_for(proc.wait(), timeout=remaining)
         if proc.returncode not in (0, None):
             err_txt = stderr_tail.decode(errors="replace").strip()
+            if api_connection:
+                err_txt = "第三方 Gemini API 请求失败，请检查地址、密钥、模型及协议兼容性"
             logger.warning(f"agy exited {proc.returncode}: {err_txt}")
             yield {"event": "error", "error": err_txt or f"antigravity-chat: agy exited with code {proc.returncode}"}
 
@@ -1560,6 +1602,8 @@ async def _stream_agy(
             except ProcessLookupError:
                 pass
         err_txt = stderr_tail.decode(errors="replace").strip()
+        if api_connection:
+            err_txt = "第三方 Gemini API 请求超时"
         detail = f" — {err_txt}" if err_txt else ""
         yield {"event": "error", "error": f"antigravity-chat: timed out after {turn_timeout}s{detail}"}
     except Exception as exc:
@@ -2400,11 +2444,21 @@ async def chat(req: ChatRequest):
         if req.history_revision != message_revision(read_message_history(cid)):
             raise HTTPException(status_code=409, detail="聊天记录已在其他设备更新，请同步后重新发送。")
 
-    def stream():
-        return _stream_agy(
-            prompt=prompt, model=req.model, cwd=req.cwd, conversation_id=cid,
-            continue_last=continue_last, user_id=user_id, timeout=0,
-        )
+    async def stream():
+        try:
+            async for event in _stream_agy(
+                prompt=prompt, model=req.model, cwd=req.cwd, conversation_id=cid,
+                continue_last=continue_last, user_id=user_id, timeout=0, api_connection=req.api_connection,
+            ):
+                if req.api_connection:
+                    # Redact before WebTurn persists events or makes them available to reconnecting readers.
+                    secret = req.api_connection.api_key.get_secret_value()
+                    event = _redact_api_event(event, secret)
+                yield event
+        except Exception:
+            if req.api_connection:
+                raise RuntimeError("第三方 Gemini API 连接或返回格式异常") from None
+            raise
     snapshot = req.message_snapshot or [message.model_dump() for message in req.messages]
     try:
         turn = web_turns.start(stream, cid, snapshot, req.model, req.model_label or "", req.turn_id)

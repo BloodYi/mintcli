@@ -1,6 +1,14 @@
 import type { IncomingMessage } from 'node:http';
 import type { Readable } from 'node:stream';
 
+//----------------- THIRD-PARTY API EXECUTION ------------
+/** Execution engine saved on an API connection. `chat` preserves the legacy text-only transport. */
+export type ApiAgent = 'codex' | 'claude' | 'antigravity' | 'chat';
+/** Native wire format required by the selected API execution engine; these formats are not interchangeable. */
+export type ApiProtocol = 'responses' | 'anthropic' | 'gemini' | 'chat_completions';
+
+// ---------------------------
+
 //----------------- HTTP RESPONSE SHAPES ------------
 /**
  * Canonical success envelope used by backend APIs that return a structured payload.

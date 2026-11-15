@@ -2,6 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { findApplicationRoot, getModuleDirectory } from '@/shared/index.js';
 
 import { spawn } from 'cross-spawn';
 
@@ -11,6 +12,7 @@ import {
 
 const PLUGINS_DIR = path.join(os.homedir(), '.claude-code-ui', 'plugins');
 const PLUGINS_CONFIG_PATH = path.join(os.homedir(), '.claude-code-ui', 'plugins.json');
+const GITHUB_PLUGIN_DIR = path.join(findApplicationRoot(getModuleDirectory(import.meta.url)), 'plugins', 'github');
 
 const REQUIRED_MANIFEST_FIELDS = ['name', 'displayName', 'entry'];
 
@@ -152,6 +154,11 @@ export function scanPlugins() {
   const pluginsDir = getPluginsDir();
   const config = getPluginsConfig();
   const plugins = [];
+  // Shipped with mintcli, so GitHub remains available without installing an external plugin.
+  if (fs.existsSync(path.join(GITHUB_PLUGIN_DIR, 'manifest.json'))) {
+    const manifest = JSON.parse(fs.readFileSync(path.join(GITHUB_PLUGIN_DIR, 'manifest.json'), 'utf8'));
+    plugins.push({ ...manifest, enabled: config.github?.enabled !== false, builtIn: true, server: null, permissions: [], dirName: 'github', repoUrl: null });
+  }
 
   let entries;
   try {
@@ -160,7 +167,7 @@ export function scanPlugins() {
     return plugins;
   }
 
-  const seenNames = new Set();
+  const seenNames = new Set(plugins.map(plugin => plugin.name));
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
@@ -229,6 +236,7 @@ export function scanPlugins() {
 }
 
 export function getPluginDir(name) {
+  if (name === 'github') return GITHUB_PLUGIN_DIR;
   const plugins = scanPlugins();
   const plugin = plugins.find(p => p.name === name);
   if (!plugin) return null;

@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, readApiJson } from '@/shared/api';
 import { Dialog, DialogContent, DialogTitle } from '@/shared/ui';
-import type { AgentConnectionChoice, AgentConnectionsCatalog, LLMProvider, OfficialAccountLogin } from '@/shared/types';
+import type { AgentConnectionChoice, AgentConnectionsCatalog, ApiAgent, ApiProtocol, LLMProvider, OfficialAccountLogin } from '@/shared/types';
 import { CliAccountAccess } from '@/modules/agent-connections/CliAccountAccess';
 import { AccountAuthorization } from '@/modules/agent-connections/AccountAuthorization';
 import { NativeOfficialLogin } from '@/modules/agent-connections/NativeOfficialLogin';
 import { useAuthorizationPopup } from '@/modules/agent-connections/hooks/useAuthorizationPopup';
 import { AccountQuota } from '@/modules/agent-connections/AccountQuota';
+import { ApiModelPicker } from '@/modules/agent-connections/ApiModelPicker';
 
-type Form = { id: string; kind: string; name: string; credentials: string; baseUrl: string; apiKey: string; protocol: string; model: string };
+type Form = { id: string; kind: string; name: string; credentials: string; baseUrl: string; apiKey: string; agent: ApiAgent; protocol: ApiProtocol; model: string };
 type Login = OfficialAccountLogin;
-const empty: Form = { id: '', kind: 'chatgpt', name: '', credentials: '', baseUrl: '', apiKey: '', protocol: 'responses', model: '' };
+const empty: Form = { id: '', kind: 'chatgpt', name: '', credentials: '', baseUrl: '', apiKey: '', agent: 'codex', protocol: 'chat_completions', model: '' };
+const AGENT_LABELS: Record<ApiAgent, string> = { codex: 'Codex', claude: 'Claude Code', antigravity: 'agy', chat: '纯文字聊天（不执行工具）' };
+const NATIVE_PROTOCOLS: Record<ApiAgent, ApiProtocol> = { codex: 'responses', claude: 'anthropic', antigravity: 'gemini', chat: 'chat_completions' };
+const PROTOCOL_LABELS: Record<ApiProtocol, string> = { chat_completions: 'Chat Completions（自动转换）', responses: 'Responses（原生）', anthropic: 'Anthropic Messages（原生）', gemini: 'Gemini（原生）' };
+const rawAccountId = (item: AgentConnectionChoice) => item.kind === 'api' ? item.accountId.replace(/^api:/, '') : item.accountId;
 const labels: Record<string, string> = { chatgpt: 'Codex', api: '第三方 API', claude: 'Claude', antigravity: 'agy', cursor: 'Cursor', opencode: 'OpenCode' };
 /** The only account picker and manager in the shared workbench. Models remain in the existing composer. */
 export function AgentConnections({ provider, sessionId, disabled, onChoice, onProviderChange }: { provider: LLMProvider; sessionId?: string | null; disabled: boolean; onChoice: (choice: AgentConnectionChoice | null) => void; onProviderChange: (provider: LLMProvider) => void }) {
@@ -46,14 +51,14 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
     return () => { cancelled = true; clearInterval(timer); };
   }, [form.id, form.kind, login?.status, open, reload, closePlaceholder]);
   const run = async (action: () => Promise<void>) => { setPending(true); setNotice(''); try { await action(); } catch (error) { closePlaceholder(); setNotice(error instanceof Error ? error.message : '操作失败'); } finally { setPending(false); } };
-  const edit = (item?: AgentConnectionChoice) => { setForm(item ? { ...empty, id: item.accountId, kind: item.kind, name: item.name, baseUrl: item.baseUrl || '', protocol: item.protocol || 'responses', model: item.model || '' } : { ...empty }); setLogin(null); setCode(''); setNotice(''); setOpen(true); };
+  const edit = (item?: AgentConnectionChoice) => { setForm(item ? { ...empty, id: rawAccountId(item), kind: item.kind, name: item.name, baseUrl: item.baseUrl || '', agent: item.agent || (item.protocol === 'chat_completions' ? 'chat' : 'codex'), protocol: (item.protocol || 'responses') as ApiProtocol, model: item.model || '' } : { ...empty }); setLogin(null); setCode(''); setNotice(''); setOpen(true); };
   const select = async (id: string) => { ++requestId.current; const result = await readApiJson<AgentConnectionsCatalog>(await api.agentConnections.select(id, sessionId)); ++requestId.current; setCatalog(result); const item = result.connections.find(value => value.id === id); if (item) onProviderChange(item.provider); window.dispatchEvent(new Event('codex-account-updated')); };
   const field = (key: keyof Form, value: string) => setForm(previous => ({ ...previous, [key]: value }));
   const input = 'mt-1 w-full rounded-md border border-border bg-background p-2 text-sm';
   const button = 'rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50';
   const nativeCli = form.kind === 'cursor' || form.kind === 'opencode' ? form.kind : null;
   const onNativeChanged = useCallback(async () => { await reload(true); window.dispatchEvent(new Event('codex-account-updated')); }, [reload]);
-  const selectedForm = catalog.connections.find(item => item.accountId === form.id && item.kind === form.kind);
+  const selectedForm = catalog.connections.find(item => rawAccountId(item) === form.id && item.kind === form.kind);
   const beginOfficialLogin = (method: 'browser' | 'device' = 'browser') => {
     openAuthorization(); setLogin(null); setCode('');
     void run(async () => {
@@ -75,7 +80,7 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
       <label htmlFor="agent-account">账号</label>
       <select id="agent-account" aria-label="切换账号" value={active?.id || ''} disabled={disabled || pending} className="min-w-0 max-w-md flex-1 rounded-md border border-border bg-background px-2 py-1.5" onChange={event => void run(() => select(event.target.value))}>
         {!active && <option value="">请添加或选择账号</option>}
-        {catalog.connections.map(item => <option key={item.id} value={item.id}>{labels[item.kind]} · {item.name}{item.email ? ' · ' + item.email : ''}{item.authorized ? '' : '（待登录）'}</option>)}
+        {catalog.connections.map(item => <option key={item.id} value={item.id}>{labels[item.kind]} · {item.name}{item.agent && item.kind === 'api' ? ' · ' + AGENT_LABELS[item.agent] : ''}{item.email ? ' · ' + item.email : ''}{item.authorized ? '' : '（待登录）'}</option>)}
       </select>
       <button type="button" className="rounded-md border border-border px-2 py-1.5" onClick={() => edit(active)}>管理账号</button>
       {active?.email && <span className="break-all text-muted-foreground">{active.email}</span>}
@@ -90,6 +95,7 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
         <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2" aria-label="所有账号">{catalog.connections.map(item => <button type="button" key={item.id} className={button + ' text-left break-all'} onClick={() => edit(item)}><strong>{labels[item.kind]} · {item.name}</strong><span className="block text-xs text-muted-foreground">{item.email || (item.authorized ? '已保存授权' : '等待登录')}{active?.id === item.id ? ' · 当前使用' : ''}</span></button>)}</div>
         <button type="button" className={button} onClick={() => edit()}>＋ 添加账号 / API</button>
         {(!nativeCli || !form.id) && <label className="block text-sm">账号类型<select className={input} disabled={Boolean(form.id)} value={form.kind} onChange={event => { field('kind', event.target.value); setLogin(null); setCode(''); }}><option value="chatgpt">Codex / ChatGPT</option><option value="claude">Claude 官方账号</option><option value="cursor">Cursor 原生账号</option><option value="opencode">OpenCode 原生账号</option><option value="antigravity">Antigravity · agy</option><option value="api">第三方模型 API</option></select></label>}
+        {selectedForm && ['chatgpt', 'claude'].includes(selectedForm.kind) && <AccountQuota id={selectedForm.id} />}
         {nativeCli ? <><CliAccountAccess key={nativeCli} provider={nativeCli} disabled={disabled} onChanged={onNativeChanged} />{selectedForm && <AccountQuota key={selectedForm.id + String(selectedForm.authorized)} id={selectedForm.id} />}{selectedForm && <button type="button" className={button} disabled={pending || disabled} onClick={() => void run(async () => { await select(selectedForm.id); setNotice('已切换账号'); })}>使用此账号</button>}</> : <form className="grid gap-3" onSubmit={event => { event.preventDefault(); void run(async () => {
           if (form.kind === 'antigravity') {
             if (form.id) { setNotice('现有 agy 账号可直接使用；重新导入授权可更新账号资料'); return; }
@@ -108,10 +114,18 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
           {form.kind === 'antigravity' && !form.id && <><NativeOfficialLogin provider="antigravity" name={form.name} disabled={pending || disabled} onChanged={onNativeChanged} /><details><summary className="cursor-pointer text-sm">已有 agy 凭证文件？手动导入</summary><label className="text-sm">agy 原生账号授权 JSON<textarea rows={5} className={input + ' font-mono'} autoComplete="off" value={form.credentials} onChange={event => field('credentials', event.target.value)} /></label></details></>}
           {form.kind === 'claude' && <details><summary className="cursor-pointer text-sm">已有 Claude 原生登录文件？可导入</summary><label className="block text-sm">.credentials.json 内容<textarea rows={4} className={input + ' font-mono'} autoComplete="off" value={form.credentials} onChange={event => field('credentials', event.target.value)} /></label><p className="text-xs text-muted-foreground">也可以先保存账号，再点“官方登录”。授权资料只保存在服务器。</p></details>}
           {form.kind === 'api' && <>
+            <label className="text-sm">执行 Agent<select className={input} value={form.agent} onChange={event => {
+              const agent = event.target.value as ApiAgent;
+              setForm(previous => ({ ...previous, agent, protocol: previous.protocol === 'chat_completions' ? previous.protocol : NATIVE_PROTOCOLS[agent] }));
+            }}>{Object.entries(AGENT_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             <label className="text-sm">API 地址<input type="url" required className={input} value={form.baseUrl} onChange={event => field('baseUrl', event.target.value)} /></label>
             <label className="text-sm">API Key<input type="password" autoComplete="new-password" required={!form.id} className={input} placeholder={form.id ? '留空保留原密钥' : '仅保存在服务器'} value={form.apiKey} onChange={event => field('apiKey', event.target.value)} /></label>
-            <label className="text-sm">协议<select className={input} value={form.protocol} onChange={event => field('protocol', event.target.value)}><option value="responses">Responses（含 VPS 工具）</option><option value="chat_completions">Chat Completions（文字聊天）</option></select></label>
-            <label className="text-sm">默认模型<input className={input} value={form.model} placeholder="服务商提供的模型 ID" onChange={event => field('model', event.target.value)} /></label>
+            <label className="text-sm">协议<select className={input} value={form.protocol} onChange={event => field('protocol', event.target.value)}>
+              <option value="chat_completions">{form.agent === 'chat' ? 'Chat Completions（文字聊天）' : PROTOCOL_LABELS.chat_completions}</option>
+              {form.agent !== 'chat' && <option value={NATIVE_PROTOCOLS[form.agent]}>{PROTOCOL_LABELS[NATIVE_PROTOCOLS[form.agent]]}</option>}
+            </select></label>
+            {form.agent !== 'chat' && <p className="text-xs text-muted-foreground">{form.protocol === 'chat_completions' ? `由 ${AGENT_LABELS[form.agent]} 执行任务，自动转换为 Chat Completions；服务商模型需要支持工具调用。` : '使用服务商对应的原生协议，需要完整支持流式回复和工具调用。'}</p>}
+            <ApiModelPicker key={form.id || 'new'} accountId={form.id} baseUrl={form.baseUrl} apiKey={form.apiKey} protocol={form.protocol} value={form.model} disabled={pending} onChange={value => field('model', value)} />
             <p className="text-xs text-muted-foreground">服务商没有提供统一的余额查询方式时，额度会显示暂不可用。</p>
           </>}
           {['chatgpt', 'claude'].includes(form.kind) && !form.id && <p className="text-xs text-muted-foreground">无需先保存账号，直接点击“打开官方授权 / 添加账号”即可。</p>}

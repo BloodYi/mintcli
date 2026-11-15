@@ -21,7 +21,7 @@ type ProjectResult = {
   }>;
 };
 
-const MIN_QUERY = 2;
+const MIN_QUERY = 1;
 const DEBOUNCE_MS = 250;
 
 export function useSessionMessageSearch(

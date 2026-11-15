@@ -17,6 +17,7 @@ type GitRouterDependencies = {
   resolveProjectPathById(projectId: string): string | null;
   queryClaude: ProviderRunFunction;
   queryCursor: ProviderRunFunction;
+  pushGithub?(userId: number, projectId: string): Promise<unknown | null>;
 };
 
 /** Creates Git routes around explicit repository, filesystem, subprocess, and AI adapters. */
@@ -1444,6 +1445,10 @@ router.post('/push', async (req, res) => {
   }
 
   try {
+    if (dependencies.pushGithub) {
+      const result = await dependencies.pushGithub(Number(req.user?.id), project);
+      if (result) return res.json(result);
+    }
     const projectPath = await getActualProjectPath(project);
     await validateGitRepository(projectPath);
 
@@ -1474,6 +1479,7 @@ router.post('/push', async (req, res) => {
     });
   } catch (error) {
     console.error('Git push error:', error);
+    if (error instanceof AppError) return res.status(error.statusCode).json({ error: error.message, code: error.code });
     
     // Enhanced error handling for common push scenarios
     let errorMessage = 'Push failed';

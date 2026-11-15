@@ -391,7 +391,7 @@ export function useSidebarController({
   }, [fetchArchivedSessions]);
 
   useEffect(() => {
-    if (searchMode !== 'conversations' || debouncedSearchQuery.length >= 2) {
+    if (searchMode !== 'conversations' || debouncedSearchQuery.length > 0) {
       return;
     }
 
@@ -496,7 +496,8 @@ export function useSidebarController({
     }
 
     const query = debouncedSearchQuery;
-    if (searchMode !== 'conversations' || query.length < 2) {
+    if ((searchMode !== 'conversations' && searchMode !== 'projects')
+      || !query || query !== searchFilter.trim()) {
       searchSeqRef.current += 1;
       setConversationResults(null);
       setSearchProgress(null);
@@ -605,7 +606,7 @@ export function useSidebarController({
         eventSourceRef.current = null;
       }
     };
-  }, [debouncedSearchQuery, searchMode]);
+  }, [debouncedSearchQuery, searchFilter, searchMode]);
 
   // All sidebar state keys (expanded, starred, loading, etc.) use the DB
   // `projectId` as their identifier after the migration.

@@ -2,6 +2,7 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { once } from 'node:events';
 import { antigravityBridge } from './antigravity.service.js';
+import { AppError } from '@/shared/index.js';
 
 const router = express.Router();
 
@@ -9,6 +10,8 @@ async function forward(req: Request, res: Response, next: NextFunction) {
   const controller = new AbortController();
   res.once('close', () => controller.abort());
   try {
+    // API credentials are resolved only by the runtime, never forwarded from public bridge requests.
+    if (req.body && typeof req.body === 'object' && 'api_connection' in req.body) throw new AppError('请在账号管理中配置第三方 API', { code: 'INVALID_AGY_API_CONFIG', statusCode: 400 });
     const target = '/api' + req.url;
     const response = req.path === '/accounts/switch'
       ? await antigravityBridge.switchAccount(req.body, controller.signal)

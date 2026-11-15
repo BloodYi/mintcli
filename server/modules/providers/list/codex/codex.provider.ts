@@ -18,7 +18,7 @@ import type {
 } from '@/shared/interfaces.js';
 
 export class CodexProvider extends AbstractProvider {
-  readonly runtime: IProviderRuntime = codexRuntime;
+  declare readonly runtime: IProviderRuntime;
   readonly models: IProviderModels = new CodexProviderModels();
   readonly mcp = new CodexMcpProvider();
   readonly auth: IProviderAuth = new CodexProviderAuth();
@@ -29,5 +29,7 @@ export class CodexProvider extends AbstractProvider {
 
   constructor() {
     super('codex');
+    // Keep the runtime enumerable for provider decorators, while avoiding an eager import-cycle read.
+    Object.defineProperty(this, 'runtime', { enumerable: true, get: () => codexRuntime });
   }
 }

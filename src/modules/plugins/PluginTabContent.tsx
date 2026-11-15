@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useTheme } from '@/shared/context/ThemeContext';
 import { api } from '@/shared/api';
 import { TokenMonitorPage } from '@/modules/token-monitor';
+import { GithubPanel } from '@/modules/github';
 import { usePlugins } from '@/modules/plugins/context/PluginsContext';
 import type { Project, ProjectSession } from '@/shared/types';
 
@@ -78,7 +79,7 @@ export default function PluginTabContent({
     // Drop any previous plugin's error before this load attempt starts, so a
     // stale overlay never covers a different (or successfully loaded) plugin.
     setLoadError(null);
-    if (pluginName === 'token-monitor' || !containerRef.current || !plugin?.enabled) return;
+    if (pluginName === 'token-monitor' || pluginName === 'github' || !containerRef.current || !plugin?.enabled) return;
 
     let active = true;
     const container = containerRef.current;
@@ -139,6 +140,7 @@ export default function PluginTabContent({
   }, [pluginName, plugin?.entry, plugin?.enabled]); // re-mount when plugin or enabled state changes
 
   if (pluginName === 'token-monitor' && plugin?.enabled) return <TokenMonitorPage sessionId={selectedSession?.id} />;
+  if (pluginName === 'github' && plugin?.enabled) return <div className="h-full overflow-auto"><GithubPanel project={selectedProject} /></div>;
 
   return (
     <div className="relative h-full w-full overflow-auto">

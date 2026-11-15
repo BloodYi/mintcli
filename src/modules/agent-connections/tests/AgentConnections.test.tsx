@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AgentConnections } from '@/modules/agent-connections/AgentConnections';
 import { api } from '@/shared/api';
@@ -12,7 +12,7 @@ const fixtures = [
   { id: 'opencode:default', accountId: 'default', provider: 'opencode', kind: 'opencode', name: 'OpenCode', current: true, authorized: false },
   { id: 'codex:api', accountId: 'api', provider: 'codex', kind: 'api', name: 'API A', authorized: true },
 ];
-vi.mock('@/shared/api', () => ({ api: { providers: { authStatus: vi.fn(async () => Response.json({ data: { installed: true, authenticated: false, email: null } })) }, agentConnections: { list: vi.fn(), select: vi.fn(), quota: vi.fn(), saveClaude: vi.fn(), claudeLogin: vi.fn(), claudeLoginStatus: vi.fn(), claudeLoginCode: vi.fn(), cancelClaudeLogin: vi.fn(), startOfficialLogin: vi.fn(), officialLoginStatus: vi.fn(), submitOfficialLogin: vi.fn(), cancelOfficialLogin: vi.fn() }, codexConnections: { save: vi.fn(), login: vi.fn(), loginStatus: vi.fn(), loginCode: vi.fn(), cancelLogin: vi.fn() } }, readApiJson: async (response: Response) => response.json() }));
+vi.mock('@/shared/api', () => ({ api: { providers: { authStatus: vi.fn(async () => Response.json({ data: { installed: true, authenticated: false, email: null } })) }, agentConnections: { list: vi.fn(), select: vi.fn(), quota: vi.fn(), saveClaude: vi.fn(), claudeLogin: vi.fn(), claudeLoginStatus: vi.fn(), claudeLoginCode: vi.fn(), cancelClaudeLogin: vi.fn(), startOfficialLogin: vi.fn(), officialLoginStatus: vi.fn(), submitOfficialLogin: vi.fn(), cancelOfficialLogin: vi.fn() }, codexConnections: { save: vi.fn(), discoverModels: vi.fn(), login: vi.fn(), loginStatus: vi.fn(), loginCode: vi.fn(), cancelLogin: vi.fn() } }, readApiJson: async (response: Response) => response.json() }));
 vi.mock('@/modules/standalone-shell', () => ({ StandaloneShell: () => <div>Official login terminal</div> }));
 beforeEach(() => { vi.clearAllMocks(); vi.spyOn(window, 'open').mockReturnValue(null); });
 afterEach(cleanup);
@@ -112,4 +112,63 @@ it('agy offers Google authorization and paste-back directly in the new-account f
   fireEvent.click(screen.getByRole('button',{name:'提交授权并完成登录'}));
   await screen.findByText('登录成功，账号已添加');
   expect(api.agentConnections.submitOfficialLogin).toHaveBeenCalledWith('google-flow','google-return-code');
+});
+
+it('discovers models from the API form without saving, then saves the chosen default', async () => {
+  vi.mocked(api.codexConnections.discoverModels).mockResolvedValue(Response.json({ models: ['discovered-model'] }));
+  vi.mocked(api.codexConnections.save).mockResolvedValue(Response.json({ id: 'new-api' }));
+  await renderNewAccount();
+  fireEvent.change(screen.getByLabelText('账号类型'), { target: { value: 'api' } });
+  fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'My API' } });
+  fireEvent.change(screen.getByLabelText('API 地址'), { target: { value: 'https://example.com/v1' } });
+  fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'private-key' } });
+  fireEvent.click(screen.getByRole('button', { name: '拉取模型' }));
+  await screen.findByRole('option', { name: 'discovered-model' });
+  expect(api.codexConnections.save).not.toHaveBeenCalled();
+  expect(api.agentConnections.select).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText('选择已拉取模型'), { target: { value: 'discovered-model' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存账号' }));
+  await waitFor(() => expect(api.codexConnections.save).toHaveBeenCalledWith(expect.objectContaining({ model: 'discovered-model', baseUrl: 'https://example.com/v1', apiKey: 'private-key' })));
+  await screen.findByText('已保存；可在上方切换到这个账号');
+  expect((screen.getByLabelText('API Key') as HTMLInputElement).value).toBe('');
+});
+
+it.each(['codex', 'claude', 'antigravity'] as const)('saves %s as a real agent over the same Chat Completions API', async agent => {
+  vi.mocked(api.codexConnections.save).mockImplementation(async () => Response.json({ id: 'new-api' }));
+  await renderNewAccount();
+  fireEvent.change(screen.getByLabelText('账号类型'), { target: { value: 'api' } });
+  fireEvent.change(screen.getByLabelText('执行 Agent'), { target: { value: agent } });
+  expect((screen.getByLabelText('协议') as HTMLSelectElement).value).toBe('chat_completions');
+  expect(screen.getByText(/自动转换为 Chat Completions/)).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'API ' + agent } });
+  fireEvent.change(screen.getByLabelText('API 地址'), { target: { value: 'https://example.com/v1' } });
+  fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'private-api-key' } });
+  fireEvent.change(screen.getByLabelText('默认模型'), { target: { value: 'custom-model' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存账号' }));
+  await waitFor(() => expect(api.codexConnections.save).toHaveBeenCalledWith(expect.objectContaining({ agent, protocol: 'chat_completions', model: 'custom-model' })));
+});
+
+it('restricts native protocols to the chosen agent while preserving legacy text-only accounts', async () => {
+  await renderNewAccount();
+  fireEvent.change(screen.getByLabelText('账号类型'), { target: { value: 'api' } });
+  fireEvent.change(screen.getByLabelText('执行 Agent'), { target: { value: 'claude' } });
+  expect(Array.from((screen.getByLabelText('协议') as HTMLSelectElement).options).map(item => item.value)).toEqual(['chat_completions', 'anthropic']);
+  fireEvent.change(screen.getByLabelText('协议'), { target: { value: 'anthropic' } });
+  fireEvent.change(screen.getByLabelText('执行 Agent'), { target: { value: 'antigravity' } });
+  expect((screen.getByLabelText('协议') as HTMLSelectElement).value).toBe('gemini');
+  fireEvent.change(screen.getByLabelText('执行 Agent'), { target: { value: 'chat' } });
+  expect((screen.getByLabelText('协议') as HTMLSelectElement).options.length).toBe(1);
+  expect((screen.getByLabelText('协议') as HTMLSelectElement).value).toBe('chat_completions');
+});
+
+
+it('official reset controls are present inside the unified account manager without switching accounts',async()=>{
+  vi.mocked(api.agentConnections.list).mockResolvedValue(Response.json({activeId:'codex:c',connections:fixtures}));
+  vi.mocked(api.agentConnections.quota).mockImplementation(async id=>Response.json({connectionId:id,windows:[],resetCredits:{availableCount:2,credits:null}}));
+  render(<AgentConnections provider="codex" sessionId="existing" disabled={false} onChoice={vi.fn()} onProviderChange={vi.fn()}/>);
+  await screen.findByRole('option',{name:/Codex A/});
+  fireEvent.click(screen.getByRole('button',{name:'管理账号'}));
+  const manager=await screen.findByRole('dialog',{name:'账号管理'});
+  expect(await within(manager).findByRole('button',{name:'使用重置卡（2）'})).toBeTruthy();
+  expect(api.agentConnections.select).not.toHaveBeenCalled();
 });

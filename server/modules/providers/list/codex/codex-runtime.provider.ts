@@ -25,7 +25,7 @@ import {
 } from '@/shared/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { startResponseCapture } from '@/modules/token-monitor/index.js';
-import { getCodexModelCatalog, resolveCodexConnection, validateConnectionEndpoint, runCompatibleChat, abortCompatibleChat } from '@/modules/codex-connections/index.js';
+import { connectionService, getCodexModelCatalog, resolveCodexConnection, validateConnectionEndpoint, runCompatibleChat, abortCompatibleChat, startApiRelay } from '@/modules/codex-connections/index.js';
 import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 
 type ActiveCodexSession = {
@@ -251,7 +251,7 @@ async function queryCodex(
   context: ProviderRuntimeContext,
 ) {
   const selectedConnection = resolveCodexConnection(options.connectionId);
-  if (selectedConnection.kind === 'api' && selectedConnection.protocol === 'chat_completions') {
+  if (selectedConnection.kind === 'api' && selectedConnection.protocol === 'chat_completions' && selectedConnection.agent !== 'codex') {
     return runCompatibleChat(command, options, ws, selectedConnection);
   }
   const {
@@ -275,8 +275,8 @@ async function queryCodex(
 
   const workingDirectory = cwd || projectPath || process.cwd();
   const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
-  const catalog = selectedConnection.kind === 'chatgpt' && selectedConnection.id !== 'default'
-    ? await getCodexModelCatalog(selectedConnection.id) : await context.getProviderModels();
+  const catalog = selectedConnection.kind === 'api' ? await connectionService.apiModelCatalog(selectedConnection.id)
+    : selectedConnection.id !== 'default' ? await getCodexModelCatalog(selectedConnection.id) : await context.getProviderModels();
   // Bind availability to the account captured for this turn, including old tabs and retired session defaults.
   const resolvedModel = catalog.ACCOUNT_SCOPED && !catalog.OPTIONS.some(option => option.value === requestedModel)
     ? catalog.DEFAULT : requestedModel;
@@ -287,6 +287,7 @@ async function queryCodex(
     : undefined;
 
   let responseCapture: Awaited<ReturnType<typeof startResponseCapture>> | undefined;
+  let apiRelay: Awaited<ReturnType<typeof startApiRelay>> | undefined;
   let codex: Codex;
   let thread: Thread;
   // Provider-native thread id (starts as the resume id, or is captured from
@@ -307,15 +308,16 @@ async function queryCodex(
 
   try {
     if (selectedConnection.kind === 'api') await validateConnectionEndpoint(selectedConnection.baseUrl!);
+    if (selectedConnection.kind === 'api' && selectedConnection.protocol === 'chat_completions') apiRelay = await startApiRelay('codex', { ...selectedConnection, model: resolvedModel || selectedConnection.model });
     responseCapture = await startResponseCapture(
-      selectedConnection.kind === 'api' ? selectedConnection.baseUrl! : 'https://chatgpt.com/backend-api/codex',
+      apiRelay ? apiRelay.baseUrl + '/v1' : selectedConnection.kind === 'api' ? selectedConnection.baseUrl! : 'https://chatgpt.com/backend-api/codex',
       sessionId, egressFetch(selectedConnection.kind === 'api' ? 'api:' + selectedConnection.id : 'codex', selectedConnection.env),
     );
     codex = new Codex({
       ...(resolveManagedCli('codex') ? { codexPathOverride: resolveManagedCli('codex') } : {}),
       env: selectedConnection.kind === 'api'
-        ? { ...selectedConnection.env, CODEX_API_KEY: selectedConnection.apiKey! } : selectedConnection.env,
-      ...(selectedConnection.kind === 'api' ? { apiKey: selectedConnection.apiKey } : {}),
+        ? { ...selectedConnection.env, CODEX_API_KEY: apiRelay?.apiKey || selectedConnection.apiKey! } : selectedConnection.env,
+      ...(selectedConnection.kind === 'api' ? { apiKey: apiRelay?.apiKey || selectedConnection.apiKey } : {}),
       config: {
         ...(selectedConnection.kind !== 'api' ? {
           service_tier: options.fastMode === true ? 'fast' : 'default',
@@ -514,6 +516,7 @@ async function queryCodex(
 
   } finally {
     await responseCapture?.close();
+    await apiRelay?.close();
     // Update session status
     if (sessionKey()) {
       const session = activeCodexSessions.get(sessionKey() || '');

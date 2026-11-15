@@ -1,0 +1,11 @@
+{
+  "name": "github",
+  "displayName": "GitHub · 登录与上传",
+  "version": "1.0.0",
+  "description": "登录 GitHub，查看当前项目与分支，上传已提交的代码。支持浏览器授权和访问令牌。",
+  "author": "mintcli",
+  "icon": "icon.svg",
+  "entry": "index.js",
+  "type": "module",
+  "slot": "tab"
+}

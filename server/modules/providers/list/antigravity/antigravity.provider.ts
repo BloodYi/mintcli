@@ -6,6 +6,7 @@ import { resolveManagedCli } from '@/shared/index.js';
 import { probeCliVersion } from '@/shared/utils.js';
 import { antigravityBridge } from '@/modules/antigravity/index.js';
 import { sessionsDb } from '@/modules/database/index.js';
+import { connectionService, validateConnectionEndpoint, startApiRelay } from '@/modules/codex-connections/index.js';
 import type { IProvider, IProviderRuntime } from '@/shared/interfaces.js';
 import type { AnyRecord, CliVersionProbe, FetchHistoryOptions, NormalizedMessage, ProviderAuthStatus } from '@/shared/types.js';
 import { AppError, createNormalizedMessage, createCompleteMessage, sliceTailPage } from '@/shared/utils.js';
@@ -30,6 +31,8 @@ export function normalizeAgy(message: AnyRecord, sessionId: string | null): Norm
 const running = new Map<string, { turnId: string; controller: AbortController }>();
 const runtime: IProviderRuntime = {
   async run(command, options, writer, context) {
+    const api = connectionService.apiForAgent('antigravity', options.connectionId);
+    if (api) await validateConnectionEndpoint(api.baseUrl!);
     const appId = String(options.sessionId);
     let cid = context.resolveProviderSessionId(appId);
     const history = cid ? await json(await antigravityBridge.request('GET', endpoint(cid))) : { messages: [], revision: null };
@@ -48,6 +51,7 @@ const runtime: IProviderRuntime = {
     running.set(appId, { turnId, controller });
     let message: AnyRecord = { id: turnId + ':assistant', role: 'assistant', content: '' };
     let failed = false;
+    let relay: Awaited<ReturnType<typeof startApiRelay>> | null = null;
     const send = (value: NormalizedMessage) => writer.send(value);
     const capture = (value: unknown) => {
       if (!cid && typeof value === 'string' && value) {
@@ -56,12 +60,18 @@ const runtime: IProviderRuntime = {
       }
     };
     try {
-      const response = await antigravityBridge.startChatForAccount(options.connectionId, {
+      if (api?.protocol === 'chat_completions') relay = await startApiRelay('antigravity', { ...api, model: options.model || api.model });
+      const payload = {
         messages: [{ ...user, attachments: nativeAttachments }], message_snapshot: [...history.messages, user], conversation_id: cid,
         history_revision: cid ? history.revision : undefined,
-        model: options.model, model_label: options.model,
+        model: options.model || api?.model, model_label: options.model || api?.model,
         cwd: options.cwd || options.projectPath, turn_id: turnId, continue_conversation: false,
-      }, controller.signal);
+        ...(api ? { api_connection: { base_url: relay?.baseUrl || api.baseUrl!.replace(/\/v1(?:beta)?$/, ''), api_key: relay?.apiKey || api.apiKey,
+          proxy_port: relay ? 0 : Number(api.env.MINTCLI_SELECTED_EGRESS_PORT || 0), chat_compat: Boolean(relay) } } : {}),
+      };
+      const response = api
+        ? await antigravityBridge.request('POST', '/api/chat', payload, controller.signal)
+        : await antigravityBridge.startChatForAccount(options.connectionId, payload, controller.signal);
       if (!response.ok) { await json(response); return; }
       if (!response.body) throw new Error('agy 回复流为空');
       let pending = '', done = false, cursor = 0;
@@ -105,6 +115,7 @@ const runtime: IProviderRuntime = {
     } catch (error) {
       if (!controller.signal.aborted) { failed = true; throw error; }
     } finally {
+      await relay?.close();
       running.delete(appId);
       if (cid) {
         const session = sessionsDb.getSessionById(appId);
@@ -124,15 +135,16 @@ const runtime: IProviderRuntime = {
 /** A native fifth provider: one composer, model menu, sidebar and run gateway for every agent. */
 export class AntigravityProvider implements IProvider {
   readonly id = provider;
-  readonly runtime = runtime;
+  declare readonly runtime: IProviderRuntime;
+  constructor() { Object.defineProperty(this, 'runtime', { enumerable: true, get: () => runtime }); }
   readonly models = {
-    async getSupportedModels() { const data = await json(await antigravityBridge.request('GET', '/api/models')); const OPTIONS = (data.models || []).map((item: AnyRecord) => ({ value: String(item.id), label: String(item.name || item.id) })); return { ACCOUNT_SCOPED: true, OPTIONS, DEFAULT: OPTIONS[0]?.value || '' }; },
+    async getSupportedModels() { const api = connectionService.apiForAgent('antigravity'); if (api) return connectionService.apiModelCatalog(api.id); const data = await json(await antigravityBridge.request('GET', '/api/models')); const OPTIONS = (data.models || []).map((item: AnyRecord) => ({ value: String(item.id), label: String(item.name || item.id) })); return { ACCOUNT_SCOPED: true, OPTIONS, DEFAULT: OPTIONS[0]?.value || '' }; },
     async getCurrentActiveModel() { return { model: (await this.getSupportedModels()).DEFAULT }; },
   };
   readonly auth = {
     // Managed bridges use mintcli's own executable; legacy remote bridges expose no local version.
     checkInstalled(): CliVersionProbe { const command = resolveManagedCli('antigravity'); return command ? probeCliVersion(command) : { installed: true, exitCode: null, version: null }; },
-    async getStatus(): Promise<ProviderAuthStatus> { try { const data = await json(await antigravityBridge.request('GET', '/api/accounts')); const active = data.accounts?.find((item: AnyRecord) => item.active); return { provider, installedVersion: null, installed: true, authenticated: Boolean(active), email: active?.email || null, method: 'native' }; } catch { return { provider, installedVersion: null, installed: false, authenticated: false, email: null, method: null }; } } };
+    async getStatus(): Promise<ProviderAuthStatus> { try { const api = connectionService.apiForAgent('antigravity'); if (api) return { provider, installedVersion: null, installed: true, authenticated: Boolean(api.apiKey), email: null, method: 'api-key' }; const data = await json(await antigravityBridge.request('GET', '/api/accounts')); const active = data.accounts?.find((item: AnyRecord) => item.active); return { provider, installedVersion: null, installed: true, authenticated: Boolean(active), email: active?.email || null, method: 'native' }; } catch { return { provider, installedVersion: null, installed: false, authenticated: false, email: null, method: null }; } } };
   readonly sessions = {
     normalizeMessage(raw: unknown, id: string | null) { return normalizeAgy(raw as AnyRecord, id); },
     async fetchHistory(sessionId: string, options: FetchHistoryOptions = {}) {

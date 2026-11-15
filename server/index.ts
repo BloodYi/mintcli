@@ -12,6 +12,7 @@ import { codexConnectionsRoutes } from './modules/codex-connections/index.js';
 import { agentConnectionsRoutes } from './modules/agent-connections/index.js';
 import { egressRoutes } from './modules/egress/index.js';
 import { tokenMonitorRoutes } from './modules/token-monitor/index.js';
+import { githubRoutes } from './modules/github/index.js';
 import { antigravityRoutes } from './modules/antigravity/index.js';
 
 import { AppError, findApplicationRoot, getModuleDirectory, IS_PLATFORM, terminalTextStyles } from '@/shared/utils.js';
@@ -23,6 +24,8 @@ import {
 import { chatRunRegistry, createWebSocketServer } from '@/modules/websocket/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
+
+import { accessRoutes } from './modules/access-routes/index.js';
 
 import { createGitModule } from './modules/git/index.js';
 import {
@@ -164,7 +167,9 @@ app.use('/api/codex-connections', authenticateToken, codexConnectionsRoutes);
 app.use('/api/antigravity', authenticateToken, antigravityRoutes);
 app.use('/api/agent-connections', authenticateToken, agentConnectionsRoutes);
 app.use('/api/egress', authenticateToken, egressRoutes);
+app.use('/api/access-routes', authenticateToken, accessRoutes);
 app.use('/api/token-monitor', authenticateToken, tokenMonitorRoutes);
+app.use('/api/github', authenticateToken, githubRoutes);
 
 // File Tree API Routes (protected)
 app.use('/api/file-tree', authenticateToken, fileTreeRoutes);

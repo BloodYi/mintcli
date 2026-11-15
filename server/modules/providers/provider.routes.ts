@@ -383,8 +383,8 @@ const parseSessionRenameSummary = (payload: unknown): string => {
 
 const parseSessionSearchQuery = (value: unknown): string => {
   const query = readOptionalQueryString(value) ?? '';
-  if (query.length < 2) {
-    throw new AppError('Query must be at least 2 characters', {
+  if (query.length === 0) {
+    throw new AppError('Query must not be empty', {
       code: 'INVALID_SEARCH_QUERY',
       statusCode: 400,
     });

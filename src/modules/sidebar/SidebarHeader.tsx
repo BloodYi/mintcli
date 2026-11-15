@@ -1,6 +1,8 @@
 import { FolderPlus, Plus, RefreshCw, Search, X, PanelLeftClose } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
+import { AccessRoutesButton } from '@/modules/access-routes';
+
 import { Button, Input } from '@/shared/ui';
 import { CLOUDCLI_WORDMARK_FONT_FAMILY } from '@/shared/constants';
 import type { SidebarSearchMode } from '@/shared/types';
@@ -69,8 +71,8 @@ export default function SidebarHeader({
   t,
 }: SidebarHeaderProps) {
   const showSearchTools = (projectsCount > 0 || runningSessionsCount > 0 || archivedSessionsCount > 0 || isArchivedSessionsLoading) && !isLoading;
-  const searchPlaceholder = searchMode === 'conversations'
-    ? t('search.conversationsPlaceholder')
+  const searchPlaceholder = searchMode === 'conversations' || searchMode === 'projects'
+    ? t('search.allPlaceholder', 'Search projects and conversations...')
     : searchMode === 'archived'
       ? t('search.archivedPlaceholder', 'Search archived sessions...')
       : searchMode === 'running'
@@ -88,6 +90,7 @@ export default function SidebarHeader({
           <LogoBlock t={t} />
 
           <div className="flex flex-shrink-0 items-center gap-0.5">
+            <AccessRoutesButton />
             <Button
               variant="ghost"
               size="sm"
@@ -177,6 +180,7 @@ export default function SidebarHeader({
           <LogoBlock t={t} />
 
           <div className="flex flex-shrink-0 gap-1.5">
+            <AccessRoutesButton />
             <button
               className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted/50 transition-all active:scale-95"
               onClick={onRefresh}

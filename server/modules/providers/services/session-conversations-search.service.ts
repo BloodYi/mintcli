@@ -7,9 +7,11 @@ import { rgPath } from '@vscode/ripgrep';
 
 import { isClaudeNonTurnMessageRow, stripAnsiSequences } from '@/shared/utils.js';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { sessionsService } from '@/modules/providers/services/sessions.service.js';
+import type { LLMProvider } from '@/shared/types.js';
 
 type AnyRecord = Record<string, any>;
-type SearchableProvider = 'claude' | 'codex';
+type SearchableProvider = LLMProvider;
 
 type SearchSnippetHighlight = {
   start: number;
@@ -66,7 +68,6 @@ type SearchSessionConversationsInput = {
 type SessionRepositoryRow = ReturnType<typeof sessionsDb.getAllSessions>[number];
 type SearchableSessionRow = SessionRepositoryRow & {
   provider: SearchableProvider;
-  jsonl_path: string;
 };
 
 type SearchRuntime = {
@@ -93,7 +94,7 @@ type ProjectBucket = {
   sessions: SearchableSessionRow[];
 };
 
-const SUPPORTED_PROVIDERS = new Set<SearchableProvider>(['claude', 'codex']);
+const SUPPORTED_PROVIDERS = new Set<SearchableProvider>(['claude', 'codex', 'cursor', 'opencode', 'antigravity']);
 const MAX_MATCHES_PER_SESSION = 2;
 const RIPGREP_FILE_CHUNK_SIZE = 40;
 const RIPGREP_CHUNK_CONCURRENCY = 6;
@@ -533,16 +534,6 @@ function normalizeSearchableSessions(rows: SessionRepositoryRow[]): SearchableSe
       continue;
     }
 
-    const rawJsonlPath = typeof row.jsonl_path === 'string' ? row.jsonl_path.trim() : '';
-    if (!rawJsonlPath) {
-      continue;
-    }
-
-    const absoluteJsonlPath = path.resolve(rawJsonlPath);
-    if (!fsSync.existsSync(absoluteJsonlPath)) {
-      continue;
-    }
-
     /**
      * Active session rows can still belong to an archived project because
      * project archiving intentionally preserves the underlying session data.
@@ -567,7 +558,7 @@ function normalizeSearchableSessions(rows: SessionRepositoryRow[]): SearchableSe
     normalizedRows.push({
       ...row,
       provider,
-      jsonl_path: absoluteJsonlPath,
+      jsonl_path: row.jsonl_path?.trim() ? path.resolve(row.jsonl_path.trim()) : null,
     });
   }
 
@@ -840,6 +831,7 @@ async function parseClaudeSessionMatches(
   session: SearchableSessionRow,
   runtime: SearchRuntime,
 ): Promise<SessionConversationResult | null> {
+  if (!session.jsonl_path) return null;
   const fileKey = normalizeComparablePath(session.jsonl_path);
   if (!fileKey) {
     return null;
@@ -1022,6 +1014,7 @@ async function parseCodexSessionMatches(
   session: SearchableSessionRow,
   runtime: SearchRuntime,
 ): Promise<SessionConversationResult | null> {
+  if (!session.jsonl_path) return null;
   const matches: SessionConversationMatch[] = [];
   let latestUserMessageText: string | null = null;
   const seenMessageFingerprints = new Set<string>();
@@ -1139,6 +1132,41 @@ async function parseSessionMatches(
   return null;
 }
 
+/** Search the same complete, normalized transcript that opening a conversation displays. */
+async function parseHistorySessionMatches(
+  session: SearchableSessionRow,
+  runtime: SearchRuntime,
+): Promise<SessionConversationResult | null> {
+  try {
+    const history = await sessionsService.fetchHistory(session.session_id, { limit: null, offset: 0 });
+    const matches: SessionConversationMatch[] = [];
+    for (const message of history.messages) {
+      if (runtime.isAborted() || runtime.totalMatches >= runtime.limit || matches.length >= MAX_MATCHES_PER_SESSION) break;
+      if (message.kind !== 'text' || !message.role) continue;
+      const text = message.displayText || message.content || '';
+      if (!runtime.matchesQuery(text)) continue;
+
+      addSessionMatch(runtime, matches, {
+        role: message.role,
+        ...runtime.buildSnippet(text),
+        timestamp: message.timestamp || null,
+        // Results navigate by the conversation's current engine, including hits from a handoff.
+        provider: session.provider,
+        messageUuid: message.transcriptAnchorId ?? null,
+      });
+    }
+    return matches.length ? {
+      sessionId: session.session_id,
+      provider: session.provider,
+      sessionSummary: toSummaryText(session.custom_name, null, session.session_id),
+      matches,
+    } : null;
+  } catch {
+    // A missing or temporarily unavailable transcript must not hide other conversations.
+    return null;
+  }
+}
+
 /**
  * Searches session titles and provider transcripts for the provider search
  * service and its route-level integration tests.
@@ -1179,8 +1207,17 @@ export async function searchConversations(
 
   const sessionsByPathKey = new Map<string, SearchableSessionRow[]>();
   const searchablePathEntries: SearchablePathEntry[] = [];
+  const historySessionKeys = new Set<string>();
 
   for (const session of searchableSessions) {
+    // Native JSONL search stays fast. Other engines and cross-engine conversations
+    // need their history adapter: a file-only scan cannot see their full transcript.
+    if ((session.provider !== 'claude' && session.provider !== 'codex')
+      || !session.jsonl_path || !fsSync.existsSync(session.jsonl_path)
+      || sessionsDb.getSessionHandoff(session.session_id)) {
+      historySessionKeys.add(getSessionKey(session));
+      continue;
+    }
     const normalizedPath = normalizeComparablePath(session.jsonl_path);
     if (!normalizedPath) {
       continue;
@@ -1198,13 +1235,15 @@ export async function searchConversations(
     pathSessions.push(session);
   }
 
-  const matchedFileKeys = await findMatchedFileKeys(
-    searchablePathEntries,
-    safeQuery,
-    words,
-    signal ?? undefined,
-  );
-  if (isAborted() || matchedFileKeys.size === 0) {
+  let matchedFileKeys: Set<string>;
+  try {
+    matchedFileKeys = await findMatchedFileKeys(searchablePathEntries, safeQuery, words, signal ?? undefined);
+  } catch {
+    // Under process limits ripgrep can fail to start (EAGAIN). The prefilter is
+    // optional: directly parse the indexed transcripts so content remains searchable.
+    matchedFileKeys = new Set(searchablePathEntries.map(entry => entry.normalizedPath));
+  }
+  if (isAborted() || (matchedFileKeys.size === 0 && historySessionKeys.size === 0)) {
     return { results: [], titleResults, totalMatches: 0, query: safeQuery };
   }
 
@@ -1258,11 +1297,14 @@ export async function searchConversations(
       if (runtime.totalMatches >= runtime.limit || runtime.isAborted()) {
         break;
       }
-      if (!matchedSessionKeys.has(getSessionKey(session))) {
+      const useHistory = historySessionKeys.has(getSessionKey(session));
+      if (!useHistory && !matchedSessionKeys.has(getSessionKey(session))) {
         continue;
       }
 
-      const sessionResult = await parseSessionMatches(session, runtime);
+      const sessionResult = useHistory
+        ? await parseHistorySessionMatches(session, runtime)
+        : await parseSessionMatches(session, runtime);
       if (sessionResult) {
         projectResult.sessions.push(sessionResult);
       }

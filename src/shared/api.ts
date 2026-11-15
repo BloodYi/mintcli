@@ -5,6 +5,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
+import type { ApiProtocol } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -198,6 +199,19 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 // import a named method instead of assembling URLs of their own.
 
 export const api = {
+  github: {
+    status: () => get('/api/github/status'),
+    startLogin: () => post('/api/github/login'),
+    loginStatus: () => get('/api/github/login'),
+    cancelLogin: () => del('/api/github/login'),
+    tokenLogin: (token: string) => post('/api/github/token', { token }),
+    logout: () => post('/api/github/logout'),
+    repository: (projectId: string, signal?: AbortSignal) => get('/api/github/repository' + query({ project: projectId }), { signal }),
+    push: (projectId: string, expectedHead: string, expectedBranch: string) => post('/api/github/push', { project: projectId, expectedHead, expectedBranch }),
+  },
+  accessRoutes: {
+    status: (signal?: AbortSignal) => get('/api/access-routes', { signal }),
+  },
   egress: {
     status: (signal?: AbortSignal) => get('/api/egress', { signal }),
     select: (target: string, nodeId: string) => put('/api/egress', { target, nodeId }),
@@ -255,7 +269,11 @@ export const api = {
     loginStatus: (id: string) => get(`/api/codex-connections/${encodeURIComponent(id)}/login`),
     cancelLogin: (id: string) => del(`/api/codex-connections/${encodeURIComponent(id)}/login`),
     models: (id: string) => get(`/api/codex-connections/${encodeURIComponent(id)}/models`),
+    discoverModels: (body: { id?: string; baseUrl: string; apiKey?: string; protocol?: ApiProtocol }, signal?: AbortSignal) =>
+      post('/api/codex-connections/models', body, { signal }),
     quota: (id: string) => get(`/api/codex-connections/${encodeURIComponent(id)}/quota`),
+    consumeReset: (id: string, idempotencyKey: string, creditId?: string) =>
+      post(`/api/codex-connections/${encodeURIComponent(id)}/reset`, { confirmed: true, idempotencyKey, ...(creditId ? { creditId } : {}) }),
   },
   // Auth endpoints (no token required)
   auth: {

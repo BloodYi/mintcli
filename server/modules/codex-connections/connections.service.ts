@@ -1,7 +1,7 @@
 import { egressEnvironment, egressFetch } from '@/modules/egress/index.js';
 import fs from 'node:fs';
 import { readOfficialCatalog } from './catalog.service.js';
-import type { ProviderModelsDefinition } from '@/shared/types.js';
+import type { ApiAgent, ApiProtocol, ProviderModelsDefinition } from '@/shared/types.js';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -11,14 +11,14 @@ import type { ChildProcess } from 'node:child_process';
 import { lookup } from 'node:dns/promises';
 
 import { AppError, resolveManagedCli, stripAnsiSequences } from '@/shared/index.js';
-import { readAccountQuota } from './quota.service.js';
+import { consumeAccountReset, readAccountQuota } from './quota.service.js';
 
 type Connection = {
   id: string; name: string; kind: 'chatgpt' | 'api'; home: string;
   baseUrl?: string; apiKey?: string; model?: string;
-  protocol?: 'responses' | 'chat_completions';
+  protocol?: ApiProtocol; agent?: ApiAgent;
 };
-type Store = { activeId: string; connections: Connection[] };
+type Store = { activeId: string; connections: Connection[]; apiSelections?: Partial<Record<ApiAgent, string>> };
 type Login = { status: string; method: 'browser' | 'device'; url?: string; code?: string; state?: string; redirectUri?: string; expiresAt: number; process?: ChildProcess };
 const BROWSER_LOGIN_PORT = 1455;
 const logins = new Map<string, Login>();
@@ -44,7 +44,8 @@ function writeStore(store: Store): void {
 
 function connection(id?: unknown): Connection {
   const store = readStore();
-  const result = store.connections.find(item => item.id === (id || store.activeId));
+  const requested = typeof id === 'string' ? id.replace(/^api:/, '') : id;
+  const result = store.connections.find(item => item.id === (requested || store.activeId));
   if (!result) failure('请先添加并选择 Codex 账号或第三方 API', 404);
   return result;
 }
@@ -58,7 +59,20 @@ function publicConnection(item: Connection) {
     catch { authorized = false; }
   }
   return { id: item.id, name: item.name, kind: item.kind, baseUrl: item.baseUrl || '',
-    protocol: item.protocol || 'responses', model: item.model || '', authorized, email, hasApiKey: Boolean(item.apiKey) };
+    protocol: item.protocol || 'responses', agent: apiAgent(item), model: item.model || '', authorized, email, hasApiKey: Boolean(item.apiKey) };
+}
+
+function apiAgent(item: Connection): ApiAgent {
+  return item.agent || (item.protocol === 'chat_completions' ? 'chat' : 'codex');
+}
+
+function apiConfiguration(agent: unknown, protocol: unknown): { agent: ApiAgent; protocol: ApiProtocol } {
+  const required = { codex: 'responses', claude: 'anthropic', antigravity: 'gemini', chat: 'chat_completions' } as const;
+  const selected = agent ?? (protocol === 'chat_completions' ? 'chat' : 'codex');
+  if (typeof selected !== 'string' || !Object.hasOwn(required, selected)) failure('请选择有效的执行 Agent');
+  const expected = required[selected as ApiAgent];
+  if (protocol !== undefined && protocol !== expected && !(selected !== 'chat' && protocol === 'chat_completions')) failure('所选 Agent 与 API 协议不匹配');
+  return { agent: selected as ApiAgent, protocol: (protocol ?? expected) as ApiProtocol };
 }
 
 function environment(home: string, target = 'codex'): Record<string, string> {
@@ -75,12 +89,12 @@ function inputString(value: unknown, max: number): string {
   return value.trim();
 }
 
-function normalizedUrl(value: string): string {
+function normalizedUrl(value: string, protocol: ApiProtocol = 'responses'): string {
   let url: URL;
   try { url = new URL(value); } catch { return failure('请填写有效的 HTTPS API 地址'); }
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) failure('API 地址必须为 HTTPS，且不能包含密码或查询参数');
-  if (!url.pathname || url.pathname === '/') url.pathname = '/v1';
-  url.pathname = url.pathname.replace(/\/(chat\/completions|responses)\/?$/, '').replace(/\/$/, '');
+  if (!url.pathname || url.pathname === '/') url.pathname = protocol === 'gemini' ? '/v1beta' : '/v1';
+  url.pathname = url.pathname.replace(/\/(chat\/completions|responses|messages)\/?$/, '').replace(/\/$/, '');
   return url.toString().replace(/\/$/, '');
 }
 
@@ -95,13 +109,43 @@ export async function validateConnectionEndpoint(baseUrl: string): Promise<void>
   })) failure('API 地址必须指向公网服务');
 }
 
+async function readApiModels(baseUrl: string, apiKey: string, target: string, protocol: ApiProtocol = 'responses') {
+  await validateConnectionEndpoint(baseUrl);
+  let response: Response;
+  try {
+    response = await egressFetch(target)(baseUrl + '/models', {
+      headers: protocol === 'gemini' ? { 'x-goog-api-key': apiKey }
+        : protocol === 'anthropic' ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+          : { Authorization: 'Bearer ' + apiKey }, redirect: 'error', signal: AbortSignal.timeout(20000),
+    });
+  } catch {
+    // Provider and network errors can contain credentials; expose only our own message.
+    return failure('拉取模型失败或超时，请检查 API 地址和网络；也可手动填写模型 ID', 502);
+  }
+  if (!response.ok) failure(`模型接口返回 HTTP ${response.status}，请检查地址和密钥；也可手动填写模型 ID`, 502);
+  let data: unknown;
+  try { data = await response.json(); }
+  catch { return failure('模型接口未返回有效 JSON；可手动填写模型 ID', 502); }
+  const field = protocol === 'gemini' ? 'models' : 'data';
+  const rows = data && typeof data === 'object' && field in data ? (data as Record<string, unknown>)[field] : undefined;
+  if (!Array.isArray(rows)) failure('模型接口未返回有效模型列表；可手动填写模型 ID', 502);
+  const models = [...new Set(rows.flatMap(row => {
+    const raw = row && typeof row === 'object' ? protocol === 'gemini' ? row.name : row.id : undefined;
+    const id = typeof raw === 'string' && protocol === 'gemini' ? raw.replace(/^models\//, '') : raw;
+    return typeof id === 'string' && id.trim() && id.length <= 160 && !id.includes('\0') ? [id.trim()] : [];
+  }))].slice(0, 2000);
+  // A provider must not be able to echo the saved credential back to the browser.
+  return { models: models.filter(id => !id.includes(apiKey)) };
+}
+
 /** Used by Codex runtime to capture one immutable connection before a turn starts. */
 export function resolveCodexConnection(id?: unknown) {
   if (!fs.existsSync(storePath())) {
     const home = path.join(os.homedir(), '.codex');
     return { id: 'default', name: 'Codex', kind: 'chatgpt' as const, home, env: environment(home), baseUrl: undefined, apiKey: undefined, protocol: undefined, model: undefined };
   }
-  const item = connection(id);
+  const item = connection(typeof id === 'string' ? id.replace(/^api:/, '') : id);
+  if (item.kind === 'api' && !['codex', 'chat'].includes(apiAgent(item))) failure('这个 API 账号使用其他 Agent，请重新选择账号');
   return { ...item, env: environment(item.home, item.kind === 'api' ? 'api:' + item.id : 'codex') };
 }
 
@@ -109,11 +153,28 @@ export function resolveCodexConnection(id?: unknown) {
 export const connectionService = {
   list() {
     const store = readStore();
-    return { activeId: store.activeId, connections: store.connections.map(publicConnection) };
+    return { activeId: store.activeId, apiSelections: store.apiSelections || {}, connections: store.connections.map(publicConnection) };
+  },
+  apiForAgent(agent: ApiAgent, id?: unknown) {
+    const store = readStore();
+    const explicit = typeof id === 'string' && id.startsWith('api:');
+    if (id && !explicit) return null;
+    const selected = explicit ? String(id).slice(4) : store.apiSelections?.[agent];
+    if (!selected) return null;
+    const item = connection(selected);
+    if (item.kind !== 'api' || apiAgent(item) !== agent) failure('API 账号与执行 Agent 不匹配，请重新选择账号');
+    const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined
+      && !/^(?:ANTHROPIC_|OPENAI_|CODEX_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CODE_USE_|GEMINI_API_KEY|GOOGLE_GEMINI_BASE_URL|GOOGLE_API_KEY|CLAUDECODE)/.test(entry[0])));
+    return { ...item, agent: apiAgent(item), env: egressEnvironment('api:' + item.id, env) };
+  },
+  useNativeAgent(agent: 'claude' | 'antigravity') {
+    const store = readStore();
+    if (!store.apiSelections?.[agent]) return;
+    delete store.apiSelections[agent]; writeStore(store);
   },
   async save(body: Record<string, unknown>) {
     let store = readStore();
-    const id = typeof body.id === 'string' ? body.id : randomUUID();
+    const id = typeof body.id === 'string' ? body.id.replace(/^api:/, '') : randomUUID();
     const previous = store.connections.find(item => item.id === id);
     if (body.id && !previous) failure('连接不存在', 404);
     const name = inputString(body.name, 80);
@@ -123,12 +184,13 @@ export const connectionService = {
     const home = previous?.home || path.join(root(), 'accounts', id);
     const next: Connection = { id, name, kind, home };
     if (kind === 'api') {
-      next.baseUrl = normalizedUrl(inputString(body.baseUrl, 1000));
+      const config = apiConfiguration(body.agent ?? previous?.agent, body.protocol ?? previous?.protocol);
+      next.agent = config.agent; next.protocol = config.protocol;
+      next.baseUrl = normalizedUrl(inputString(body.baseUrl, 1000), config.protocol);
       await validateConnectionEndpoint(next.baseUrl);
       next.model = inputString(body.model ?? '', 160);
       next.apiKey = body.apiKey ? inputString(body.apiKey, 4000) : previous?.apiKey;
       if (!next.apiKey) failure('请填写 API Key');
-      next.protocol = body.protocol === 'chat_completions' ? 'chat_completions' : 'responses';
     }
     fs.mkdirSync(home, { recursive: true, mode: 0o700 });
     // All credentials are separate while native transcripts and SQLite thread
@@ -147,20 +209,30 @@ export const connectionService = {
     store = readStore();
     const index = store.connections.findIndex(item => item.id === id);
     if (index >= 0) store.connections[index] = next; else store.connections.push(next);
-    if (!store.activeId) store.activeId = id;
+    if (!store.activeId && (kind === 'chatgpt' || ['codex', 'chat'].includes(apiAgent(next)))) store.activeId = id;
+    if (previous && apiAgent(previous) !== apiAgent(next)) {
+      if (store.apiSelections?.[apiAgent(previous)] === id) delete store.apiSelections[apiAgent(previous)];
+      if (store.activeId === id && !['codex', 'chat'].includes(apiAgent(next))) store.activeId = store.connections.find(item => item.id !== id && (item.kind === 'chatgpt' || ['codex', 'chat'].includes(apiAgent(item))))?.id || '';
+    }
     writeStore(store);
     return publicConnection(next);
   },
   select(id: string) {
-    connection(id);
-    const store = readStore(); store.activeId = id; writeStore(store);
+    const item = connection(id);
+    id = item.id;
+    const store = readStore();
+    if (item.kind === 'api' && ['claude', 'antigravity'].includes(apiAgent(item))) {
+      store.apiSelections = { ...store.apiSelections, [apiAgent(item)]: id };
+    } else store.activeId = id;
+    writeStore(store);
     return this.list();
   },
   remove(id: string) {
-    connection(id);
+    id = connection(id).id;
     const login = logins.get(id); login?.process?.kill(); logins.delete(id);
     const store = readStore(); store.connections = store.connections.filter(item => item.id !== id);
-    if (store.activeId === id) store.activeId = store.connections[0]?.id || '';
+    for (const agent of Object.keys(store.apiSelections || {}) as ApiAgent[]) if (store.apiSelections?.[agent] === id) delete store.apiSelections[agent];
+    if (store.activeId === id) store.activeId = store.connections.find(item => item.kind === 'chatgpt' || ['codex', 'chat'].includes(apiAgent(item)))?.id || '';
     writeStore(store);
     // Keep private credential files for recovery; removing a connection never
     // deletes shared chat history or credentials in use by another process.
@@ -275,18 +347,37 @@ export const connectionService = {
       reason: '第三方 API 未提供通用余额接口；请以服务商后台为准。' };
     return { connectionId: id, ...await readAccountQuota(environment(item.home)) };
   },
+  async consumeReset(id: string, idempotencyKey: string, creditId?: string) {
+    const item = connection(id);
+    if (item.kind !== 'chatgpt') failure('重置卡仅用于官方 ChatGPT 账号', 400);
+    return { connectionId: id, ...await consumeAccountReset(environment(item.home), idempotencyKey, creditId) };
+  },
   async models(id: string) {
     const item = connection(id);
     if (item.kind === 'chatgpt') {
       const catalog = await getCodexModelCatalog(id);
       return { models: catalog.OPTIONS.map(option => option.value), catalog };
     }
-    await validateConnectionEndpoint(item.baseUrl!);
-    const response = await egressFetch('api:' + item.id)(item.baseUrl + '/models', { headers: { Authorization: 'Bearer ' + item.apiKey }, redirect: 'error', signal: AbortSignal.timeout(20000) });
-    if (!response.ok) failure(`模型接口返回 HTTP ${response.status}，请检查地址和密钥；也可手动填写模型名`);
-    const data = await response.json() as { data?: { id?: unknown }[] };
-    const models = (data.data || []).map(row => row.id).filter((id): id is string => typeof id === 'string' && id.length <= 160).slice(0, 2000);
-    return { models };
+    return readApiModels(normalizedUrl(item.baseUrl!, item.protocol), item.apiKey!, 'api:' + item.id, item.protocol);
+  },
+  async discoverModels(input: { id?: string; baseUrl: string; apiKey?: string; protocol?: ApiProtocol }) {
+    const previous = input.id ? connection(input.id) : undefined;
+    if (previous && previous.kind !== 'api') failure('请选择第三方 API 账号');
+    const protocol = input.protocol ?? previous?.protocol ?? 'responses';
+    if (!['responses', 'anthropic', 'gemini', 'chat_completions'].includes(protocol)) failure('API 协议无效');
+    const baseUrl = normalizedUrl(inputString(input.baseUrl, 1000), protocol);
+    const apiKey = inputString(input.apiKey ?? '', 4000) || previous?.apiKey;
+    if (!apiKey) failure('请填写 API Key');
+    // Preview the current form without saving it or changing the selected account.
+    return readApiModels(baseUrl, apiKey, 'api:' + (previous?.id || 'preview'), protocol);
+  },
+  async apiModelCatalog(id: string): Promise<ProviderModelsDefinition> {
+    const item = connection(id);
+    if (item.kind !== 'api') failure('请选择第三方 API 账号');
+    let ids: string[] = [];
+    try { ids = (await this.models(id)).models; } catch { /* A saved manual model remains available without model discovery. */ }
+    if (item.model && !ids.includes(item.model)) ids.unshift(item.model);
+    return { ACCOUNT_SCOPED: true, OPTIONS: ids.map(value => ({ value, label: value })), DEFAULT: item.model || ids[0] || '' };
   },
 };
 
@@ -294,8 +385,5 @@ export const connectionService = {
 export async function getCodexModelCatalog(id?: unknown): Promise<ProviderModelsDefinition> {
   const item = resolveCodexConnection(id);
   if (item.kind === 'chatgpt') return readOfficialCatalog(item.home, item.env);
-  let ids: string[] = [];
-  try { ids = (await connectionService.models(item.id)).models; } catch { /* A configured model remains usable when discovery is unsupported. */ }
-  if (item.model && !ids.includes(item.model)) ids.unshift(item.model);
-  return { ACCOUNT_SCOPED: true, OPTIONS: ids.map(value => ({ value, label: value })), DEFAULT: item.model || ids[0] || '' };
+  return connectionService.apiModelCatalog(item.id);
 }

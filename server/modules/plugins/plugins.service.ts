@@ -115,6 +115,7 @@ export function createPluginsService(dependencies: PluginDependencies) {
     },
     async update(pluginName: string) {
       validatePluginName(pluginName);
+      if (dependencies.scanPlugins().find(plugin => plugin.name === pluginName)?.builtIn) throw new AppError('内置插件随 mintcli 更新。', { code: 'BUILTIN_PLUGIN', statusCode: 400 });
       const wasRunning = dependencies.isServerRunning(pluginName);
       if (wasRunning) await dependencies.stopServer(pluginName);
       let updatedManifest: unknown;
@@ -153,6 +154,7 @@ export function createPluginsService(dependencies: PluginDependencies) {
     },
     async uninstall(pluginName: string) {
       validatePluginName(pluginName);
+      if (dependencies.scanPlugins().find(plugin => plugin.name === pluginName)?.builtIn) throw new AppError('内置插件可以关闭，无需卸载。', { code: 'BUILTIN_PLUGIN', statusCode: 400 });
       if (dependencies.isServerRunning(pluginName)) await dependencies.stopServer(pluginName);
       await dependencies.uninstall(pluginName);
       return { success: true, name: pluginName };

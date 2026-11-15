@@ -1,8 +1,8 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CodexQuota } from '@/modules/codex-connections/CodexQuota';
 import { api } from '@/shared/api';
-vi.mock('@/shared/api',()=>({api:{codexConnections:{quota:vi.fn()}}}));
+vi.mock('@/shared/api',()=>({api:{codexConnections:{quota:vi.fn(),consumeReset:vi.fn()}}}));
 vi.mock('@/modules/egress', () => ({ EgressButton: () => null }));
 beforeEach(()=> { vi.clearAllMocks(); localStorage.clear(); }); afterEach(cleanup);
 const response=(value: unknown)=>new Response(JSON.stringify(value),{headers:{'Content-Type':'application/json'}});
@@ -25,4 +25,28 @@ describe('real account quota display',()=>{
     expect(screen.queryByText('0%')).toBeNull();
     expect(screen.queryByRole('progressbar')).toBeNull();
   });
+});
+
+
+it('only redeems the selected account after confirmation, once, then refreshes quota',async()=>{
+  vi.mocked(api.codexConnections.quota).mockResolvedValue(response({connectionId:'a',status:'available',windows:[],resetCredits:{availableCount:1,credits:[{id:'card-a',title:'Full reset',expiresAt:1900000000}]}}));
+  vi.mocked(api.codexConnections.consumeReset).mockResolvedValue(response({connectionId:'a',status:'completed',resetOutcome:'reset'}));
+  render(<CodexQuota connectionId="a"/>);
+  fireEvent.click(await screen.findByRole('button',{name:'使用重置卡（1）'}));
+  expect(api.codexConnections.consumeReset).not.toHaveBeenCalled();
+  expect(screen.getByRole('combobox',{name:'选择重置卡'})).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'确认使用一张'}));
+  await screen.findByText('重置成功，正在刷新额度。');
+  expect(api.codexConnections.consumeReset).toHaveBeenCalledTimes(1);
+  expect(api.codexConnections.consumeReset).toHaveBeenCalledWith('a',expect.any(String),'card-a');
+  await waitFor(()=>expect(api.codexConnections.quota).toHaveBeenCalledTimes(2));
+});
+
+it('hides an account confirmation when switching accounts and never mutates on mount or refresh',async()=>{
+  vi.mocked(api.codexConnections.quota).mockImplementation(id=>Promise.resolve(response({connectionId:id,status:'available',windows:[],resetCredits:{availableCount:1,credits:null}})));
+  const view=render(<CodexQuota connectionId="a"/>);
+  fireEvent.click(await screen.findByRole('button',{name:'使用重置卡（1）'}));
+  view.rerender(<CodexQuota connectionId="b"/>);
+  await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull());
+  expect(api.codexConnections.consumeReset).not.toHaveBeenCalled();
 });

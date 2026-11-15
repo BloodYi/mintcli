@@ -5,6 +5,7 @@ import { useGitSettings } from '@/modules/settings/hooks/useGitSettings';
 import { Button, Input } from '@/shared/ui';
 import SettingsCard from '@/modules/settings/SettingsCard';
 import SettingsSection from '@/modules/settings/SettingsSection';
+import { GithubPanel } from '@/modules/github';
 
 /** Rendered by Settings for the "git" tab, configuring the commit identity and git preferences. */
 export default function GitSettingsTab() {
@@ -22,6 +23,7 @@ export default function GitSettingsTab() {
 
   return (
     <div className="space-y-8">
+      <GithubPanel compact />
       <SettingsSection
         title={t('git.title')}
         description={t('git.description')}

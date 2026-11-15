@@ -1,9 +1,11 @@
 import { EgressButton } from '@/modules/egress';
 import { useEffect, useState } from 'react';
 import { api } from '@/shared/api';
+import { CodexResetButton } from '@/modules/codex-connections/CodexResetButton';
+import type { CodexResetCredits } from '@/shared/types';
 import { QuotaWindow } from '@/shared/ui/QuotaWindow';
 
-type Quota = { connectionId: string; status: string; planType?: string; checkedAt?: number; reason?: string; windows: { bucket: string; minutes: number | null; remainingPercent: number | null; resetsAt: number | null }[] };
+type Quota = { connectionId: string; status: string; planType?: string; checkedAt?: number; reason?: string; resetCredits?: CodexResetCredits | null; windows: { bucket: string; minutes: number | null; remainingPercent: number | null; resetsAt: number | null }[] };
 
 function duration(minutes: number | null): string {
   if (minutes === null) return '额度窗口';
@@ -47,6 +49,7 @@ export function CodexQuota({ connectionId }: { connectionId?: string }) {
     </div>}
     {(!current || !current.windows.length) && <span className="min-w-0 text-muted-foreground" role="status">{current?.reason || (busy ? '正在读取官方额度…' : '暂无额度信息')}</span>}
     <button type="button" className="ml-auto shrink-0 rounded border border-border px-2 py-1 disabled:opacity-50" disabled={busy} onClick={() => setRevision(value => value + 1)} aria-label="刷新当前账号额度">{busy ? '读取中…' : '刷新额度'}</button>
+    {current && 'resetCredits' in current && <CodexResetButton connectionId={connectionId} credits={current.resetCredits} onReset={() => setRevision(value => value + 1)} />}
     <EgressButton connectionId={connectionId ? "codex:" + connectionId : undefined} />
   </div>;
 }

@@ -175,7 +175,9 @@ export default function SidebarContent({
   projectListProps,
   t,
 }: SidebarContentProps) {
-  const showConversationSearch = searchMode === 'conversations' && searchFilter.trim().length >= 2;
+  const showConversationSearch = (searchMode === 'conversations' || searchMode === 'projects')
+    && searchFilter.trim().length > 0;
+  const hasProjectMatches = searchMode === 'projects' && projectListProps.filteredProjects.length > 0;
   const hasSearchResults = Boolean(
     conversationResults
     && (conversationResults.titleResults.length > 0 || conversationResults.results.length > 0),
@@ -210,8 +212,14 @@ export default function SidebarContent({
       />
 
       <ScrollArea className="flex-1 overflow-y-auto overscroll-contain md:px-1.5 md:py-2">
+        {showConversationSearch && hasProjectMatches && (
+          <section className="mb-4 space-y-1" aria-label={t('search.modeProjects')}>
+            <h3 className="px-3 text-[11px] font-medium text-muted-foreground">{t('search.modeProjects')}</h3>
+            <SidebarProjectList {...projectListProps} />
+          </section>
+        )}
         {showConversationSearch ? (
-          isSearching && !conversationResults ? (
+          !conversationResults ? (
             <div className="px-4 py-12 text-center md:py-8">
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">
                 <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
@@ -223,7 +231,7 @@ export default function SidebarContent({
                 </p>
               )}
             </div>
-          ) : !isSearching && conversationResults && !hasSearchResults ? (
+          ) : !isSearching && conversationResults && !hasSearchResults && !hasProjectMatches ? (
             <div className="px-4 py-12 text-center md:py-8">
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">
                 <Search className="h-6 w-6 text-muted-foreground" />

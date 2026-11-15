@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { connectionService } from '@/modules/codex-connections/index.js';
 import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
@@ -278,6 +279,8 @@ const readClaudeSessionModelFromJsonl = async (
 
 export class ClaudeProviderModels implements IProviderModels {
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
+    const api = connectionService.apiForAgent('claude');
+    if (api) return connectionService.apiModelCatalog(api.id);
     // claude creates a new jsonl file as a separate session for this request.
     // As a result, it lists the workspace where this is invoked when it shouldn't.
     //

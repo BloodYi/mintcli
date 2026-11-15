@@ -12,7 +12,7 @@ import { closeConnection, getConnection, initializeDatabase, sessionsDb } from '
 import providerRouter from '@/modules/providers/provider.routes.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type { IProvider } from '@/shared/interfaces.js';
-import type { BackgroundTaskSummary, WorkflowAgentActivity } from '@/shared/types.js';
+import type { BackgroundTaskSummary, FetchHistoryOptions, WorkflowAgentActivity } from '@/shared/types.js';
 import { AppError, IS_PLATFORM } from '@/shared/utils.js';
 
 async function withProviderServer(
@@ -145,6 +145,48 @@ test('conversation search streams title matches before transcript results', asyn
     assert.equal(titlePayload.titleResults[0]?.sessionId, 'title-only-session');
     assert.equal(titlePayload.titleResults[0]?.sessionTitle, 'Release planning notes');
     assert.equal(titlePayload.titleResults[0]?.provider, 'codex');
+  });
+});
+
+test('conversation search accepts a single Chinese character and streams adapter history matches', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    sessionsDb.createAppSession('agy-app-search', 'antigravity', workspacePath, 'Unrelated title');
+    sessionsDb.assignProviderSessionId('agy-app-search', 'agy-native-search');
+    const adapter = providerRegistry.resolveProvider('antigravity').sessions;
+    const historyProbe = mock.method(adapter, 'fetchHistory', async (sessionId: string, options?: FetchHistoryOptions) => {
+      assert.equal(options?.providerSessionId, 'agy-native-search');
+      assert.equal(options?.limit, null);
+      // Yield once so the SSE route also exercises asynchronous adapter reads.
+      await new Promise(resolve => setImmediate(resolve));
+      return { messages: [{ id: 'old-message', sessionId, provider: 'antigravity' as const,
+        timestamp: '2026-11-14T06:00:00Z', kind: 'text' as const, role: 'assistant' as const,
+        content: '历史消息里讨论过全文检索功能' }], total: 1, hasMore: false, offset: 0, limit: null };
+    });
+    try {
+      const response = await fetch(`${baseUrl}/api/providers/search/sessions?q=${encodeURIComponent('全')}`);
+      const stream = await response.text();
+      assert.equal(response.status, 200);
+      assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/);
+      assert.match(stream, /event: done/);
+      const event = stream.split('\n\n').find(block => block.startsWith('event: result\n'));
+      assert.ok(event);
+      const result = JSON.parse(event.split('\ndata: ')[1]);
+      assert.equal(result.totalMatches, 1);
+      assert.equal(result.projectResult.sessions[0].sessionId, 'agy-app-search');
+      assert.equal(result.projectResult.sessions[0].matches[0].snippet, '历史消息里讨论过全文检索功能');
+      assert.deepEqual(result.projectResult.sessions[0].matches[0].highlights, [{ start: 8, end: 9 }]);
+    } finally { historyProbe.mock.restore(); }
+  });
+});
+
+test('conversation search still rejects empty and whitespace-only queries', async () => {
+  await withProviderServer(async (baseUrl) => {
+    for (const query of ['', '   ']) {
+      const response = await fetch(`${baseUrl}/api/providers/search/sessions?q=${encodeURIComponent(query)}`);
+      assert.equal(response.status, 400);
+      const payload = await response.json() as { error: { code: string } };
+      assert.equal(payload.error.code, 'INVALID_SEARCH_QUERY');
+    }
   });
 });
 

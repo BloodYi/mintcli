@@ -6,11 +6,15 @@ import type { NavigateFunction } from 'react-router-dom';
 
 /** Identifies which coding-agent CLI backs a session, project selection or model list. */
 export type LLMProvider = 'claude' | 'cursor' | 'codex' | 'opencode' | 'antigravity';
+/** Execution engine used by a third-party API; `chat` retains text-only conversations. */
+export type ApiAgent = 'codex' | 'claude' | 'antigravity' | 'chat';
+/** Upstream API format. Chat Completions can be converted for each supported agent. */
+export type ApiProtocol = 'responses' | 'anthropic' | 'gemini' | 'chat_completions';
 
 /** Safe connection selection shared by the native chat composer and account manager. */
 export type CodexConnectionChoice = { id: string; kind: 'chatgpt' | 'api'; model: string };
 /** Safe native credential choice for a turn; no credential values reach this view. */
-export type AgentConnectionChoice = { id: string; accountId: string; provider: LLMProvider; kind: string; model?: string; name: string; email?: string; authorized: boolean; current?: boolean; baseUrl?: string; protocol?: string };
+export type AgentConnectionChoice = { id: string; accountId: string; provider: LLMProvider; kind: string; agent?: ApiAgent; model?: string; name: string; email?: string; authorized: boolean; current?: boolean; baseUrl?: string; protocol?: string };
 /** One common catalog for the account selector and manager. */
 export type AgentConnectionsCatalog = { activeId: string; connections: AgentConnectionChoice[]; warning?: string };
 
@@ -1258,7 +1262,16 @@ export type Plugin = {
   serverRunning: boolean;
   dirName: string;
   repoUrl: string | null;
+  builtIn?: boolean;
 };
+
+//----------------- GITHUB CONNECTION ------------
+/** Safe GitHub identity returned to the login panel; never includes an access token. */
+export type GithubConnection = { connected: boolean; account: { login: string; name: string; url: string } | null };
+/** Temporary browser authorization state, shared by the GitHub panel and its API responses. */
+export type GithubLogin = { status: 'starting' | 'waiting' | 'complete' | 'failed'; code?: string; verificationUrl: string; expiresAt: number; error?: string };
+/** The selected project's upload preview, including the pinned commit and destination branch. */
+export type GithubRepository = { branch: string; head: string; remote: string; remoteBranch: string; name: string | null; url: string | null; changedFiles: number; ahead: number | null; behind: number | null };
 
 // ---------------------------
 
@@ -1952,3 +1965,8 @@ export type ReplyModelEvidence = {
 };
 /** Session-scoped model metadata shared by the monitor provider and reply annotations. */
 export type ReplyModelIndex = { sessionId: string; status: string; models: ReplyModelEvidence[] };
+
+//----------------- OFFICIAL CODEX RESET CREDITS ------------
+/** Native account-owned reset offers shared by quota bars and the explicit reset confirmation; null detail rows mean only the count is known. */
+export type CodexResetCredits = { availableCount: number; credits: { id: string; title: string | null; description: string | null; expiresAt: number | null }[] | null };
+// ---------------------------

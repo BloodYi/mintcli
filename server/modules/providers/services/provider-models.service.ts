@@ -104,8 +104,8 @@ const mergeProviderModels = (
   custom: CustomProviderModelRecord[],
   customModelsOnly: boolean,
 ): ProviderModelsDefinition => {
-  // Codex choices are authoritative per selected account; keep stored custom rows without re-inserting retired ids.
-  if (provider === 'codex' && predefined.ACCOUNT_SCOPED) return { ...predefined, OPTIONS: predefined.OPTIONS.map(option => ({ ...option, isCustom: false })), EFFORT_LEVELS: [...new Set(predefined.OPTIONS.flatMap(option => option.effort?.values.map(level => level.value) || []))], CUSTOM_MODELS_ONLY: false };
+  // Account-scoped catalogs must not inherit models belonging to another account or API.
+  if (predefined.ACCOUNT_SCOPED) return { ...predefined, OPTIONS: predefined.OPTIONS.map(option => ({ ...option, isCustom: false })), EFFORT_LEVELS: [...new Set(predefined.OPTIONS.flatMap(option => option.effort?.values.map(level => level.value) || []))], CUSTOM_MODELS_ONLY: false };
   const customOptions = custom.map(toCustomProviderModelOption);
   const listOnlyCustomModels = customModelsOnly && customOptions.length > 0;
   return {
@@ -175,7 +175,9 @@ const isUniqueConstraintError = (error: unknown): boolean => (
  * Tests inject a small custom-model store through the same boundary.
  */
 export const createProviderModelsService = (dependencies: ProviderModelsServiceDependencies = {}) => {
-  const resolveProvider = dependencies.resolveProvider ?? providerRegistry.resolveProvider;
+  // API adapters also consume model catalogs; defer registry access until a request
+  // so that loading an individual runtime cannot re-enter registry initialization.
+  const resolveProvider = dependencies.resolveProvider ?? ((provider: string) => providerRegistry.resolveProvider(provider));
   const catalog = dependencies.catalog ?? providerModelsDb;
   const sessions = dependencies.sessions ?? sessionsDb;
   const settings = dependencies.settings ?? appConfigDb;

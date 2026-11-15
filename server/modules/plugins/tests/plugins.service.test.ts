@@ -19,6 +19,20 @@ function dependencies(overrides: Partial<Dependencies> = {}): Dependencies {
   };
 }
 
+test('built-in plugins can be disabled but cannot be removed or independently updated', async () => {
+  let saved = false;
+  const service = createPluginsService(dependencies({
+    scanPlugins: () => [{ name: 'github', builtIn: true, enabled: true }],
+    saveConfig: config => { saved = config.github.enabled === false; },
+    uninstall: async () => { throw new Error('must not remove shipped files'); },
+    update: async () => { throw new Error('must not update shipped files'); },
+  }));
+  await assert.rejects(service.uninstall('github'), /内置插件/);
+  await assert.rejects(service.update('github'), /内置插件/);
+  await service.setEnabled('github', false);
+  assert.equal(saved, true);
+});
+
 test('update restarts a running plugin server when the update fails', async () => {
   const operations: string[] = [];
   let running = true;
