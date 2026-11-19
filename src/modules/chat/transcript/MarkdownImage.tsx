@@ -15,7 +15,7 @@ type MarkdownImageProps = {
 
 // Sources the browser can load on its own. Anything else is a workspace file
 // reference and has to go through the authenticated project files route.
-const isBrowserLoadableSrc = (src: string): boolean => /^(https?:|data:|blob:)/i.test(src);
+const isBrowserLoadableSrc = (src: string): boolean => src.startsWith('/downloads/') || /^(https?:|data:|blob:)/i.test(src);
 
 // Turn the markdown src into the path the file-tree route expects. Relative
 // paths are resolved against the project root server-side; absolute paths are

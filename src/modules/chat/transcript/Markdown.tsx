@@ -295,6 +295,9 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
         const linkText = childrenToText(linkChildren);
         const fileRef = looksLikeFilePath(href) ? href : looksLikeFilePath(linkText) ? linkText : undefined;
 
+        if (href?.startsWith('/downloads/')) {
+          return <a href={href} download className="text-blue-600 hover:underline dark:text-blue-400">{linkChildren}</a>;
+        }
         if (href && !isExternalHref(href) && (href.startsWith('/mnt/data/') || href.includes('/.cloudcli/assets/') ||
           /\.(?:zip|gz|7z|pdf|docx?|xlsx?|pptx?|csv|png|jpe?g|gif|webp|svg|mp[34]|wav|webm)$/i.test(href))) {
           let path = href;
@@ -303,7 +306,7 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
         }
         if (fileRef && !isExternalHref(href)) {
           return (
-            <a
+            <><a
               href={href || fileRef}
               className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400"
               onClick={(event) => {
@@ -321,7 +324,9 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
               }}
             >
               {linkChildren}
-            </a>
+            </a>{!fileRef.endsWith('/') && lineFromRef(fileRef) === null && (
+              <span className="ml-1 text-xs"><MarkdownDownload path={fileRef}>下载</MarkdownDownload></span>
+            )}</>
           );
         }
 
