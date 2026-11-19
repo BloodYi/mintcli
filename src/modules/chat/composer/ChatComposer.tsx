@@ -585,7 +585,7 @@ export default function ChatComposer({
               }
               aria-label={submitAriaLabel}
               title={submitAriaLabel}
-              className="h-10 w-10 sm:h-10 sm:w-10"
+              className="h-9 w-9 sm:h-10 sm:w-10"
             >
               {isTranscribing ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

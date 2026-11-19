@@ -76,15 +76,15 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
   };
 
   return <>
-    <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs" data-testid="agent-connections">
-      <label htmlFor="agent-account">账号</label>
-      <select id="agent-account" aria-label="切换账号" value={active?.id || ''} disabled={disabled || pending} className="min-w-0 max-w-md flex-1 rounded-md border border-border bg-background px-2 py-1.5" onChange={event => void run(() => select(event.target.value))}>
+    <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-background/95 px-2.5 py-1.5 text-xs sm:gap-2 sm:px-3 sm:py-2" data-testid="agent-connections">
+      <label htmlFor="agent-account" className="shrink-0 font-medium text-muted-foreground">账号</label>
+      <select id="agent-account" aria-label="切换账号" value={active?.id || ''} disabled={disabled || pending} className="h-8 min-w-0 flex-1 truncate rounded-lg border border-border bg-background pl-2.5 pr-7 text-xs leading-tight sm:max-w-md" onChange={event => void run(() => select(event.target.value))}>
         {!active && <option value="">请添加或选择账号</option>}
         {catalog.connections.map(item => <option key={item.id} value={item.id}>{labels[item.kind]} · {item.name}{item.agent && item.kind === 'api' ? ' · ' + AGENT_LABELS[item.agent] : ''}{item.email ? ' · ' + item.email : ''}{item.authorized ? '' : '（待登录）'}</option>)}
       </select>
-      <button type="button" className="rounded-md border border-border px-2 py-1.5" onClick={() => edit(active)}>管理账号</button>
-      {active?.email && <span className="break-all text-muted-foreground">{active.email}</span>}
-      {!open && (notice || catalog.warning) && <span role="status">{notice || catalog.warning}</span>}
+      <button type="button" className="h-8 shrink-0 whitespace-nowrap rounded-lg border border-border bg-background px-2.5 text-xs font-medium transition-colors hover:bg-muted/60" onClick={() => edit(active)}>管理账号</button>
+      {active?.email && <span className="hidden max-w-[15rem] truncate text-muted-foreground sm:inline">{active.email}</span>}
+      {!open && (notice || catalog.warning) && <span className="w-full text-[11px] text-muted-foreground sm:w-auto" role="status">{notice || catalog.warning}</span>}
     </div>
     <AccountQuota id={active?.id} />
     <Dialog open={open} onOpenChange={value => { if (!pending) { setOpen(value); if (!value) { setForm({ ...empty }); setCode(''); } } }}>

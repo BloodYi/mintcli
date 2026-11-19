@@ -38,33 +38,38 @@ export function AccountQuota({ id }: { id?: string }) {
   }
   const groupName = (name: string) => /^Gemini Models$/i.test(name) ? 'Gemini 模型' : /^Claude and GPT models$/i.test(name) ? 'Claude 与 GPT 模型' : name;
   const order = (type?: string) => type === 'weekly' ? 0 : type === 'five_hour' ? 1 : 2;
-  return <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs" aria-label="当前账号额度" aria-busy={busy}>
-    <strong>剩余额度{current?.planType ? ' · ' + current.planType : ''}</strong>
-    <button type="button" aria-expanded={!collapsed} aria-label={collapsed ? '展开账号额度' : '收起账号额度'} className="rounded border border-border px-2 py-1" onClick={toggleCollapsed}>{collapsed ? '展开 ▾' : '收起 ▴'}</button>
+  return <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-border bg-muted/30 px-2.5 py-1.5 text-xs sm:px-3 sm:py-2" aria-label="当前账号额度" aria-busy={busy}>
+    <div className="flex w-full flex-wrap items-center gap-1.5 sm:gap-2">
+      <strong className="shrink-0 text-xs">剩余额度{current?.planType ? ' · ' + current.planType : ''}</strong>
+      <button type="button" aria-expanded={!collapsed} aria-label={collapsed ? '展开账号额度' : '收起账号额度'} className="h-7 shrink-0 rounded-md border border-border bg-background px-2 text-[11px] font-medium hover:bg-muted/60 sm:text-xs" onClick={toggleCollapsed}>{collapsed ? '展开 ▾' : '收起 ▴'}</button>
+      {!collapsed && current?.checkedAt && <time className="hidden text-[11px] text-muted-foreground sm:inline" dateTime={new Date(current.checkedAt).toISOString()} title={current.source}>更新于 {new Date(current.checkedAt).toLocaleTimeString()}</time>}
+      <div className="ml-auto flex items-center gap-1.5">
+        <button type="button" disabled={busy || !id} className="h-7 shrink-0 rounded-md border border-border bg-background px-2 text-[11px] font-medium hover:bg-muted/60 disabled:opacity-50 sm:text-xs" onClick={() => setRevision(value => value + 1)}>刷新额度</button>
+        <EgressButton connectionId={id} />
+        {id?.startsWith('codex:') && <CodexResetButton connectionId={id.slice(6)} credits={current?.resetCredits} onReset={() => setRevision(value => value + 1)} />}
+        {id?.startsWith('claude:') && <a href="https://claude.ai/settings/usage" target="_blank" rel="noopener noreferrer" className="inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium hover:bg-muted/60 sm:text-xs" title="在 Claude 官方用量页使用重置卡；请核对登录账号，完成后刷新额度">使用重置卡 ↗</a>}
+        <MonitorButton />
+      </div>
+    </div>
     {!collapsed && <>
-    {groups.size > 0 && <div className="flex w-full min-w-0 max-w-full gap-3 overflow-x-auto pb-1" aria-label="agy 模型额度分组">
-      {[...groups].map(([name, windows]) => <section key={name} className="min-w-[14rem] flex-1 space-y-2">
-        <h3 className="px-1 font-medium text-muted-foreground">{groupName(name)}</h3>
-        {[...windows].sort((a, b) => order(a.type) - order(b.type)).map((window, index) => <QuotaWindow key={index}
-          label={window.type === 'weekly' ? '每周配额剩余' : window.type === 'five_hour' ? '5 小时配额剩余' : window.type === 'daily' ? '每日配额剩余' : window.bucket}
-          remainingPercent={window.remainingPercent} resetsAt={window.resetsAt} />)}
+    {groups.size > 0 && <div className="flex w-full min-w-0 max-w-full snap-x gap-2 overflow-x-auto pb-0.5 sm:gap-3" aria-label="agy 模型额度分组">
+      {[...groups].map(([name, windows]) => <section key={name} className="min-w-[17.5rem] flex-1 snap-start space-y-1 sm:min-w-[14rem] sm:space-y-1.5">
+        <h3 className="px-0.5 text-[11px] font-medium text-muted-foreground sm:text-xs">{groupName(name)}</h3>
+        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-1">
+          {[...windows].sort((a, b) => order(a.type) - order(b.type)).map((window, index) => <QuotaWindow key={index}
+            label={window.type === 'weekly' ? '每周配额剩余' : window.type === 'five_hour' ? '5 小时配额剩余' : window.type === 'daily' ? '每日配额剩余' : window.bucket}
+            remainingPercent={window.remainingPercent} resetsAt={window.resetsAt} />)}
+        </div>
       </section>)}
     </div>}
-    {!groups.size && Boolean(current?.windows.length) && <div className="grid w-full min-w-0 grid-cols-2 gap-2">
+    {!groups.size && Boolean(current?.windows.length) && <div className="grid w-full min-w-0 grid-cols-2 gap-1.5 sm:gap-2">
       {current?.windows.map((window, index) => <QuotaWindow key={`${window.bucket}-${index}`}
         label={window.bucket + (window.minutes ? ` · ${window.minutes >= 1440 ? window.minutes / 1440 + ' 天' : window.minutes / 60 + ' 小时'}` : '')}
         remainingPercent={window.remainingPercent} resetsAt={window.resetsAt} />)}
     </div>}
     {!current?.windows.length && <span className="text-muted-foreground" role="status">{current?.reason || (busy ? '正在读取原生额度…' : '请选择账号')}</span>}
     {current?.dashboardUrl && ['https://cursor.com/dashboard?tab=usage', 'https://opencode.ai/console'].includes(current.dashboardUrl) && <a href={current.dashboardUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline">查看官方额度</a>}
-    {current?.checkedAt && <time className="text-muted-foreground" dateTime={new Date(current.checkedAt).toISOString()} title={current.source}>更新于 {new Date(current.checkedAt).toLocaleTimeString()}</time>}
+    {current?.checkedAt && <time className="text-[10.5px] text-muted-foreground sm:hidden" dateTime={new Date(current.checkedAt).toISOString()} title={current.source}>更新于 {new Date(current.checkedAt).toLocaleTimeString()}</time>}
     </>}
-    <div className="ml-auto flex items-center gap-2">
-    <button type="button" disabled={busy || !id} className="ml-auto rounded border border-border px-2 py-1 disabled:opacity-50" onClick={() => setRevision(value => value + 1)}>刷新额度</button>
-    <EgressButton connectionId={id} />
-    {id?.startsWith('codex:') && <CodexResetButton connectionId={id.slice(6)} credits={current?.resetCredits} onReset={() => setRevision(value => value + 1)} />}
-    {id?.startsWith('claude:') && <a href="https://claude.ai/settings/usage" target="_blank" rel="noopener noreferrer" className="rounded border border-border px-2 py-1" title="在 Claude 官方用量页使用重置卡；请核对登录账号，完成后刷新额度">使用重置卡 ↗</a>}
-    <MonitorButton />
-    </div>
   </div>;
 }

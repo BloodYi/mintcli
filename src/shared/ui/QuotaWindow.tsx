@@ -48,10 +48,10 @@ export function QuotaWindow({ label, remainingPercent, resetsAt }: QuotaWindowPr
   const color = percent === null ? 'text-muted-foreground' : percent < 20 ? 'text-red-600 dark:text-red-400' : percent < 40 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400';
   const fill = percent === null ? 'bg-muted-foreground/20' : percent < 20 ? 'bg-red-500' : percent < 40 ? 'bg-amber-500' : 'bg-emerald-500';
 
-  return <section aria-label={`${label}额度`} className="min-w-0 rounded-xl border border-border bg-background p-3 text-xs shadow-sm">
-    <div className="flex items-start justify-between gap-3">
-      <span className="min-w-0 break-words font-medium leading-5">{label}</span>
-      <span className={`shrink-0 font-semibold tabular-nums leading-5 ${color}`}>{percent === null ? '未返回' : `${percent}%`}</span>
+  return <section aria-label={`${label}额度`} className="min-w-0 rounded-lg border border-border bg-background px-2.5 py-2 text-xs shadow-sm sm:rounded-xl sm:p-2.5">
+    <div className="flex items-center justify-between gap-2">
+      <span className="min-w-0 truncate text-[11px] font-medium leading-4 sm:text-xs">{label}</span>
+      <span className={`shrink-0 text-[11px] font-semibold tabular-nums leading-4 sm:text-xs ${color}`}>{percent === null ? '未返回' : `${percent}%`}</span>
     </div>
     <div
       role="progressbar"
@@ -60,15 +60,15 @@ export function QuotaWindow({ label, remainingPercent, resetsAt }: QuotaWindowPr
       aria-valuemax={100}
       aria-valuenow={percent ?? undefined}
       aria-valuetext={percent === null ? '额度未返回' : `剩余 ${percent}%`}
-      className="my-2 h-1.5 overflow-hidden rounded-full bg-muted"
+      className="my-1.5 h-1.5 overflow-hidden rounded-full bg-muted"
     >
       <div aria-hidden="true" className={`h-full rounded-full ${fill}`} style={{ width: percent === null ? '100%' : `${percent}%` }} />
     </div>
-    <div className="flex items-start gap-1.5 leading-5 text-muted-foreground">
-      <Clock3 aria-hidden="true" className="mt-1 h-3 w-3 shrink-0" />
-      {resetDate ? <div className="min-w-0">
-        <div>重置 <time dateTime={resetDate.toISOString()} title={resetDate.toLocaleString('zh-CN', { timeZoneName: 'short' })} className="tabular-nums">{resetLabel}</time></div>
-        <p className={'text-balance ' + (resetMilliseconds <= now ? 'text-amber-600 dark:text-amber-400' : '')}>{countdown(resetMilliseconds - now)}</p>
+    <div className="flex items-start gap-1 text-[10px] leading-3.5 text-muted-foreground sm:text-[11px] sm:leading-4">
+      <Clock3 aria-hidden="true" className="mt-0.5 h-2.5 w-2.5 shrink-0 opacity-75 sm:h-3 sm:w-3" />
+      {resetDate ? <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+        <span className="shrink-0">重置 <time dateTime={resetDate.toISOString()} title={resetDate.toLocaleString('zh-CN', { timeZoneName: 'short' })} className="tabular-nums">{resetLabel}</time></span>
+        <p className={'min-w-0 truncate ' + (resetMilliseconds <= now ? 'text-amber-600 dark:text-amber-400' : '')}>{countdown(resetMilliseconds - now)}</p>
       </div> : <span>重置时间暂未提供</span>}
     </div>
   </section>;
