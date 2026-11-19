@@ -96,7 +96,8 @@ export function TokenMonitorProvider({ sessionId, model, children }: { sessionId
   return <ReplyModelProvider sessionId={sessionId}><MonitorContext.Provider value={{ open, toggle: () => setOpen(value => !value), snapshot: current, warning }}>
     <div className="flex h-full min-h-0 flex-col">
     {warning && <div role="status" className="flex shrink-0 items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs">
-      <span className="min-w-0 flex-1">{currentError ? '监控接口异常，请检查接口是否需要更新' : current?.alerts[0] || 'Token Monitor 有新版本，可检查更新'}</span>
+      <span className="min-w-0 flex-1">{[currentError ? '监控接口异常，请检查接口是否需要更新' : current?.alerts[0],
+        update?.updateAvailable && `Token Monitor 有新版本 ${update.latestVersion}，可检查更新`].filter(Boolean).join(' · ')}</span>
       <button type="button" className="shrink-0 underline" onClick={() => setOpen(true)}>查看提醒</button>
     </div>}
     <div className="min-h-0 flex-1">{children}</div>
