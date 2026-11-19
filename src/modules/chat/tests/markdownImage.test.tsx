@@ -95,3 +95,18 @@ test('the image is revoked when the markdown unmounts', async () => {
 
   await waitFor(() => assert.equal(revokeObjectURL.mock.calls[0]?.[0], OBJECT_URL));
 });
+
+test('sandbox output paths are preserved for inline images and local downloads', async () => {
+  readFileBlob.mockResolvedValue({ ok: true, blob: async () => new Blob(['bytes']) });
+  const anchor = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+    assert.equal(this.download, 'report 1.zip');
+    assert.equal(this.href, OBJECT_URL);
+  });
+  try {
+    const view = renderInProject('![preview](sandbox:/mnt/data/preview.png) [下载](sandbox:/mnt/data/report%201.zip)');
+    await view.findByRole('img');
+    view.getByRole('button', { name: '下载' }).click();
+    await waitFor(() => assert.equal(anchor.mock.calls.length, 1));
+    assert.deepEqual(readFileBlob.mock.calls.map(call => call[1]), ['/mnt/data/preview.png', '/mnt/data/report 1.zip']);
+  } finally { anchor.mockRestore(); }
+});

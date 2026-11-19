@@ -479,7 +479,11 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
 
     async openFile(projectId, filePath) {
       const projectRoot = await resolveProjectRoot(projectId);
-      const resolvedPath = await resolveReadablePath(projectRoot, filePath);
+      const generated = filePath.startsWith('/mnt/data/');
+      const resolvedPath = generated
+        ? await resolvePathUnderRoots(filePath, ['/mnt/data'])
+        : await resolveReadablePath(projectRoot, filePath);
+      if (!resolvedPath) throw createFileTreeError('File not found', 404, 'FILE_NOT_FOUND');
       try {
         await fileSystem.access(resolvedPath);
       } catch {

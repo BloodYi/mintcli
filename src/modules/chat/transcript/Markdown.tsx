@@ -1,5 +1,5 @@
 import React, { memo, useMemo, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -8,6 +8,7 @@ import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/pris
 import { useTranslation } from 'react-i18next';
 
 import { MermaidDiagram } from '@/modules/code-editor';
+import { MarkdownDownload } from '@/modules/chat/transcript/MarkdownDownload';
 import { MarkdownImage } from '@/modules/chat/transcript/MarkdownImage';
 import { normalizeInlineCodeFences } from '@/modules/chat/utils/chatFormatting';
 import { normalizeLatexDelimiters } from '@/modules/chat/utils/latexDelimiters';
@@ -294,6 +295,12 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
         const linkText = childrenToText(linkChildren);
         const fileRef = looksLikeFilePath(href) ? href : looksLikeFilePath(linkText) ? linkText : undefined;
 
+        if (href && !isExternalHref(href) && (href.startsWith('/mnt/data/') || href.includes('/.cloudcli/assets/') ||
+          /\.(?:zip|gz|7z|pdf|docx?|xlsx?|pptx?|csv|png|jpe?g|gif|webp|svg|mp[34]|wav|webm)$/i.test(href))) {
+          let path = href;
+          try { path = decodeURIComponent(href); } catch { /* Preserve a literal percent sign. */ }
+          return <MarkdownDownload path={path}>{linkChildren}</MarkdownDownload>;
+        }
         if (fileRef && !isExternalHref(href)) {
           return (
             <a
@@ -334,7 +341,7 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
   );
 
   return (
-    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components as any}>
+    <ReactMarkdown urlTransform={url => url.startsWith('sandbox:/mnt/data/') ? url.slice('sandbox:'.length) : defaultUrlTransform(url)} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components as any}>
       {content}
     </ReactMarkdown>
   );

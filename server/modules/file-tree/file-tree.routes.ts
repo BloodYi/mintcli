@@ -133,6 +133,10 @@ export function createFileTreeRouter(
   router.get('/projects/:projectId/files/content', createRouteHandler(async (request, response) => {
     const filePath = readRequiredString(request.query.path, 'path', 'Invalid file path');
     const file = await services.openFile(readProjectId(request), filePath);
+    if (filePath.startsWith('/mnt/data/')) {
+      response.attachment();
+      response.setHeader('X-Content-Type-Options', 'nosniff');
+    }
     response.setHeader('Content-Type', file.contentType);
     file.stream.pipe(response);
     file.stream.on('error', (error) => {

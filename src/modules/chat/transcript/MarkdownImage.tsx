@@ -60,12 +60,16 @@ function useMarkdownImageSrc(src: string, projectId: string | null): { src: stri
 
     const load = async () => {
       try {
-        const response = await api.readFileBlob(projectId, toWorkspacePath(src), { signal: controller.signal });
+        const path = toWorkspacePath(src);
+        const response = path.includes('/.cloudcli/assets/')
+          ? await api.assets.image(path.split('/').pop()!, { signal: controller.signal })
+          : await api.readFileBlob(projectId, path, { signal: controller.signal });
         if (!response.ok) {
           setLoaded({ key, url: null, failed: true });
           return;
         }
         const blob = await response.blob();
+        if (controller.signal.aborted) return;
         objectUrl = URL.createObjectURL(blob);
         setLoaded({ key, url: objectUrl, failed: false });
       } catch (error) {

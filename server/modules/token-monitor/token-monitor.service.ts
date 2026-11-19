@@ -3,6 +3,7 @@ import { readAntigravityMonitor } from './antigravity-monitor.service.js';
 import { readResponseCapture } from './response-capture.service.js';
 import { open, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { Agent, fetch as directFetch } from 'undici';
 import { createRequire } from 'node:module';
 import { sessionsDb } from '@/modules/database/index.js';
 import { AppError, findApplicationRoot, getModuleDirectory } from '@/shared/index.js';
@@ -95,11 +96,23 @@ export function createTokenMonitorService(dependencies: { getSession: (id: strin
         const checkedAt = Date.now();
         let value: Row;
         try {
-          const response = await fetch('https://api.github.com/repos/Javis603/token-monitor/releases/latest', {
-            headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'mintcli-token-monitor' }, signal: AbortSignal.timeout(10000), redirect: 'error',
-          });
-          if (!response.ok) throw new Error('release check failed');
-          const body = await response.json() as Row;
+          const url = 'https://api.github.com/repos/Javis603/token-monitor/releases/latest';
+          const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'mintcli-token-monitor' };
+          let body: Row;
+          try {
+            const response = await fetch(url, { headers, signal: AbortSignal.timeout(5000), redirect: 'error' });
+            if (!response.ok) throw new Error('release check failed');
+            body = await response.json() as Row;
+          } catch (error) {
+            if (!process.env.HTTPS_PROXY && !process.env.https_proxy && !process.env.ALL_PROXY && !process.env.all_proxy) throw error;
+            // Only public release metadata uses this fallback when the configured proxy is unavailable.
+            const dispatcher = new Agent();
+            try {
+              const response = await directFetch(url, { dispatcher, headers, signal: AbortSignal.timeout(5000), redirect: 'error' });
+              if (!response.ok) throw new Error('release check failed');
+              body = await response.json() as Row;
+            } finally { await dispatcher.destroy(); }
+          }
           const latestVersion = typeof body.tag_name === 'string' ? body.tag_name.replace(/^v/, '') : '';
           if (!/^\d+\.\d+\.\d+(?:[-+].*)?$/.test(latestVersion)) throw new Error('invalid release');
           const a = latestVersion.split('.').map(Number), b = provenance.version.split('.').map(Number);
