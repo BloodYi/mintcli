@@ -11,7 +11,9 @@ it('refreshes new conversations while open and stops requests after unmount', as
   ] }));
   const view = render(<SessionHistory onSelect={() => {}} revision={0} />);
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-  expect(screen.getByText('全部历史会话（0，含归档）')).toBeTruthy();
+  fireEvent.click(screen.getByText('全部历史会话（0，含归档）'));
+  fireEvent.change(screen.getByRole('textbox', { name: '搜索历史会话' }), { target: { value: 'ACTUAL-NEW' } });
+  expect(screen.getByText('没有匹配的会话。')).toBeTruthy();
   await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
   expect(screen.getByText('全部历史会话（1，含归档）')).toBeTruthy();
   expect(screen.getByText('返回模型：actual-new')).toBeTruthy();
