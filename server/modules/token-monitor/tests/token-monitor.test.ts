@@ -92,6 +92,35 @@ test('history includes archived conversations and distinguishes requested from r
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('indexed Codex history resolves titles from the owning home and provider thread ID', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'monitor-codex-homes-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const home = path.join(directory, 'task-home');
+  const active = path.join(home, 'sessions', '2026', '11', '20');
+  const archive = path.join(home, 'archived_sessions');
+  const otherHome = path.join(directory, 'other-home');
+  await Promise.all([active, archive, path.join(otherHome, 'sessions')].map(dir => mkdir(dir, { recursive: true })));
+  await writeFile(path.join(home, 'session_index.jsonl'), [
+    { id: 'native-active', thread_name: '  Task   title  ' },
+    { id: 'native-archived', thread_name: 'Archived task' },
+    { id: 'app-missing', thread_name: 'Unrelated thread' },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const sessions = [
+    { session_id: 'app-active', provider_session_id: 'native-active', jsonl_path: path.join(active, 'active.jsonl') },
+    { session_id: 'app-archived', provider_session_id: 'native-archived', jsonl_path: path.join(archive, 'old.jsonl'), isArchived: 1, custom_name: 'Untitled Codex Session' },
+    { session_id: 'app-named', provider_session_id: 'native-active', jsonl_path: path.join(active, 'named.jsonl'), custom_name: 'User title' },
+    { session_id: 'app-missing', provider_session_id: 'native-missing', jsonl_path: path.join(active, 'missing.jsonl') },
+    { session_id: 'app-other', provider_session_id: 'native-active', jsonl_path: path.join(otherHome, 'sessions', 'other.jsonl') },
+  ].map(row => ({ ...row, provider: 'codex' }));
+  await Promise.all(sessions.map(row => writeFile(row.jsonl_path, '{}\n')));
+  const service = createTokenMonitorService({ getSession: () => null, listSessions: () => sessions });
+
+  const result = await service.sessions();
+  assert.deepEqual(result.sessions.map(row => row.title), ['Task title', 'Archived task', 'User title', 'app-missing', 'app-other']);
+  assert.equal(result.sessions[1].archived, true);
+  assert.equal(result.sessions[1].sessionId, 'app-archived');
+});
+
 test('full history totals survive a transcript tail containing no usage, with Claude response deduplication', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'monitor-full-'));
   const file = path.join(directory, 'full.jsonl');

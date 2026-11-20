@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Agent, fetch as directFetch } from 'undici';
 import { createRequire } from 'node:module';
 import { sessionsDb } from '@/modules/database/index.js';
-import { AppError, findApplicationRoot, getModuleDirectory } from '@/shared/index.js';
+import { AppError, buildLookupMap, findApplicationRoot, getModuleDirectory, normalizeSessionName } from '@/shared/index.js';
 
 import type { AnyRecord as Row } from '@/shared/index.js';
 type Tokens = { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; total: number };
@@ -19,6 +19,36 @@ const parser = createRequire(import.meta.url)(path.join(vendorRoot, 'session-det
 };
 const provenance = JSON.parse(await readFile(path.join(vendorRoot, 'provenance.json'), 'utf8')) as { version: string; commit: string; repository: string };
 const MAX_BYTES = 4 * 1024 * 1024;
+
+function codexTitleIndexPath(transcript: string): string | null {
+  if (!path.isAbsolute(transcript) || !transcript.endsWith('.jsonl')) return null;
+  let directory = path.dirname(transcript);
+  while (path.dirname(directory) !== directory) {
+    const storage = path.basename(directory);
+    if (storage === 'sessions' || storage === 'archived_sessions') {
+      return path.join(path.dirname(directory), 'session_index.jsonl');
+    }
+    directory = path.dirname(directory);
+  }
+  return null;
+}
+
+async function historyTitle(session: Row, titleIndexes: Map<string, Promise<Map<string, string>>>): Promise<string> {
+  const title = session.custom_name || session.session_id;
+  if (session.provider !== 'codex' || !session.provider_session_id || !session.jsonl_path ||
+      (session.custom_name && session.custom_name !== 'Untitled Codex Session')) return title;
+
+  // The indexed rollout identifies the owning home. Keep titles scoped to that
+  // home and join on the provider thread ID, which can differ from the app ID.
+  const indexPath = codexTitleIndexPath(session.jsonl_path);
+  if (!indexPath) return title;
+  let index = titleIndexes.get(indexPath);
+  if (!index) {
+    index = buildLookupMap(indexPath, 'id', 'thread_name');
+    titleIndexes.set(indexPath, index);
+  }
+  return normalizeSessionName((await index).get(session.provider_session_id), title);
+}
 
 function number(value: unknown) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0; }
 function codexTokens(value: Row): Tokens {
@@ -59,10 +89,11 @@ export function createTokenMonitorService(dependencies: { getSession: (id: strin
     async sessions() {
       const sessions = (dependencies.listSessions?.() || []).slice();
       const results: Row[] = [];
+      const titleIndexes = new Map<string, Promise<Map<string, string>>>();
       // Bound disk/network concurrency; a broken or unreadable conversation must not hide the rest.
       for (let offset = 0; offset < sessions.length; offset += 3) {
         results.push(...await Promise.all(sessions.slice(offset, offset + 3).map(async session => {
-          const base = { sessionId: session.session_id, provider: session.provider, title: session.custom_name || session.session_id,
+          const base = { sessionId: session.session_id, provider: session.provider, title: await historyTitle(session, titleIndexes),
             projectPath: session.project_path, archived: Boolean(session.isArchived), updatedAt: session.updated_at,
             configuredModel: session.model || null };
           try {
