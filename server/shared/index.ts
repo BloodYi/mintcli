@@ -7,6 +7,9 @@ export { AppError, asyncHandler } from './utils.js';
 // Used by Token Monitor to resolve packaged parser assets.
 export { findApplicationRoot, getModuleDirectory } from './utils.js';
 
+// Used by Token Monitor to read and normalize titles from indexed Codex homes.
+export { buildLookupMap, normalizeSessionName } from './utils.js';
+
 // Used by provider and account modules to share the isolated CLI selection.
 export { resolveManagedCli, resolveCodexLauncher, readCodexVersion } from './utils.js';
 
