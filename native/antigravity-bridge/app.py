@@ -29,8 +29,15 @@ from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr, StrictBool
-from agy_metadata import read_session_models, read_session_thinking, read_session_historical_error
+from agy_metadata import (
+    read_acp_session_evidence,
+    read_session_historical_error,
+    read_session_models,
+    read_session_thinking,
+)
 from agy_client_profile import DesktopProfileProxy
+from claude_agy import stream_claude_agy
+from process_lifecycle import reap_cli_process
 from project_updates import ProjectUpdater
 from update_common import UpdateError
 from detached_chat import TurnManager
@@ -95,12 +102,16 @@ try:
 except Exception:
     pass
 
+DOWNLOAD_LINK_INSTRUCTION = (
+    "当用户需要获取或下载文件时，如果你生成或修改了文件，请在回答中提供文件下载链接，格式为 [📥 点击下载 文件名](/api/download?path=文件相对或绝对路径)，客户端即可直接下载到本地电脑。"
+)
+
 DEFAULT_SYSTEM = (
     "You are a helpful, concise assistant chatting with a user in a web UI. "
     "Provide your answer directly in Markdown, with a brief explanation when useful. "
     "Do not use tools, do not read or write files, and do not run shell commands unless the user "
     "explicitly asks you to or has provided attached files/images to inspect. "
-    "当用户需要获取或下载文件时，如果你生成或修改了文件，请在回答中提供文件下载链接，格式为 [📥 点击下载 文件名](/api/download?path=文件相对或绝对路径)，客户端即可直接下载到本地电脑。"
+    f"{DOWNLOAD_LINK_INSTRUCTION}"
 )
 
 app = FastAPI(title="antigravity-chat", version="1.1.0")
@@ -969,6 +980,80 @@ def _request_log_evidence(log_path: Path) -> list[dict]:
     return records
 
 
+def _apply_claude_agy_trace(info: dict, agy_home: str | None, trace: dict) -> None:
+    log_records = []
+    for value in trace.get("response_ids") or []:
+        if isinstance(value, str) and value.strip():
+            log_records.append({"field": "log.ResponseID", "value": value.strip(), "source": "agy_acp_log"})
+    for value in trace.get("trace_ids") or []:
+        if isinstance(value, str) and value.strip():
+            log_records.append({"field": "log.Trace", "value": value.strip(), "source": "agy_acp_log"})
+    for value in trace.get("upstream_urls") or []:
+        if isinstance(value, str):
+            url = _metadata_url(value.strip())
+            if url:
+                log_records.append({"field": "log.URL", "value": url, "source": "agy_acp_log"})
+    if log_records:
+        _merge_response_evidence(info, log_records)
+
+    session_ids: list[str] = []
+    for value in [*(info.get("acp_session_ids") or []), *(trace.get("session_ids") or [])]:
+        if isinstance(value, str) and value.strip() and value.strip() not in session_ids:
+            session_ids.append(value.strip())
+    if session_ids:
+        info["acp_session_ids"] = session_ids
+
+    if not agy_home or not session_ids:
+        return
+
+    model_fields = _RETURNED_MODEL_FIELDS | {"response_model_full", "responseModelFull"}
+    single_response_steps: set[int] = set()
+    coverage_unknown = False
+    any_uncovered = False
+    for sid in session_ids:
+        try:
+            result = read_acp_session_evidence(agy_home, sid)
+        except Exception:
+            logger.warning("Could not read claude_agy response metadata")
+            coverage_unknown = True
+            continue
+        records = result["records"]
+        if records:
+            _merge_response_evidence(info, records)
+        resp_steps = result["response_steps"]
+        if result["coverage_unknown"]:
+            coverage_unknown = True
+        if len(session_ids) == 1:
+            single_response_steps = resp_steps
+        else:
+            covered = {
+                index
+                for record in records
+                if record["field"].rsplit(".", 1)[-1] in model_fields
+                for index in record.get("step_indices", [])
+                if index in resp_steps
+            }
+            if resp_steps - covered:
+                any_uncovered = True
+
+    count = max(len(info["returned_models"]), len(info["returned_model_fulls"]))
+    info["status"] = "conflict" if count > 1 else "available" if count else "unavailable"
+    if len(session_ids) == 1:
+        _update_route_coverage(info, single_response_steps, coverage_unknown)
+    else:
+        _update_route_coverage(info, set(), coverage_unknown or any_uncovered)
+
+
+def _claude_agy_candidate_homes() -> list[str]:
+    homes = [HOME]
+    runtime_home = os.getenv("AGY_RUNTIME_HOME")
+    if runtime_home:
+        resolved = str(Path(runtime_home).expanduser().resolve())
+        if resolved not in homes:
+            homes.append(resolved)
+    return homes
+
+
 @app.get("/api/inspect-route")
 async def inspect_route_ep() -> dict:
     return {"ok": True, "data": _new_route_info(),
@@ -1041,6 +1126,7 @@ class ChatRequest(BaseModel):
     stream: StrictBool = False
     stream_options: dict[str, Any] | None = None
     api_connection: ApiConnection | None = None
+    use_claude_agy: StrictBool = False
 
 
 def _api_environment(env: dict[str, str], api: ApiConnection) -> dict[str, str]:
@@ -1081,15 +1167,19 @@ def _format_message_content(m: Message) -> str:
     if m.attachments:
         att_lines = []
         for att in m.attachments:
-            name = att.get("filename") or "file"
+            if not isinstance(att, dict):
+                continue
+            name = att.get("filename") or att.get("name") or "file"
             path = att.get("path") or att.get("url") or ""
-            is_img = att.get("is_image", False)
+            mime = str(att.get("mimeType") or "")
+            is_img = bool(att.get("is_image") or mime.startswith("image/"))
             if is_img:
                 att_lines.append(f"[附带图片: {name} (本地路径: {path})。请使用相应工具查看此图片内容并作答。]")
             else:
                 att_lines.append(f"[附带文件: {name} (本地路径: {path})。请使用相应工具查看此文件内容并作答。]")
-        prefix = "\n".join(att_lines)
-        content = f"{prefix}\n\n{content}" if content else prefix
+        if att_lines:
+            prefix = "\n".join(att_lines)
+            content = f"{prefix}\n\n{content}" if content else prefix
     return content
 
 
@@ -1761,6 +1851,19 @@ def read_message_history(cid: str) -> list[dict]:
                     _merge_response_evidence(info, original["routeInfo"]["evidence"])
                     _update_route_coverage(info, set(original["routeInfo"]["observed_step_indices"]))
                     message["routeInfo"] = info
+        for message in messages:
+            if message.get("role") != "assistant":
+                continue
+            existing = message.get("routeInfo")
+            if (
+                isinstance(existing, dict)
+                and existing.get("acp_session_ids")
+                and not (existing.get("returned_models") or existing.get("returned_model_fulls"))
+            ):
+                for candidate_home in _claude_agy_candidate_homes():
+                    _apply_claude_agy_trace(existing, candidate_home, {})
+                    if existing.get("returned_models") or existing.get("returned_model_fulls"):
+                        break
     return ensure_message_ids(cid, messages)
 
 
@@ -1950,6 +2053,7 @@ async def _fetch_profile_models(run_env: dict[str, str], profile: str) -> list[d
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                start_new_session=os.name == "posix",
             )
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
             names = []
@@ -1964,12 +2068,7 @@ async def _fetch_profile_models(run_env: dict[str, str], profile: str) -> list[d
         except Exception:
             pass
         finally:
-            if proc is not None and proc.returncode is None:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                await proc.wait()
+            await reap_cli_process(proc)
             if profile_proxy:
                 await asyncio.to_thread(profile_proxy.close)
 
@@ -2028,8 +2127,11 @@ class AddAccountRequest(BaseModel):
 _quota_cache: dict[str, Any] = {
     "data": None,
     "timestamp": 0.0,
+    "retry_at": 0.0,
 }
 _quota_lock = asyncio.Lock()
+QUOTA_TIMEOUT_SECONDS = 25.0
+QUOTA_RETRY_SECONDS = 15.0
 
 
 def _decode_id_token(id_token: str | None) -> dict:
@@ -2059,8 +2161,22 @@ def _get_token_account_info(token_data: dict) -> dict:
     }
 
 
+def _has_valid_token(data: object) -> bool:
+    """Return True only when an OAuth credential payload carries a non-empty token."""
+    if not isinstance(data, dict):
+        return False
+    token = data.get("token")
+    if isinstance(token, str):
+        return bool(token.strip())
+    if isinstance(token, dict):
+        return any(isinstance(v, str) and bool(v.strip()) for v in token.values())
+    return False
+
+
 def _same_account(left: dict, right: dict) -> bool:
     """Match credentials across CLI refreshes without treating unknown as an identity."""
+    if not _has_valid_token(left) or not _has_valid_token(right):
+        return False
     left_token, right_token = left.get("token"), right.get("token")
     if isinstance(left_token, dict) and isinstance(right_token, dict):
         left_refresh = left_token.get("refresh_token")
@@ -2081,6 +2197,8 @@ def _sync_active_account_to_storage() -> None:
     try:
         content = ACTIVE_TOKEN_FILE.read_text()
         data = json.loads(content)
+        if not _has_valid_token(data):
+            return
         info = _get_token_account_info(data)
         email = info.get("email")
 
@@ -2125,6 +2243,8 @@ def _list_stored_accounts() -> list[dict]:
         for f in sorted(ACCOUNTS_DIR.glob("*.json")):
             try:
                 data = json.loads(f.read_text())
+                if not _has_valid_token(data):
+                    continue
                 info = _get_token_account_info(data)
                 is_active = _same_account(active_data, data)
                 accounts.append({
@@ -2147,6 +2267,7 @@ def _clear_quota_cache() -> None:
     global _models_cache
     _quota_cache["data"] = None
     _quota_cache["timestamp"] = 0.0
+    _quota_cache["retry_at"] = 0.0
     _models_cache = None
 
 
@@ -2175,6 +2296,8 @@ def _switch_to_account(account_id: str) -> dict:
 
     content = target_file.read_text()
     data = json.loads(content)
+    if not _has_valid_token(data):
+        raise HTTPException(status_code=400, detail=f"账号 '{account_id}' 凭证无效")
     info = _get_token_account_info(data)
 
     ACTIVE_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -2214,7 +2337,7 @@ def _save_new_account(token_data: dict | str, alias: str | None = None, switch_n
     else:
         raise HTTPException(status_code=400, detail="无效的 Token 数据格式")
 
-    if not isinstance(data, dict) or not data.get("token"):
+    if not _has_valid_token(data):
         raise HTTPException(status_code=400, detail="Token 数据中缺少必要的 'token' 字段")
 
     info = _get_token_account_info(data)
@@ -2313,30 +2436,51 @@ async def _fetch_quota_from_agy(force: bool = False) -> dict:
             res["cached"] = True
             return res
 
+        retry_delay = _quota_cache.get("retry_at", 0.0) - time.monotonic()
+        if retry_delay > 0:
+            raise HTTPException(
+                status_code=_quota_cache.get("error_status", 504),
+                detail=_quota_cache.get("error_detail", "获取额度暂时不可用，请稍后刷新重试"),
+                headers={"Retry-After": str(max(1, int(retry_delay + 0.999)))},
+            )
+
+        proc_usage = proc_credits = None
         try:
             proc_usage = await asyncio.create_subprocess_exec(
                 AGY_BIN, "-p=/usage",
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(SCRATCH),
                 env=_agy_environment(),
+                start_new_session=os.name == "posix",
             )
             proc_credits = await asyncio.create_subprocess_exec(
                 AGY_BIN, "-p=/credits",
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(SCRATCH),
                 env=_agy_environment(),
+                start_new_session=os.name == "posix",
             )
 
-            out_usage, _ = await asyncio.wait_for(proc_usage.communicate(), timeout=25.0)
-            out_credits, _ = await asyncio.wait_for(proc_credits.communicate(), timeout=25.0)
+            (out_usage, _), (out_credits, _) = await asyncio.wait_for(
+                asyncio.gather(proc_usage.communicate(), proc_credits.communicate()),
+                timeout=QUOTA_TIMEOUT_SECONDS,
+            )
         except asyncio.TimeoutError:
             logger.warning("agy usage/credits timed out")
+            _quota_cache.update(retry_at=time.monotonic() + QUOTA_RETRY_SECONDS,
+                                error_status=504, error_detail="获取额度超时，请稍后刷新重试")
             raise HTTPException(status_code=504, detail="获取额度超时，请稍后刷新重试")
         except Exception as exc:
             logger.error("Error executing agy usage: %s", exc)
+            _quota_cache.update(retry_at=time.monotonic() + QUOTA_RETRY_SECONDS,
+                                error_status=500, error_detail="获取额度失败，请稍后重试")
             raise HTTPException(status_code=500, detail=f"获取额度失败: {exc}")
+        finally:
+            await asyncio.gather(reap_cli_process(proc_usage), reap_cli_process(proc_credits))
 
         usage_text = out_usage.decode("utf-8", errors="replace")
         credits_text = out_credits.decode("utf-8", errors="replace")
@@ -2362,6 +2506,7 @@ async def _fetch_quota_from_agy(force: bool = False) -> dict:
 
         _quota_cache["data"] = data
         _quota_cache["timestamp"] = now
+        _quota_cache["retry_at"] = 0.0
         res = dict(data)
         res["cached"] = False
         return res
@@ -2432,24 +2577,201 @@ async def stop_web_turn(turn_id: str):
     return result
 
 
+_HISTORY_TRUNCATE_MARKER = "\n... [内容过长已截断] ...\n"
+_HISTORY_MAX_BYTES = 48 * 1024
+_HISTORY_MIN_EXCERPT_BYTES = 512
+
+
+def _truncate_utf8_head_tail(text: str, max_bytes: int) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    marker_bytes = _HISTORY_TRUNCATE_MARKER.encode("utf-8")
+    if max_bytes <= len(marker_bytes) + 16:
+        return encoded[:max(0, max_bytes)].decode("utf-8", errors="ignore")
+    budget = max_bytes - len(marker_bytes)
+    head_budget = budget // 2
+    tail_budget = budget - head_budget
+    head = encoded[:head_budget].decode("utf-8", errors="ignore").rstrip()
+    tail = encoded[-tail_budget:].decode("utf-8", errors="ignore").lstrip()
+    return f"{head}{_HISTORY_TRUNCATE_MARKER}{tail}"
+
+
+def _recent_saved_messages(history: list[dict], max_bytes: int = _HISTORY_MAX_BYTES) -> list[Message]:
+    # Leave room for Claude's system instructions and tool definitions.
+    recent: list[Message] = []
+    remaining = max_bytes
+    for row in reversed(history):
+        if row.get("role") not in ("user", "assistant") or row.get("status") in ("error", "stopped"):
+            continue
+        raw_content = row.get("content") if isinstance(row.get("content"), str) else ""
+        attachments = row.get("attachments") if isinstance(row.get("attachments"), list) else None
+        formatted = _format_message_content(Message(role=row["role"], content=raw_content, attachments=attachments))
+        if not formatted.strip():
+            continue
+        encoded = formatted.encode("utf-8")
+        if len(encoded) > remaining:
+            if remaining >= _HISTORY_MIN_EXCERPT_BYTES:
+                recent.append(Message(role=row["role"], content=_truncate_utf8_head_tail(formatted, remaining)))
+            break
+        remaining -= len(encoded)
+        recent.append(Message(role=row["role"], content=formatted))
+    recent.reverse()
+    return recent
+
+
+def _render_claude_agy_prompt(history_messages: list[Message], current_messages: list[Message]) -> str:
+    """Format user prompt for Claude Code without injecting native agy's no-tool system prompt."""
+    if not history_messages and len(current_messages) == 1 and current_messages[0].role == "user":
+        return _format_message_content(current_messages[0])
+    lines: list[str] = []
+    if history_messages:
+        lines.append("--- Prior conversation ---")
+        for m in history_messages:
+            role = {"user": "User", "assistant": "Assistant", "system": "System"}.get(
+                m.role, m.role.capitalize()
+            )
+            lines.append(f"{role}: {_format_message_content(m)}")
+        lines.append("--- End prior conversation ---")
+        lines.append("")
+    if len(current_messages) == 1 and current_messages[0].role == "user":
+        lines.append(_format_message_content(current_messages[0]))
+    else:
+        for m in current_messages:
+            role = {"user": "User", "assistant": "Assistant", "system": "System"}.get(
+                m.role, m.role.capitalize()
+            )
+            lines.append(f"{role}: {_format_message_content(m)}")
+    return "\n".join(lines)
+
+
+def _claude_agy_system_append(system: str | None) -> str:
+    parts: list[str] = []
+    if system and system.strip():
+        parts.append(system.strip())
+    if not any(DOWNLOAD_LINK_INSTRUCTION in part for part in parts):
+        parts.append(DOWNLOAD_LINK_INSTRUCTION)
+    return "\n\n".join(parts)
+
+
+def _prompt_with_saved_history(req: ChatRequest, history: list[dict], *, claude_agy: bool = False) -> str:
+    recent = _recent_saved_messages(history)
+    if claude_agy:
+        return _render_claude_agy_prompt(recent, req.messages)
+    return _render_prompt([*recent, *req.messages], req.system, thinking=req.thinking)
+
+
+def _resolve_conversation_route(cid: str | None, saved: list[dict]) -> tuple[bool, str | None]:
+    previous_route = next(
+        (
+            row["routeInfo"]
+            for row in reversed(saved)
+            if row.get("role") == "assistant"
+            and row.get("status") not in ("error", "stopped")
+            and isinstance(row.get("routeInfo"), dict)
+        ),
+        {},
+    )
+    replay_native = bool(cid and previous_route.get("transport") == "claude_agy")
+    native_id = _sanitize_token(previous_route.get("native_conversation_id")) or cid
+    if cid and cid.startswith("mintcli-claude-") and native_id == cid:
+        replay_native = True
+    return replay_native, native_id
+
+
+async def _default_claude_agy_model() -> str:
+    if _models_cache and _models_cache[1]:
+        first_id = _models_cache[1][0].get("id")
+        if isinstance(first_id, str) and first_id.strip():
+            return first_id.strip()
+    try:
+        discovered = await models()
+        items = discovered.get("models") if isinstance(discovered, dict) else None
+        if isinstance(items, list) and items:
+            first_id = items[0].get("id")
+            if isinstance(first_id, str) and first_id.strip():
+                return first_id.strip()
+    except Exception:
+        logger.debug("Falling back to static model map for Claude → agy default model", exc_info=True)
+    return next(iter(_models_label_map), "gemini-3.8-flash-low")
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     """Start a server-owned turn and subscribe the custom UI to its events."""
     if not req.messages:
         raise HTTPException(status_code=422, detail="messages must be non-empty")
-    
+
     prompt, cid, continue_last, user_id = await _resolve_prompt_and_session(req)
 
-    if cid and getattr(req, "history_revision", None) is not None:
-        if req.history_revision != message_revision(read_message_history(cid)):
-            raise HTTPException(status_code=409, detail="聊天记录已在其他设备更新，请同步后重新发送。")
+    if req.use_claude_agy and req.api_connection:
+        raise HTTPException(status_code=400, detail="Claude → agy 模式需要已登录的 agy 账号。")
+    saved = read_message_history(cid) if cid else []
+    if cid and req.history_revision is not None and req.history_revision != message_revision(saved):
+        raise HTTPException(status_code=409, detail="聊天记录已在其他设备更新，请同步后重新发送。")
+    replay_native, native_id = _resolve_conversation_route(cid, saved)
 
     async def stream():
         try:
+            if req.use_claude_agy:
+                target_cwd = _within_allowed(req.cwd) or str(SCRATCH)
+                stable_id = cid or "mintcli-claude-" + uuid.uuid4().hex
+                requested_model = (req.model or "").strip()
+                model = requested_model if requested_model and requested_model != "default" else await _default_claude_agy_model()
+                run_env = _agy_environment()
+                agy_home = run_env.get("HOME") or HOME
+                route = _new_route_info(uuid.uuid4().hex, model)
+                route["transport"] = "claude_agy"
+                route["cli_config_model"] = model
+                updater = globals().get("project_updater")
+                lease = updater.acquire_turn() if updater else None
+                last_route_payload = json.dumps(route, sort_keys=True, ensure_ascii=False)
+                saw_trace = False
+                try:
+                    if AGY_PERSIST_CONVERSATIONS:
+                        await save_conversation_async(user_id, stable_id)
+                    yield {"event": "init", "conversation_id": stable_id, "route_info": json.loads(json.dumps(route))}
+                    async for event in stream_claude_agy(
+                        agy_bin=AGY_BIN, env=run_env, cwd=target_cwd,
+                        scratch=SCRATCH, prompt=_prompt_with_saved_history(req, saved, claude_agy=True),
+                        model=model, turn_id=route["request_id"], sandbox=AGY_SANDBOX,
+                        system_append=_claude_agy_system_append(req.system),
+                    ):
+                        if event.get("event") == "agy_trace":
+                            saw_trace = True
+                            await asyncio.to_thread(_apply_claude_agy_trace, route, agy_home, event)
+                            encoded = json.dumps(route, sort_keys=True, ensure_ascii=False)
+                            if event.get("final") or encoded != last_route_payload:
+                                last_route_payload = encoded
+                                yield {"event": "metadata", "route_info": json.loads(json.dumps(route))}
+                            continue
+                        yield event
+                    if saw_trace:
+                        await asyncio.to_thread(_apply_claude_agy_trace, route, agy_home, {})
+                        encoded = json.dumps(route, sort_keys=True, ensure_ascii=False)
+                        if encoded != last_route_payload:
+                            yield {"event": "metadata", "route_info": json.loads(json.dumps(route))}
+                finally:
+                    if lease:
+                        lease.close()
+                return
+
+            stable_id = cid if replay_native or native_id != cid else None
+            native_id_for_turn = None if replay_native else native_id
             async for event in _stream_agy(
-                prompt=prompt, model=req.model, cwd=req.cwd, conversation_id=cid,
-                continue_last=continue_last, user_id=user_id, timeout=0, api_connection=req.api_connection,
+                prompt=_prompt_with_saved_history(req, saved, claude_agy=False) if replay_native else prompt,
+                model=req.model, cwd=req.cwd,
+                conversation_id=None if replay_native else native_id,
+                continue_last=continue_last and not stable_id, user_id=user_id, timeout=0,
+                persist_conversation=stable_id is None, api_connection=req.api_connection,
             ):
+                if stable_id:
+                    if event.get("event") == "init" and event.get("conversation_id"):
+                        native_id_for_turn = event["conversation_id"]
+                    if event.get("conversation_id"):
+                        event["conversation_id"] = stable_id
+                    if event.get("route_info") and native_id_for_turn and native_id_for_turn != stable_id:
+                        event["route_info"]["native_conversation_id"] = native_id_for_turn
                 if req.api_connection:
                     # Redact before WebTurn persists events or makes them available to reconnecting readers.
                     secret = req.api_connection.api_key.get_secret_value()

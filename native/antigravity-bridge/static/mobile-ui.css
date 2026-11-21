@@ -1,0 +1,1028 @@
+/* Modern mobile-first UX & aesthetics layer for Antigravity Chat.
+ * Preserves desktop layout (>768px) untouched while delivering a clean,
+ * ergonomic mobile experience across all themes and anime skins.
+ */
+
+/* Desktop: transparent wrapper so .header-actions flex layout is 100% unchanged */
+.header-secondary-tools {
+  display: contents;
+}
+@media (min-width: 769px) {
+  .header-actions #cid-btn {
+    order: -2;
+  }
+  .header-actions #ws-btn {
+    order: -1;
+  }
+}
+.mobile-tools-btn,
+#mobile-tools-scrim {
+  display: none;
+}
+
+/* Global alignment polish for account cards (desktop & mobile) */
+.account-meta {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.account-meta > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.account-actions:empty {
+  display: none;
+}
+.btn-switch-account,
+.btn-delete-account {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  box-sizing: border-box;
+}
+.btn-delete-account {
+  width: 32px;
+  padding: 0;
+}
+
+@keyframes mobileSheetDrop {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes mobileBottomSheetIn {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 768px) {
+  /* -------------------------------------------------------------------------
+   * 1. Single-row minimalist sticky header (ChatGPT / Claude mobile pattern)
+   * ------------------------------------------------------------------------- */
+  body[data-ui-scene="immersive"] header,
+  body[data-ui-scene="original"] header,
+  body[data-anime-skin] header,
+  header {
+    display: flex !important;
+    align-items: center !important;
+    flex-wrap: nowrap !important;
+    gap: 8px !important;
+    min-height: 54px !important;
+    padding: max(8px, env(safe-area-inset-top)) 12px 8px !important;
+    background: var(--scene-glass, var(--panel-alpha)) !important;
+    border-bottom: 1px solid var(--border) !important;
+    backdrop-filter: blur(18px) saturate(1.2) !important;
+    -webkit-backdrop-filter: blur(18px) saturate(1.2) !important;
+    z-index: 32 !important;
+  }
+
+  /* Hamburger menu trigger: generous 40x40 touch target */
+  body[data-ui-scene] #menu-btn,
+  body[data-anime-skin] #menu-btn,
+  #menu-btn {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 40px !important;
+    min-width: 40px !important;
+    height: 40px !important;
+    min-height: 40px !important;
+    padding: 0 !important;
+    border-radius: 12px !important;
+    font-size: 18px !important;
+    line-height: 1 !important;
+    flex-shrink: 0 !important;
+  }
+
+  /* Compact brand mark next to model picker */
+  body[data-ui-scene] .brand,
+  body[data-anime-skin] .brand,
+  .brand {
+    display: flex !important;
+    align-items: center !important;
+    flex: 0 0 auto !important;
+    gap: 5px !important;
+    min-width: 0 !important;
+  }
+
+  body[data-ui-scene] .brand-logo,
+  body[data-anime-skin] .brand-logo,
+  .brand-logo {
+    width: 24px !important;
+    height: 24px !important;
+    border-radius: 7px !important;
+  }
+
+  body[data-ui-scene] header .dot,
+  header .dot {
+    width: 7px !important;
+    height: 7px !important;
+  }
+
+  /* Hide text title on mobile header so model selector stays spacious & readable */
+  body[data-ui-scene] header h1,
+  body[data-anime-skin] header h1,
+  header h1 {
+    display: none !important;
+  }
+
+  /* Primary right-side header row: Model Selector + More Tools + New Chat */
+  body[data-ui-scene] .header-actions,
+  body[data-anime-skin] .header-actions,
+  .header-actions {
+    display: flex !important;
+    align-items: center !important;
+    flex: 1 1 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+    margin-left: 0 !important;
+    flex-wrap: nowrap !important;
+    gap: 7px !important;
+    justify-content: flex-end !important;
+  }
+
+  body[data-ui-scene] .model-wrap,
+  body[data-anime-skin] .model-wrap,
+  .model-wrap {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    margin-left: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+  }
+
+  body[data-ui-scene] header select,
+  body[data-anime-skin] header select,
+  header select {
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    height: 38px !important;
+    min-height: 38px !important;
+    padding: 0 28px 0 12px !important;
+    border-radius: 12px !important;
+    font-size: 14px !important;
+    font-weight: 550 !important;
+    line-height: 1.2 !important;
+    color: var(--text) !important;
+    background-color: var(--surface) !important;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") !important;
+    background-repeat: no-repeat !important;
+    background-position: right 9px center !important;
+    background-size: 12px 12px !important;
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    text-overflow: ellipsis !important;
+    overflow: hidden !important;
+    white-space: nowrap !important;
+  }
+
+  /* Mobile quick tools button (⋯) */
+  body[data-ui-scene] #mobile-tools-btn,
+  body[data-anime-skin] #mobile-tools-btn,
+  #mobile-tools-btn {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 38px !important;
+    min-width: 38px !important;
+    height: 38px !important;
+    min-height: 38px !important;
+    padding: 0 !important;
+    border-radius: 11px !important;
+    font-size: 19px !important;
+    font-weight: 700 !important;
+    line-height: 1 !important;
+    letter-spacing: 0.5px;
+    color: var(--text) !important;
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    flex-shrink: 0 !important;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.12s ease !important;
+  }
+
+  #mobile-tools-btn:active,
+  #clear:active,
+  #menu-btn:active {
+    transform: scale(0.94);
+  }
+
+  body.mobile-tools-open #mobile-tools-btn {
+    border-color: var(--accent) !important;
+    background: var(--soft-accent) !important;
+    color: var(--accent) !important;
+  }
+
+  /* New chat (+) button */
+  body[data-ui-scene] #clear,
+  body[data-anime-skin] #clear,
+  #clear {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 38px !important;
+    min-width: 38px !important;
+    height: 38px !important;
+    min-height: 38px !important;
+    padding: 0 !important;
+    border-radius: 11px !important;
+    font-size: 0 !important;
+    color: var(--accent) !important;
+    background: var(--soft-accent) !important;
+    border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent) !important;
+    flex-shrink: 0 !important;
+  }
+
+  #clear::after {
+    content: "＋" !important;
+    font-size: 17px !important;
+    font-weight: 700 !important;
+    line-height: 1 !important;
+  }
+
+  /* -------------------------------------------------------------------------
+   * 2. Mobile Quick Tools Popover Sheet
+   * ------------------------------------------------------------------------- */
+  .header-secondary-tools {
+    display: none !important;
+  }
+
+  body.mobile-tools-open #mobile-tools-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    background: rgba(6, 10, 18, 0.36);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+  }
+
+  body.mobile-tools-open .header-secondary-tools {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    position: fixed;
+    top: calc(max(8px, env(safe-area-inset-top)) + 58px);
+    left: 12px;
+    right: 12px;
+    z-index: 40;
+    padding: 12px;
+    border-radius: 18px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.34);
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+    animation: mobileSheetDrop 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  body.mobile-tools-open .header-secondary-tools > button {
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    height: 44px !important;
+    min-height: 44px !important;
+    padding: 0 13px !important;
+    margin: 0 !important;
+    order: 0 !important;
+    border-radius: 12px !important;
+    font-size: 13.5px !important;
+    font-weight: 550 !important;
+    justify-content: flex-start !important;
+    align-items: center !important;
+    gap: 8px !important;
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text) !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  body.mobile-tools-open .header-secondary-tools > button:active {
+    transform: scale(0.97);
+    border-color: var(--accent) !important;
+    background: var(--soft-accent) !important;
+  }
+
+  body.mobile-tools-open .header-secondary-tools #ws-btn,
+  body.mobile-tools-open .header-secondary-tools #quota-btn,
+  body.mobile-tools-open .header-secondary-tools #route-inspect-btn,
+  body.mobile-tools-open .header-secondary-tools #thinking-toggle,
+  body.mobile-tools-open .header-secondary-tools #theme-toggle,
+  body.mobile-tools-open .header-secondary-tools #bg-toggle {
+    display: inline-flex !important;
+  }
+
+  body.mobile-tools-open .header-secondary-tools #quota-btn {
+    color: var(--accent) !important;
+    border-color: color-mix(in srgb, var(--accent) 36%, transparent) !important;
+    background: var(--soft-accent) !important;
+  }
+
+  body.mobile-tools-open .header-secondary-tools #quota-btn span,
+  body.mobile-tools-open .header-secondary-tools #route-inspect-btn span,
+  body.mobile-tools-open .header-secondary-tools #cid-btn span {
+    display: inline !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  body.mobile-tools-open .header-secondary-tools #thinking-toggle::after {
+    content: "思维链";
+    font-size: 13.5px;
+    font-weight: 550;
+  }
+
+  body.mobile-tools-open .header-secondary-tools #theme-toggle::after {
+    content: "切换主题";
+    font-size: 13.5px;
+    font-weight: 550;
+  }
+
+  body.mobile-tools-open .header-secondary-tools #bg-toggle::after {
+    content: "外观设置";
+    font-size: 13.5px;
+    font-weight: 550;
+  }
+
+  body.mobile-tools-open .header-secondary-tools #cid-btn {
+    grid-column: 1 / -1;
+    font-size: 12.5px !important;
+    color: var(--muted) !important;
+  }
+
+  /* -------------------------------------------------------------------------
+   * 3. Full-bleed Reading Stage, Message Bubbles & Typography
+   * ------------------------------------------------------------------------- */
+  body[data-ui-scene] .scene-stage,
+  body[data-anime-skin] .scene-stage,
+  .scene-stage {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    gap: 0 !important;
+    flex: 1 !important;
+    min-height: 0 !important;
+  }
+
+  body[data-ui-scene] #chat,
+  body[data-anime-skin] #chat,
+  #chat {
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 14px 0 18px !important;
+    width: 100% !important;
+  }
+
+  body[data-ui-scene] .wrap,
+  body[data-anime-skin] .wrap,
+  .wrap {
+    padding: 0 14px !important;
+    max-width: 100% !important;
+  }
+
+  body[data-ui-scene] .msg,
+  body[data-anime-skin] .msg,
+  .msg {
+    gap: 9px !important;
+    margin-bottom: 18px !important;
+  }
+
+  body[data-ui-scene] .msg.assistant .avatar,
+  body[data-anime-skin] .msg.assistant .avatar,
+  body .msg.assistant .avatar.march-avatar,
+  body[data-ui-scene] .msg.assistant .avatar.march-avatar,
+  .msg.assistant .avatar {
+    width: 30px !important;
+    height: 30px !important;
+    flex: 0 0 30px !important;
+    margin-top: 2px !important;
+  }
+
+  body[data-ui-scene="immersive"] .msg.assistant .avatar::after {
+    font-size: 17px !important;
+  }
+
+  .msg.assistant .msg-main {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  /* Fix: assistant .body is already inside .msg-main, so use full width (no extra -36px shrink) */
+  body[data-ui-scene] .msg.assistant .body,
+  body[data-anime-skin] .msg.assistant .body,
+  .msg.assistant .body {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 13px 15px !important;
+    font-size: 15px !important;
+    line-height: 1.68 !important;
+    border-radius: 6px 18px 18px 18px !important;
+  }
+
+  .msg.user .msg-main {
+    max-width: 86% !important;
+  }
+
+  body[data-ui-scene] .msg.user .body,
+  body[data-anime-skin] .msg.user .body,
+  .msg.user .body {
+    max-width: 100% !important;
+    padding: 11px 15px !important;
+    font-size: 15px !important;
+    line-height: 1.6 !important;
+    border-radius: 18px 18px 6px 18px !important;
+  }
+
+  /* Balanced mobile markdown hierarchy */
+  .msg .body h1 { font-size: 19px !important; margin: 16px 0 8px !important; }
+  .msg .body h2 { font-size: 17px !important; margin: 14px 0 8px !important; }
+  .msg .body h3 { font-size: 15.5px !important; margin: 12px 0 6px !important; }
+  .msg .body h4 { font-size: 15px !important; margin: 10px 0 6px !important; }
+  .msg .body p { margin: 0 0 11px !important; }
+  .msg .body p:last-child { margin-bottom: 0 !important; }
+  .msg .body ul, .msg .body ol { padding-left: 20px !important; margin: 8px 0 12px !important; }
+  .msg .body li + li { margin-top: 4px !important; }
+  .msg .body code { font-size: 13px !important; }
+  .msg .body pre {
+    padding: 12px 14px !important;
+    margin: 12px 0 !important;
+    border-radius: 10px !important;
+    -webkit-overflow-scrolling: touch;
+  }
+  .code-block-wrap {
+    margin: 12px 0 !important;
+    border-radius: 12px !important;
+  }
+  .code-block-header {
+    padding: 7px 12px !important;
+    font-size: 12px !important;
+  }
+  .code-header-btn {
+    min-height: 28px !important;
+    padding: 4px 9px !important;
+    font-size: 12px !important;
+    border-radius: 6px !important;
+  }
+  .msg .body table {
+    font-size: 13px !important;
+    margin: 12px 0 !important;
+    -webkit-overflow-scrolling: touch;
+  }
+  .msg .body th, .msg .body td {
+    padding: 7px 10px !important;
+  }
+
+  /* Thought box & message action buttons */
+  details.thought-box {
+    margin-bottom: 12px !important;
+    border-radius: 12px !important;
+  }
+  summary.thought-summary {
+    padding: 10px 12px !important;
+    font-size: 13px !important;
+  }
+  .thought-body {
+    padding: 10px 12px 12px !important;
+    font-size: 13px !important;
+    line-height: 1.65 !important;
+  }
+  .msg-actions {
+    margin-top: 6px !important;
+    gap: 8px !important;
+    opacity: 0.9 !important;
+  }
+  .msg-action-btn {
+    min-height: 32px !important;
+    padding: 5px 10px !important;
+    font-size: 12px !important;
+    border-radius: 8px !important;
+  }
+  .msg-meta-bar {
+    gap: 6px !important;
+    margin-top: 10px !important;
+    font-size: 11.5px !important;
+  }
+  .file-download-chip {
+    min-height: 36px;
+    padding: 6px 12px;
+    font-size: 13px;
+    border-radius: 10px;
+  }
+
+  /* -------------------------------------------------------------------------
+   * 4. Welcome / Empty State
+   * ------------------------------------------------------------------------- */
+  body[data-ui-scene] .empty,
+  body[data-anime-skin] .empty,
+  .empty {
+    margin: clamp(40px, 12vh, 110px) auto 24px !important;
+    padding: 0 12px !important;
+  }
+  body[data-ui-scene] .empty-logo,
+  .empty-logo {
+    width: 58px !important;
+    height: 58px !important;
+    border-radius: 16px !important;
+    margin-bottom: 14px !important;
+  }
+  body[data-ui-scene] .empty h2,
+  .empty h2 {
+    font-size: 21px !important;
+    font-weight: 700 !important;
+    margin-bottom: 8px !important;
+  }
+  body[data-ui-scene] .empty p,
+  .empty p {
+    font-size: 14px !important;
+    margin-bottom: 20px !important;
+  }
+  .suggestions {
+    gap: 8px !important;
+  }
+  body[data-ui-scene] .sug-chip,
+  .sug-chip {
+    min-height: 40px !important;
+    padding: 9px 15px !important;
+    font-size: 13.5px !important;
+    border-radius: 14px !important;
+  }
+
+  /* -------------------------------------------------------------------------
+   * 5. Floating Pill Composer & Anti-Zoom 16px Input
+   * ------------------------------------------------------------------------- */
+  body[data-ui-scene] footer,
+  body[data-anime-skin] footer,
+  footer {
+    border-radius: 0 !important;
+    border: none !important;
+    border-top: 1px solid var(--border) !important;
+    padding: 8px 12px max(10px, env(safe-area-inset-bottom)) 12px !important;
+    background: var(--scene-glass, var(--panel-alpha)) !important;
+    backdrop-filter: blur(18px) saturate(1.2) !important;
+    -webkit-backdrop-filter: blur(18px) saturate(1.2) !important;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.14) !important;
+  }
+
+  body[data-ui-scene] .composer,
+  body[data-anime-skin] .composer,
+  .composer {
+    width: 100% !important;
+    max-width: none !important;
+    padding: 5px 6px 5px 8px !important;
+    gap: 8px !important;
+    border-radius: 24px !important;
+    align-items: flex-end !important;
+  }
+
+  /* Keep height non-!important so JS auto-grow works smoothly, and 16px to prevent iOS zoom */
+  body[data-ui-scene] textarea,
+  body[data-anime-skin] textarea,
+  textarea {
+    font-size: 16px !important;
+    line-height: 1.45 !important;
+    min-height: 40px !important;
+    max-height: 136px !important;
+    padding: 8px 2px !important;
+  }
+
+  body[data-ui-scene] .attach-btn,
+  body[data-anime-skin] .attach-btn,
+  body[data-ui-scene] .send,
+  body[data-anime-skin] .send,
+  .attach-btn,
+  .send {
+    width: 40px !important;
+    height: 40px !important;
+    min-width: 40px !important;
+    border-radius: 50% !important;
+    margin-bottom: 0 !important;
+  }
+
+  body[data-ui-scene] .send,
+  .send {
+    font-size: 20px !important;
+  }
+
+  body[data-ui-scene] .hint,
+  body[data-anime-skin] .hint,
+  .hint {
+    width: 100% !important;
+    font-size: 11px !important;
+    margin-top: 5px !important;
+    min-height: 0 !important;
+    text-align: center !important;
+  }
+
+  /* -------------------------------------------------------------------------
+   * 6. Sidebar Drawer & Floating March Status Pill
+   * ------------------------------------------------------------------------- */
+  body[data-ui-scene] #sidebar,
+  body[data-anime-skin] #sidebar,
+  #sidebar {
+    width: min(300px, 85vw) !important;
+    transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1) !important;
+  }
+
+  #scrim {
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+  }
+
+  #sidebar-close {
+    width: 44px !important;
+    min-height: 44px !important;
+    border-radius: 12px !important;
+    font-size: 16px !important;
+  }
+
+  #conversation-search {
+    font-size: 16px !important;
+    min-height: 42px !important;
+    border-radius: 12px !important;
+    padding: 8px 12px !important;
+  }
+
+  body[data-ui-scene] .conv-item,
+  .conv-item {
+    min-height: 46px !important;
+    padding: 10px 12px !important;
+    border-radius: 12px !important;
+  }
+
+  .conv-title {
+    font-size: 14px !important;
+  }
+
+  #march-status {
+    top: calc(max(8px, env(safe-area-inset-top)) + 58px) !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 7. Bottom-Sheet Modals on Phones (<= 640px)
+ * --------------------------------------------------------------------------- */
+@media (max-width: 640px) {
+  .quota-modal-overlay,
+  .fs-modal-overlay,
+  .route-modal-overlay,
+  .msg-modal-overlay,
+  #ui-settings {
+    align-items: flex-end !important;
+    padding: 0 !important;
+  }
+
+  .quota-modal-card,
+  .fs-modal-card,
+  .route-modal-card,
+  .msg-modal-card,
+  .ui-settings-card {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 86dvh !important;
+    border-radius: 22px 22px 0 0 !important;
+    border-left: none !important;
+    border-right: none !important;
+    border-bottom: none !important;
+    padding-bottom: env(safe-area-inset-bottom) !important;
+    animation: mobileBottomSheetIn 0.22s cubic-bezier(0.22, 1, 0.36, 1) !important;
+  }
+
+  .quota-modal-header,
+  .fs-modal-header,
+  .route-modal-header,
+  .msg-modal-header {
+    padding: 13px 16px 11px !important;
+  }
+
+  .quota-modal-title-wrap {
+    gap: 6px !important;
+    flex-wrap: nowrap !important;
+    overflow: hidden;
+  }
+
+  .quota-modal-title-wrap h3 {
+    font-size: 14.5px !important;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .quota-active-badge {
+    font-size: 11px !important;
+    padding: 2px 7px !important;
+    max-width: 135px !important;
+    flex-shrink: 1;
+  }
+
+  .quota-modal-body,
+  .route-modal-body,
+  .msg-modal-body {
+    padding: 12px 14px !important;
+    gap: 10px !important;
+  }
+
+  .quota-modal-footer,
+  .fs-modal-footer,
+  .route-modal-footer,
+  .msg-modal-footer {
+    padding: 10px 16px 12px !important;
+  }
+
+  .quota-btn-close,
+  .route-modal-close,
+  .msg-modal-close {
+    min-width: 32px;
+    min-height: 32px;
+    padding: 4px 8px !important;
+    border-radius: 9px;
+    flex-shrink: 0;
+  }
+
+  /* Compact segmented tabs for Quota / Accounts */
+  .quota-tabs {
+    gap: 4px !important;
+    padding: 3px !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 10px !important;
+    background: var(--surface) !important;
+    border-bottom: 1px solid var(--border) !important;
+  }
+
+  .quota-tab {
+    flex: 1;
+    min-height: 34px;
+    padding: 6px 8px !important;
+    font-size: 12.5px !important;
+    border-radius: 8px !important;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  /* Compact single-row credits bar */
+  .quota-credits-bar {
+    flex-wrap: nowrap !important;
+    gap: 8px !important;
+    padding: 8px 12px !important;
+    border-radius: 10px !important;
+  }
+
+  .credits-item {
+    gap: 6px !important;
+    font-size: 12px !important;
+    min-width: 0;
+  }
+
+  .credits-icon {
+    font-size: 15px !important;
+  }
+
+  .credits-title {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .credits-val {
+    font-size: 15px !important;
+    flex-shrink: 0;
+  }
+
+  .quota-btn-refresh {
+    min-height: 30px !important;
+    padding: 4px 10px !important;
+    font-size: 11.5px !important;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Compact scannable model quota cards (prevents excessive vertical expansion) */
+  .quota-cards-list {
+    gap: 8px !important;
+  }
+
+  .model-quota-card {
+    padding: 10px 12px !important;
+    gap: 8px !important;
+    border-radius: 10px !important;
+  }
+
+  .model-quota-title {
+    font-size: 13px !important;
+    line-height: 1.3;
+  }
+
+  .limit-item {
+    gap: 4px !important;
+  }
+
+  .limit-header {
+    font-size: 11.5px !important;
+    gap: 6px;
+  }
+
+  .limit-label {
+    gap: 5px !important;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .limit-tag {
+    font-size: 10px !important;
+    padding: 1px 5px !important;
+  }
+
+  .limit-pct {
+    font-size: 12px !important;
+    flex-shrink: 0;
+  }
+
+  .limit-bar-track {
+    height: 6px !important;
+    border-radius: 3px !important;
+  }
+
+  .limit-reset {
+    font-size: 10.5px !important;
+    line-height: 1.2;
+  }
+
+  .quota-footnote {
+    padding: 8px 10px !important;
+    font-size: 11px !important;
+    line-height: 1.45 !important;
+    border-radius: 8px !important;
+  }
+
+  /* Aligned Accounts tab & cards */
+  .accounts-header-row {
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 8px !important;
+  }
+
+  .accounts-subheading {
+    font-size: 12.5px !important;
+    white-space: nowrap;
+  }
+
+  .accounts-add-btn {
+    min-height: 32px !important;
+    padding: 5px 11px !important;
+    font-size: 12px !important;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .accounts-list-container {
+    gap: 8px !important;
+  }
+
+  .account-card {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+    padding: 11px 12px !important;
+    border-radius: 11px !important;
+  }
+
+  .account-info {
+    width: 100%;
+    gap: 4px !important;
+  }
+
+  .account-email {
+    font-size: 13.5px !important;
+    line-height: 1.35;
+  }
+
+  .account-meta {
+    font-size: 11.5px !important;
+    gap: 6px !important;
+    line-height: 1.4;
+  }
+
+  .account-badge-active {
+    font-size: 11px !important;
+    padding: 2px 7px !important;
+  }
+
+  .account-actions {
+    width: 100% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-end !important;
+    gap: 8px !important;
+    padding-top: 8px;
+    border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  }
+
+  .account-actions:empty {
+    display: none !important;
+    padding-top: 0;
+    border-top: none;
+  }
+
+  .btn-switch-account {
+    flex: 1 !important;
+    height: 34px !important;
+    min-height: 34px !important;
+    padding: 0 12px !important;
+    font-size: 12.5px !important;
+    border-radius: 8px !important;
+  }
+
+  .btn-delete-account {
+    width: 34px !important;
+    height: 34px !important;
+    min-height: 34px !important;
+    padding: 0 !important;
+    font-size: 13px !important;
+    border-radius: 8px !important;
+    flex-shrink: 0 !important;
+  }
+
+  .add-account-card {
+    padding: 12px !important;
+    gap: 8px !important;
+  }
+
+  .add-account-inputs-row {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 8px !important;
+  }
+
+  .add-account-btn-cancel,
+  .add-account-btn-submit {
+    min-height: 34px;
+    padding: 6px 14px;
+    font-size: 12.5px;
+  }
+
+  .fs-btn-cancel,
+  .fs-btn-select,
+  .msg-modal-btn,
+  .route-refresh-btn {
+    min-height: 36px;
+    padding: 7px 14px;
+    font-size: 13px;
+  }
+
+  .fs-mrow {
+    min-height: 44px;
+    padding: 10px 12px;
+    font-size: 14px;
+  }
+
+  /* Prevent iOS Safari zoom on modal inputs */
+  .new-token-textarea,
+  .new-alias-input {
+    font-size: 16px !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 8. Landscape / Short-height Mobile Ergonomics
+ * --------------------------------------------------------------------------- */
+@media (max-height: 500px) and (max-width: 900px) {
+  body[data-ui-scene] header,
+  body[data-anime-skin] header,
+  header {
+    min-height: 46px !important;
+    padding-top: max(5px, env(safe-area-inset-top)) !important;
+    padding-bottom: 5px !important;
+  }
+
+  body[data-ui-scene] .empty,
+  .empty {
+    margin: 12px auto !important;
+  }
+
+  .empty-logo,
+  .empty-orb {
+    display: none !important;
+  }
+
+  body[data-ui-scene] textarea,
+  textarea {
+    max-height: 88px !important;
+  }
+}

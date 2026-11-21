@@ -511,11 +511,11 @@ body[data-ui-scene="immersive"] .sug-chip { background: var(--scene-message); bo
   }
   body[data-ui-scene="immersive"] textarea,
   textarea {
-    font-size: 15px !important;
-    height: 38px !important;
-    min-height: 38px !important;
-    max-height: 120px !important;
-    padding: 8px 0 !important;
+    font-size: 16px;
+    height: 40px;
+    min-height: 40px;
+    max-height: 136px;
+    padding: 8px 0;
   }
   body[data-ui-scene="immersive"] .send,
   body[data-ui-scene="immersive"] .attach-btn,
@@ -635,7 +635,7 @@ body[data-ui-scene="original"] .msg .body pre code { white-space: pre; overflow-
   }
   body[data-ui-scene="original"] footer { padding: 7px 10px max(7px, env(safe-area-inset-bottom)) 10px !important; }
   body[data-ui-scene="original"] .hint { width: 100% !important; font-size: 10px !important; margin-top: 4px !important; }
-  body[data-ui-scene="original"] textarea { height: 38px !important; min-height: 38px !important; max-height: 120px !important; padding: 8px 0 !important; font-size: 15px !important; }
+  body[data-ui-scene="original"] textarea { height: 40px; min-height: 40px; max-height: 136px; padding: 8px 0; font-size: 16px; }
   body[data-ui-scene="original"] .send, body[data-ui-scene="original"] .attach-btn { width: 36px !important; height: 36px !important; min-width: 36px !important; }
 }
 @media (max-height: 600px) and (max-width: 1024px) {

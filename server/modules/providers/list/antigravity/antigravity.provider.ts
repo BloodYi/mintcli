@@ -66,6 +66,7 @@ const runtime: IProviderRuntime = {
         history_revision: cid ? history.revision : undefined,
         model: options.model || api?.model, model_label: options.model || api?.model,
         cwd: options.cwd || options.projectPath, turn_id: turnId, continue_conversation: false,
+        ...(options.useClaudeAgy === true ? { use_claude_agy: true } : {}),
         ...(api ? { api_connection: { base_url: relay?.baseUrl || api.baseUrl!.replace(/\/v1(?:beta)?$/, ''), api_key: relay?.apiKey || api.apiKey,
           proxy_port: relay ? 0 : Number(api.env.MINTCLI_SELECTED_EGRESS_PORT || 0), chat_compat: Boolean(relay) } } : {}),
       };

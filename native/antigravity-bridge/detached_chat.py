@@ -165,11 +165,25 @@ class WebTurn:
                 message['finalResponse'] = str(event['response'])
             usage = event.get('usage')
             if usage:
-                total = usage.get('total_tokens', usage.get('input_tokens', 0) + usage.get('output_tokens', 0))
+                cache_read = usage.get('cache_read_tokens')
+                if cache_read is None:
+                    cache_read = usage.get('cache_read_input_tokens')
+                cache_create = usage.get('cache_creation_tokens')
+                if cache_create is None:
+                    cache_create = usage.get('cache_creation_input_tokens')
+                total = usage.get('total_tokens')
+                if total is None:
+                    total = (usage.get('input_tokens') or 0) + (usage.get('output_tokens') or 0)
+                    if 'cache_read_input_tokens' in usage or 'cache_creation_input_tokens' in usage:
+                        total += (cache_read or 0) + (cache_create or 0)
                 details = []
-                for key, label in (('input_tokens', '输入'), ('output_tokens', '输出'), ('thinking_tokens', '思考'), ('cache_read_tokens', '缓存')):
+                for key, label in (('input_tokens', '输入'), ('output_tokens', '输出'), ('thinking_tokens', '思考')):
                     if key in usage and (key in ('input_tokens', 'output_tokens') or usage[key]):
                         details.append(f'{label} {usage[key]:,}')
+                if cache_read:
+                    details.append(f'缓存 {cache_read:,}')
+                if cache_create:
+                    details.append(f'缓存写入 {cache_create:,}')
                 parts = [f'{total:,} tokens'] + ([f"({' / '.join(details)})"] if details else [])
                 if event.get('duration_seconds'):
                     parts.append(f"· ⏱️ {event['duration_seconds']:.1f}s")

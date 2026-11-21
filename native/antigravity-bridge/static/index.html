@@ -1039,12 +1039,13 @@
       *, *::before, *::after { animation: none !important; transition: none !important; }
     }
   </style>
-  <link rel="stylesheet" href="/static/scene-theme.css?v=20261005-mobilefix2" />
+  <link rel="stylesheet" href="/static/scene-theme.css?v=20261119-1" />
   <link rel="stylesheet" href="/static/ui-settings.css?v=20261005-mobilefix1" />
   <link rel="stylesheet" href="/static/march-status.css?v=20261006-q2" />
   <link rel="stylesheet" href="/static/conversation-actions.css?v=20261005-mobilefix1" />
   <link rel="stylesheet" href="/static/project-updates.css?v=20261012-1" />
-<link rel="stylesheet" href="/static/anime-themes.css?v=20261013-1" />
+  <link rel="stylesheet" href="/static/anime-themes.css?v=20261013-1" />
+  <link rel="stylesheet" href="/static/mobile-ui.css?v=20261119-2" />
 </head>
 
 <body data-ui-scene="immersive">
@@ -1096,21 +1097,25 @@
       <h1>小三月的agent</h1>
     </div>
     <div class="header-actions">
-      <button id="cid-btn" class="cid-btn" style="display:none;" title="当前会话编号" aria-label="当前会话">💬 <span id="cid-label"></span></button>
-      <button id="ws-btn" class="ws-btn" title="选择工作文件夹" aria-label="选择工作文件夹">📁 <span class="workspace-prefix">工作空间 /</span><span id="ws-label">scratch</span></button>
       <div class="model-wrap">
         <span id="model-spinner" class="model-spinner" title="正在加载模型…" aria-label="正在加载模型"></span>
         <label class="sr-only" for="model">模型</label>
         <select id="model" title="模型" aria-label="模型" style="display:none;"></select>
       </div>
-      <button id="quota-btn" title="查看额度与多账号管理" aria-label="额度与账号">⚡ <span>额度</span></button>
-      <button id="route-inspect-btn" title="查看回复记录或检测当前选择的模型" aria-label="模型返回信息">🔍 <span>验真</span></button>
-      <button id="thinking-toggle" title="思维链开关：显示/隐藏思考过程" aria-label="思维链开关">💭</button>
-      <button id="theme-toggle" title="切换深浅主题" aria-label="切换深浅主题">☀️</button>
-      <button id="bg-toggle" title="切换聊天背景" aria-label="切换聊天背景">🖼️</button>
+      <div class="header-secondary-tools" id="header-secondary-tools">
+        <button id="cid-btn" class="cid-btn" style="display:none;" title="当前会话编号" aria-label="当前会话">💬 <span id="cid-label"></span></button>
+        <button id="ws-btn" class="ws-btn" title="选择工作文件夹" aria-label="选择工作文件夹">📁 <span class="workspace-prefix">工作空间 /</span><span id="ws-label">scratch</span></button>
+        <button id="quota-btn" title="查看额度与多账号管理" aria-label="额度与账号">⚡ <span>额度</span></button>
+        <button id="route-inspect-btn" title="查看回复记录或检测当前选择的模型" aria-label="模型返回信息">🔍 <span>验真</span></button>
+        <button id="thinking-toggle" title="思维链开关：显示/隐藏思考过程" aria-label="思维链开关">💭</button>
+        <button id="theme-toggle" title="切换深浅主题" aria-label="切换深浅主题">☀️</button>
+        <button id="bg-toggle" title="切换聊天背景" aria-label="切换聊天背景">🖼️</button>
+      </div>
+      <button id="mobile-tools-btn" class="mobile-tools-btn" type="button" title="更多工具" aria-label="更多工具" aria-expanded="false" aria-controls="header-secondary-tools">⋯</button>
       <button id="clear" title="新建聊天" aria-label="新建聊天">新建聊天</button>
     </div>
   </header>
+  <div id="mobile-tools-scrim" aria-hidden="true"></div>
 
   <div class="scene-stage">
     <div class="scene-flourish" aria-hidden="true"><span class="scene-corner-left">✧</span><span class="scene-corner-right">✧</span></div>
@@ -2925,13 +2930,16 @@
         syncAssistantText(assistant, false);
         if (data.usage) {
           const u = data.usage;
-          const total = u.total_tokens ?? ((u.input_tokens || 0) + (u.output_tokens || 0));
+          const cacheRead = u.cache_read_tokens ?? u.cache_read_input_tokens;
+          const cacheCreate = u.cache_creation_tokens ?? u.cache_creation_input_tokens;
+          const total = u.total_tokens ?? ((u.input_tokens || 0) + (u.output_tokens || 0) + (cacheRead || 0) + (cacheCreate || 0));
           let parts = [`${Number(total).toLocaleString()} tokens`];
           let details = [];
           if (u.input_tokens !== undefined) details.push(`输入 ${Number(u.input_tokens).toLocaleString()}`);
           if (u.output_tokens !== undefined) details.push(`输出 ${Number(u.output_tokens).toLocaleString()}`);
           if (u.thinking_tokens) details.push(`思考 ${Number(u.thinking_tokens).toLocaleString()}`);
-          if (u.cache_read_tokens) details.push(`缓存 ${Number(u.cache_read_tokens).toLocaleString()}`);
+          if (cacheRead) details.push(`缓存 ${Number(cacheRead).toLocaleString()}`);
+          if (cacheCreate) details.push(`缓存写入 ${Number(cacheCreate).toLocaleString()}`);
           if (details.length > 0) parts.push(`(${details.join(" / ")})`);
           if (data.duration_seconds) parts.push(`· ⏱️ ${Number(data.duration_seconds).toFixed(1)}s`);
           assistant.metrics = parts.join(" ");
@@ -3454,8 +3462,35 @@
       });
     })();
 
+    /* Mobile quick-tools popover */
+    (() => {
+      const btn = $("#mobile-tools-btn");
+      const scrim = $("#mobile-tools-scrim");
+      const panel = $("#header-secondary-tools");
+      if (!btn || !scrim || !panel) return;
+      const setOpen = (open) => {
+        document.body.classList.toggle("mobile-tools-open", open);
+        btn.setAttribute("aria-expanded", open ? "true" : "false");
+      };
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setOpen(!document.body.classList.contains("mobile-tools-open"));
+      });
+      scrim.addEventListener("click", () => setOpen(false));
+      panel.addEventListener("click", (e) => {
+        if (e.target.closest("button")) setOpen(false);
+      });
+      $("#menu-btn")?.addEventListener("click", () => setOpen(false));
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && document.body.classList.contains("mobile-tools-open")) setOpen(false);
+      });
+      window.addEventListener("resize", () => {
+        if (window.innerWidth > 768 && document.body.classList.contains("mobile-tools-open")) setOpen(false);
+      });
+    })();
+
     loadModels();
-    input.focus();
+    if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) input.focus();
   </script>
   </div><!-- #main -->
 </div><!-- #app -->

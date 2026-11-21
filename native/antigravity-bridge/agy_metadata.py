@@ -125,16 +125,22 @@ def generation_models(data, observed_steps, execution_ids=None):
     return _model_records(link) if link is not None else []
 
 
-def _session_path(home, conversation_id, observed_steps):
-    if (not observed_steps or len(observed_steps) > MAX_STEPS
-            or any(not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < (1 << 31)
-                   for index in observed_steps)
-            or not isinstance(conversation_id, str) or not re.fullmatch(
-        r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", conversation_id or ""
-    )):
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+
+
+def _session_db_path(home, conversation_id):
+    if not isinstance(conversation_id, str) or not _UUID_RE.fullmatch(conversation_id):
         return None
     path = Path(home) / ".gemini" / "antigravity-cli" / "conversations" / (conversation_id + ".db")
     return path if path.is_file() else None
+
+
+def _session_path(home, conversation_id, observed_steps):
+    if (not observed_steps or len(observed_steps) > MAX_STEPS
+            or any(not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < (1 << 31)
+                   for index in observed_steps)):
+        return None
+    return _session_db_path(home, conversation_id)
 
 
 def _step_executions(connection, observed_steps):
@@ -186,6 +192,42 @@ def read_session_models(home, conversation_id, observed_steps):
             return [record for link in links for record in _model_records(link)]
     except (sqlite3.Error, OSError, ValueError):
         return []
+
+
+def read_acp_session_evidence(home, conversation_id):
+    """Read confirmed model evidence from an exclusive per-turn ACP session DB."""
+    empty = {"records": [], "observed_steps": set(), "response_steps": set(), "coverage_unknown": False}
+    path = _session_db_path(home, conversation_id)
+    if path is None:
+        return empty
+    try:
+        with closing(sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True, timeout=0.5)) as connection:
+            connection.execute("BEGIN")
+            step_rows = connection.execute(
+                "SELECT idx, step_type, status FROM steps WHERE idx >= 0 ORDER BY idx LIMIT ?",
+                (MAX_STEPS + 1,),
+            ).fetchall()
+            coverage_unknown = len(step_rows) > MAX_STEPS
+            step_rows = step_rows[:MAX_STEPS]
+            observed_steps = set()
+            response_steps = set()
+            for index, step_type, status in step_rows:
+                if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < (1 << 31):
+                    observed_steps.add(index)
+                    if step_type == 15 and status == 3:
+                        response_steps.add(index)
+            if not observed_steps:
+                return {**empty, "coverage_unknown": coverage_unknown}
+            links = _generation_links(connection, observed_steps, _step_executions(connection, observed_steps))
+            records = [record for link in links for record in _model_records(link)]
+            return {
+                "records": records,
+                "observed_steps": observed_steps,
+                "response_steps": response_steps,
+                "coverage_unknown": coverage_unknown,
+            }
+    except (sqlite3.Error, OSError, ValueError):
+        return empty
 
 
 def read_session_historical_error(home, conversation_id, observed_steps, response_steps, error):
