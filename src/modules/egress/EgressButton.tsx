@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Network, RefreshCw } from 'lucide-react';
 import { api, readApiJson } from '@/shared/api';
 import { Dialog, DialogContent, DialogTitle } from '@/shared/ui';
@@ -9,8 +10,18 @@ type Probe = { nodeId: string; ok: boolean; ip?: string; country?: string; laten
 const CLI_TARGETS = [{ id: 'codex', name: 'Codex CLI' }, { id: 'claude', name: 'Claude CLI' }, { id: 'antigravity', name: 'Antigravity · agy' }, { id: 'cursor', name: 'Cursor CLI' }, { id: 'opencode', name: 'OpenCode CLI' }];
 const button = 'rounded-lg border border-border px-3 py-2 text-xs hover:bg-muted disabled:opacity-50';
 
-/** Used by account quota bars to manage independent CLI and third-party API egress choices. */
-export function EgressButton({ connectionId }: { connectionId?: string }) {
+/** Used by account quota bars and mobile workspace tools to manage independent CLI and third-party API egress choices. */
+export function EgressButton({
+  connectionId,
+  variant = 'compact',
+  triggerSlot,
+  onBeforeOpen,
+}: {
+  connectionId?: string;
+  variant?: 'compact' | 'card';
+  triggerSlot?: HTMLElement | null;
+  onBeforeOpen?: () => void;
+}) {
   // The dialog loads routing only on demand so quota refreshes do not issue extra network requests.
   const [open, setOpen] = useState(false);
   // Keep node inventory and saved selections together so a save displays the server's confirmed choice.
@@ -42,8 +53,32 @@ export function EgressButton({ connectionId }: { connectionId?: string }) {
     finally { setBusy(''); }
   };
   const currentTarget = data?.targets.find(target => target.id === 'api:' + connectionId?.replace(/^codex:/, ''))?.id || connectionId?.split(':')[0];
+  const handleOpen = () => {
+    onBeforeOpen?.();
+    setOpen(true);
+  };
+  const trigger = variant === 'card' ? (
+    <button
+      type="button"
+      aria-label="选择代理节点"
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      onClick={handleOpen}
+      className="flex min-w-0 items-center gap-2.5 rounded-2xl border border-border/55 bg-card/85 px-3 py-2.5 text-left transition-all active:scale-[0.98] hover:bg-muted/50"
+    >
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-sky-500/12 text-sky-600 dark:text-sky-400">
+        <Network className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] font-semibold leading-tight text-foreground">代理节点</span>
+        <span className="mt-0.5 block truncate text-[11px] leading-tight text-muted-foreground">切换出口与测速</span>
+      </span>
+    </button>
+  ) : (
+    <button type="button" aria-label="选择代理节点" aria-haspopup="dialog" aria-expanded={open} onClick={handleOpen} className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border px-2 text-xs hover:bg-muted"><Network className="h-3.5 w-3.5" /><span>节点</span></button>
+  );
   return <>
-    <button type="button" aria-label="选择代理节点" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)} className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border px-2 text-xs hover:bg-muted"><Network className="h-3.5 w-3.5" /><span>节点</span></button>
+    {triggerSlot !== undefined ? (triggerSlot ? createPortal(trigger, triggerSlot) : null) : trigger}
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-h-[88dvh] w-[calc(100%-1.5rem)] space-y-4 overflow-y-auto p-4 sm:max-w-3xl sm:p-6" aria-describedby="egress-help">
         <DialogTitle>代理节点</DialogTitle>

@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import {
   Activity,
   BadgeCheck,
+  ChevronDown,
+  ChevronRight,
   CircleHelp,
   Coins,
   Cpu,
@@ -26,6 +28,7 @@ import type {
   ProviderModelsDefinition,CommandModalPayload,CostCommandData,HelpCommandData,ModelCommandData,StatusCommandData
 } from '@/shared/types';
 import ModelLibraryPanel from '@/modules/chat/modals/ModelLibraryPanel';
+import { groupModelsByThinkingEffort } from '@/modules/chat/utils/modelEffortGroups';
 
 type CommandResultModalProps = {
   payload: CommandModalPayload | null;
@@ -249,6 +252,7 @@ function ModelsContent({
   const [pendingSessionModel, setPendingSessionModel] = useState<string | null>(null);
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
   const [managingModels, setManagingModels] = useState(false);
+  const [expandedGroupKey, setExpandedGroupKey] = useState<string | null>(null);
   const currentProvider = (data?.current?.provider || 'claude') as LLMProvider;
   const currentModel = activeProvider === currentProvider
     ? activeProviderModel
@@ -279,6 +283,11 @@ function ModelsContent({
     });
   }, [availableOptions, query]);
 
+  const groupedOptions = useMemo(
+    () => groupModelsByThinkingEffort(filteredOptions, { allowOptionEffort: false }),
+    [filteredOptions],
+  );
+  const isSearching = query.trim().length > 0;
   const hasConcreteSessionId = typeof currentSessionId === 'string' && currentSessionId.trim().length > 0;
   const showSearch = availableOptions.length > 6;
 
@@ -345,55 +354,124 @@ function ModelsContent({
         <SearchField value={query} onChange={setQuery} placeholder={`Search ${providerLabel} models...`} />
       )}
 
-      {filteredOptions.length > 0 ? (
+      {groupedOptions.length > 0 ? (
         <div className="scrollbar-thin -mr-1 min-h-0 flex-1 overflow-y-auto pr-1">
           <div className="grid gap-2 md:grid-cols-2">
-            {filteredOptions.map((option, index) => {
-              const isCurrent = option.value === currentModel;
-              const isPendingSelection = option.value === pendingSessionModel;
-              const isChanging = option.value === changingModel;
+            {groupedOptions.map((group, index) => {
+              if (group.choices.length === 0 && group.directOption) {
+                const option = group.directOption;
+                const isCurrent = option.value === currentModel;
+                const isPendingSelection = option.value === pendingSessionModel;
+                const isChanging = option.value === changingModel;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => handleSelectModel(option.value)}
+                    disabled={Boolean(changingModel)}
+                    aria-label={`Select model ${option.value}`}
+                    className={`settings-content-enter group flex min-h-16 flex-col rounded-2xl border p-3 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 ${
+                      isCurrent
+                        ? 'border-primary/45 bg-primary/10'
+                        : isPendingSelection
+                          ? 'border-emerald-500/35 bg-emerald-500/10'
+                          : 'border-border/70 bg-background/80 hover:border-primary/30 hover:bg-background'
+                    }`}
+                    style={{ animationDelay: `${Math.min(index * 14, 180)}ms` }}
+                  >
+                    <span className="flex items-center justify-between gap-2">
+                      <span className="break-words text-sm font-semibold text-foreground">{option.label || option.value}</span>
+                      <span className="flex shrink-0 items-center gap-2">
+                        {option.isCustom && <Badge className="rounded-full px-2 py-0 text-[9px]">Custom</Badge>}
+                        {isCurrent ? (
+                          <BadgeCheck className="h-4 w-4 shrink-0 text-primary" />
+                        ) : isChanging ? (
+                          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+                        ) : null}
+                      </span>
+                    </span>
+                    {option.label !== option.value && (
+                      <span className="mt-1 break-all font-mono text-[11px] text-muted-foreground">{option.value}</span>
+                    )}
+                    {option.description && (
+                      <span className="mt-1 text-xs leading-5 text-muted-foreground">{option.description}</span>
+                    )}
+                    {isCurrent && (
+                      <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Current selection</span>
+                    )}
+                    {isPendingSelection && !isCurrent && (
+                      <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-500 dark:text-emerald-400">
+                        Session model
+                      </span>
+                    )}
+                  </button>
+                );
+              }
+
+              const activeChoice = group.choices.find((choice) => choice.modelValue === currentModel) ?? null;
+              const pendingChoice = group.choices.find((choice) => choice.modelValue === pendingSessionModel) ?? null;
+              const isExpanded = isSearching || expandedGroupKey === group.key;
+
               return (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => handleSelectModel(option.value)}
-                  disabled={Boolean(changingModel)}
-                  aria-label={`Select model ${option.value}`}
-                  className={`settings-content-enter group flex min-h-16 flex-col rounded-2xl border p-3 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 ${
-                    isCurrent
+                <div
+                  key={group.key}
+                  className={`settings-content-enter flex min-h-16 flex-col rounded-2xl border p-3 shadow-sm transition-all duration-200 ${
+                    activeChoice
                       ? 'border-primary/45 bg-primary/10'
-                      : isPendingSelection
+                      : pendingChoice
                         ? 'border-emerald-500/35 bg-emerald-500/10'
                         : 'border-border/70 bg-background/80 hover:border-primary/30 hover:bg-background'
                   }`}
                   style={{ animationDelay: `${Math.min(index * 14, 180)}ms` }}
                 >
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="break-words text-sm font-semibold text-foreground">{option.label || option.value}</span>
-                    <span className="flex shrink-0 items-center gap-2">
-                      {option.isCustom && <Badge className="rounded-full px-2 py-0 text-[9px]">Custom</Badge>}
-                      {isCurrent ? (
-                        <BadgeCheck className="h-4 w-4 shrink-0 text-primary" />
-                      ) : isChanging ? (
-                        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
-                      ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setExpandedGroupKey((prev) => (prev === group.key ? null : group.key))}
+                    aria-expanded={isExpanded}
+                    className="flex w-full items-center justify-between gap-2 text-left focus-visible:outline-none"
+                  >
+                    <span className="break-words text-sm font-semibold text-foreground">{group.label}</span>
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      {group.isCustom && <Badge className="rounded-full px-2 py-0 text-[9px]">Custom</Badge>}
+                      {activeChoice && (
+                        <span className="text-xs font-medium text-primary">{activeChoice.label}</span>
+                      )}
+                      {isExpanded ? (
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      )}
                     </span>
-                  </span>
-                  {option.label !== option.value && (
-                    <span className="mt-1 break-all font-mono text-[11px] text-muted-foreground">{option.value}</span>
+                  </button>
+
+                  {isExpanded && (
+                    <div className="mt-2.5 flex flex-col gap-1 border-t border-border/50 pt-2">
+                      {group.choices.map((choice) => {
+                        const isCurrent = choice.modelValue === currentModel;
+                        const isChanging = choice.modelValue === changingModel;
+                        return (
+                          <button
+                            key={choice.key}
+                            type="button"
+                            disabled={Boolean(changingModel)}
+                            onClick={() => handleSelectModel(choice.modelValue)}
+                            aria-label={`Select model ${choice.modelValue}`}
+                            className={`flex items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-accent disabled:opacity-60 ${
+                              isCurrent ? 'bg-accent/60 font-semibold text-foreground' : 'text-foreground/90'
+                            }`}
+                          >
+                            <span>{choice.label}</span>
+                            {isCurrent ? (
+                              <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
+                            ) : isChanging ? (
+                              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
-                  {option.description && (
-                    <span className="mt-1 text-xs leading-5 text-muted-foreground">{option.description}</span>
-                  )}
-                  {isCurrent && (
-                    <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Current selection</span>
-                  )}
-                  {isPendingSelection && !isCurrent && (
-                    <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-500 dark:text-emerald-400">
-                      Session model
-                    </span>
-                  )}
-                </button>
+                </div>
               );
             })}
           </div>

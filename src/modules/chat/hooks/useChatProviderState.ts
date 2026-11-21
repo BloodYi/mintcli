@@ -627,16 +627,18 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const mutationId = sessionEffortMutationIdRef.current + 1;
     sessionEffortMutationIdRef.current = mutationId;
     const targetSessionKey = getSessionSelectionKey(targetProvider, normalizedSessionId);
-    const previousSelection = sessionSelection?.provider === targetProvider
-      && sessionSelection.sessionId === normalizedSessionId
-      ? sessionSelection
-      : null;
-
-    setSessionSelection({
-      provider: targetProvider,
-      sessionId: normalizedSessionId,
-      model: previousSelection?.model ?? null,
-      effort,
+    let previousSelection: typeof sessionSelection = null;
+    setSessionSelection((current) => {
+      previousSelection =
+        current?.provider === targetProvider && current.sessionId === normalizedSessionId
+          ? current
+          : null;
+      return {
+        provider: targetProvider,
+        sessionId: normalizedSessionId,
+        model: previousSelection?.model ?? null,
+        effort,
+      };
     });
 
     try {
@@ -681,7 +683,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       }
       throw error;
     }
-  }, [sessionSelection, setStoredProviderEffort]);
+  }, [setStoredProviderEffort]);
 
   // The open session's model wins over the per-provider default, so switching
   // sessions shows (and sends) what each session actually runs with.
@@ -829,6 +831,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setProvider,
     providerModels,
     setStoredProviderModel,
+    providerEfforts,
+    setStoredProviderEffort,
     currentProviderEffort,
     currentProviderEffortOptions,
     currentProviderModel,

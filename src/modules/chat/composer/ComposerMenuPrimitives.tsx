@@ -1,4 +1,4 @@
-import type { ReactNode, Ref } from 'react';
+import type { MouseEvent, ReactNode, Ref } from 'react';
 import { Check } from 'lucide-react';
 
 import { cn } from '@/shared/utils';
@@ -26,7 +26,7 @@ export function ComposerMenuSurface({
       ref={menuRef}
       role="menu"
       aria-label={ariaLabel}
-      className="fixed z-[100] min-w-48 overflow-y-auto overscroll-contain rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-xl"
+      className="fixed z-[100] min-w-[min(12rem,calc(100vw-16px))] overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-xl"
       style={{
         right: anchor.right,
         bottom: anchor.bottom,
@@ -58,7 +58,10 @@ export function ComposerMenuItem({
   icon,
   isSelected,
   onSelect,
+  onMouseEnter,
   role = 'menuitemradio',
+  ariaHaspopup,
+  ariaExpanded,
   trailing,
   className,
 }: {
@@ -66,8 +69,11 @@ export function ComposerMenuItem({
   description?: ReactNode;
   icon?: ReactNode;
   isSelected: boolean;
-  onSelect: () => void;
+  onSelect: (event: MouseEvent<HTMLButtonElement>) => void;
+  onMouseEnter?: (event: MouseEvent<HTMLButtonElement>) => void;
   role?: 'menuitemradio' | 'menuitem';
+  ariaHaspopup?: 'menu';
+  ariaExpanded?: boolean;
   trailing?: ReactNode;
   className?: string;
 }) {
@@ -76,7 +82,10 @@ export function ComposerMenuItem({
       type="button"
       role={role}
       aria-checked={role === 'menuitemradio' ? isSelected : undefined}
+      aria-haspopup={ariaHaspopup}
+      aria-expanded={ariaExpanded}
       onClick={onSelect}
+      onMouseEnter={onMouseEnter}
       className={cn(
         'flex w-full items-start gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
         'hover:bg-accent focus-visible:bg-accent focus-visible:outline-none',
@@ -91,7 +100,7 @@ export function ComposerMenuItem({
           <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">{description}</span>
         )}
       </span>
-      <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
+      <span className="mt-0.5 flex min-h-4 min-w-4 shrink-0 items-center justify-end gap-1">
         {trailing ?? (isSelected ? <Check className="h-3.5 w-3.5 text-foreground" /> : null)}
       </span>
     </button>

@@ -1,13 +1,22 @@
 import { CodexResetButton } from '@/modules/codex-connections';
 import type { CodexResetCredits } from '@/shared/types';
 import { EgressButton } from '@/modules/egress';
+import { ChevronDown, RefreshCw } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api, readApiJson } from '@/shared/api';
 import { MonitorButton } from '@/modules/token-monitor';
 import { QuotaWindow } from '@/shared/ui/QuotaWindow';
 type Quota = { resetCredits?: CodexResetCredits | null; connectionId: string; status: string; planType?: string; checkedAt?: number; reason?: string; source?: string; dashboardUrl?: string; windows: { bucket: string; model?: string; type?: string; minutes?: number | null; remainingPercent: number | null; resetsAt: number | null }[] };
 /** Used by AgentConnections. Guards identity across slow quota responses and keeps unavailable values distinct from zero. */
-export function AccountQuota({ id }: { id?: string }) {
+export function AccountQuota({
+  id,
+  embedded = false,
+  showUtilities = !embedded,
+}: {
+  id?: string;
+  embedded?: boolean;
+  showUtilities?: boolean;
+}) {
   // Keep the user’s compact quota preference across refreshes and account switches.
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem('account-quota-collapsed') === 'true'; } catch { return false; } });
   const toggleCollapsed = () => setCollapsed(value => { const next = !value; try { localStorage.setItem('account-quota-collapsed', String(next)); } catch { /* Storage may be disabled. */ } return next; });
@@ -38,6 +47,152 @@ export function AccountQuota({ id }: { id?: string }) {
   }
   const groupName = (name: string) => /^Gemini Models$/i.test(name) ? 'Gemini 模型' : /^Claude and GPT models$/i.test(name) ? 'Claude 与 GPT 模型' : name;
   const order = (type?: string) => type === 'weekly' ? 0 : type === 'five_hour' ? 1 : 2;
+  if (embedded) {
+    return (
+      <div
+        className="space-y-3 rounded-2xl border border-border/55 bg-card/85 p-3.5 text-xs shadow-sm"
+        aria-label="当前账号额度"
+        aria-busy={busy}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? '展开账号额度' : '收起账号额度'}
+            onClick={toggleCollapsed}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          >
+            <strong className="truncate text-[13px] font-semibold text-foreground">剩余额度</strong>
+            {current?.planType && (
+              <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10.5px] font-medium text-primary">
+                {current.planType}
+              </span>
+            )}
+            <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-muted/70 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+              {collapsed ? '展开' : '收起'}
+              <ChevronDown
+                className={`h-3 w-3 transition-transform duration-200 ${collapsed ? '' : 'rotate-180'}`}
+                aria-hidden="true"
+              />
+            </span>
+          </button>
+
+          <div className="flex shrink-0 items-center gap-1.5">
+            {id?.startsWith('codex:') && (
+              <CodexResetButton
+                connectionId={id.slice(6)}
+                credits={current?.resetCredits}
+                onReset={() => setRevision(value => value + 1)}
+              />
+            )}
+            {id?.startsWith('claude:') && (
+              <a
+                href="https://claude.ai/settings/usage"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-7 items-center rounded-full border border-border/70 bg-background px-2.5 text-[11px] font-medium text-foreground/85 hover:bg-muted/60"
+                title="在 Claude 官方用量页使用重置卡；请核对登录账号，完成后刷新额度"
+              >
+                重置卡 ↗
+              </a>
+            )}
+            <button
+              type="button"
+              disabled={busy || !id}
+              aria-label="刷新额度"
+              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-full border border-border/70 bg-background px-2.5 text-[11px] font-medium text-foreground/85 transition-colors active:scale-95 hover:bg-muted/60 disabled:opacity-50"
+              onClick={() => setRevision(value => value + 1)}
+            >
+              <RefreshCw className={`h-3 w-3 ${busy ? 'animate-spin' : ''}`} aria-hidden="true" />
+              <span>刷新</span>
+            </button>
+            {showUtilities && <EgressButton connectionId={id} />}
+            {showUtilities && <MonitorButton />}
+          </div>
+        </div>
+
+        {!collapsed && (
+          <div className="space-y-2.5">
+            {groups.size > 0 && (
+              <div className="space-y-2.5" aria-label="agy 模型额度分组">
+                {[...groups].map(([name, windows]) => (
+                  <section key={name} className="space-y-1.5">
+                    <h3 className="px-0.5 text-[11px] font-medium text-muted-foreground">{groupName(name)}</h3>
+                    <div className={windows.length > 1 ? 'grid grid-cols-2 gap-2' : 'grid grid-cols-1 gap-2'}>
+                      {[...windows]
+                        .sort((a, b) => order(a.type) - order(b.type))
+                        .map((window, index) => (
+                          <QuotaWindow
+                            key={index}
+                            label={
+                              window.type === 'weekly'
+                                ? '每周配额剩余'
+                                : window.type === 'five_hour'
+                                  ? '5 小时配额剩余'
+                                  : window.type === 'daily'
+                                    ? '每日配额剩余'
+                                    : window.bucket
+                            }
+                            remainingPercent={window.remainingPercent}
+                            resetsAt={window.resetsAt}
+                          />
+                        ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            )}
+
+            {!groups.size && Boolean(current?.windows.length) && (
+              <div className={current && current.windows.length > 1 ? 'grid grid-cols-2 gap-2' : 'grid grid-cols-1 gap-2'}>
+                {current?.windows.map((window, index) => (
+                  <QuotaWindow
+                    key={`${window.bucket}-${index}`}
+                    label={
+                      window.bucket +
+                      (window.minutes
+                        ? ` · ${window.minutes >= 1440 ? window.minutes / 1440 + ' 天' : window.minutes / 60 + ' 小时'}`
+                        : '')
+                    }
+                    remainingPercent={window.remainingPercent}
+                    resetsAt={window.resetsAt}
+                  />
+                ))}
+              </div>
+            )}
+
+            {!current?.windows.length && (
+              <p className="rounded-xl bg-muted/40 px-3 py-2 text-xs text-muted-foreground" role="status">
+                {current?.reason || (busy ? '正在读取原生额度…' : '请选择账号')}
+              </p>
+            )}
+
+            {(current?.dashboardUrl || current?.checkedAt) && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5 text-[11px] text-muted-foreground">
+                {current?.checkedAt ? (
+                  <time dateTime={new Date(current.checkedAt).toISOString()} title={current.source}>
+                    更新于 {new Date(current.checkedAt).toLocaleTimeString()}
+                  </time>
+                ) : <span />}
+                {current?.dashboardUrl &&
+                  ['https://cursor.com/dashboard?tab=usage', 'https://opencode.ai/console'].includes(current.dashboardUrl) && (
+                    <a
+                      href={current.dashboardUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-medium text-primary underline"
+                    >
+                      查看官方额度 ↗
+                    </a>
+                  )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-border bg-muted/30 px-2.5 py-1.5 text-xs sm:px-3 sm:py-2" aria-label="当前账号额度" aria-busy={busy}>
     <div className="flex w-full flex-wrap items-center gap-1.5 sm:gap-2">
       <strong className="shrink-0 text-xs">剩余额度{current?.planType ? ' · ' + current.planType : ''}</strong>
@@ -45,10 +200,10 @@ export function AccountQuota({ id }: { id?: string }) {
       {!collapsed && current?.checkedAt && <time className="hidden text-[11px] text-muted-foreground sm:inline" dateTime={new Date(current.checkedAt).toISOString()} title={current.source}>更新于 {new Date(current.checkedAt).toLocaleTimeString()}</time>}
       <div className="ml-auto flex items-center gap-1.5">
         <button type="button" disabled={busy || !id} className="h-7 shrink-0 rounded-md border border-border bg-background px-2 text-[11px] font-medium hover:bg-muted/60 disabled:opacity-50 sm:text-xs" onClick={() => setRevision(value => value + 1)}>刷新额度</button>
-        <EgressButton connectionId={id} />
+        {showUtilities && <EgressButton connectionId={id} />}
         {id?.startsWith('codex:') && <CodexResetButton connectionId={id.slice(6)} credits={current?.resetCredits} onReset={() => setRevision(value => value + 1)} />}
         {id?.startsWith('claude:') && <a href="https://claude.ai/settings/usage" target="_blank" rel="noopener noreferrer" className="inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium hover:bg-muted/60 sm:text-xs" title="在 Claude 官方用量页使用重置卡；请核对登录账号，完成后刷新额度">使用重置卡 ↗</a>}
-        <MonitorButton />
+        {showUtilities && <MonitorButton />}
       </div>
     </div>
     {!collapsed && <>

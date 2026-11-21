@@ -23,6 +23,7 @@ type ChatExportMenuProps = {
    * last twenty messages.
    */
   onLoadFullTranscript?: () => Promise<ChatMessage[]>;
+  triggerClassName?: string;
 };
 
 const FORMATS: Array<{ id: TranscriptExportFormat; icon: typeof FileText; labelKey: string; descriptionKey: string }> = [
@@ -42,6 +43,7 @@ export default function ChatExportMenu({
   selectedProject,
   createDiff,
   onLoadFullTranscript,
+  triggerClassName,
 }: ChatExportMenuProps) {
   const { t } = useTranslation('chat');
   // Building a large transcript takes long enough to notice, and the download
@@ -74,9 +76,10 @@ export default function ChatExportMenu({
     <ActionMenu
       icon={busyFormat ? Loader2 : Download}
       iconOnly
+      portal
       label={t('export.trigger')}
       ariaLabel={t('export.trigger')}
-      triggerClassName="h-8 w-8 rounded-lg border border-border/50 text-muted-foreground hover:bg-accent hover:text-foreground"
+      triggerClassName={triggerClassName || 'h-8 w-8 rounded-lg border border-border/50 text-muted-foreground hover:bg-accent hover:text-foreground'}
       menuClassName="w-[260px] rounded-xl p-1.5 shadow-xl"
       header={(
         <div className="mb-1 border-b border-border px-3 py-2">

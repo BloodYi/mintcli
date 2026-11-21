@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon } from 'lucide-react';
 
@@ -10,7 +11,8 @@ import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspa
 import { TranscriptSessionContext } from '@/modules/chat/context/TranscriptSessionContext';
 import { api } from '@/shared/api';
 import { AgentConnections } from '@/modules/agent-connections';
-import { TokenMonitorProvider } from '@/modules/token-monitor';
+import { EgressButton } from '@/modules/egress';
+import { MonitorButton, TokenMonitorProvider } from '@/modules/token-monitor';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import type {
   ChatMessage,
@@ -38,6 +40,13 @@ import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
 
 type ChatInterfaceProps = {
   isActive: boolean;
+  isMobile?: boolean;
+  mobileAccountSlot?: HTMLElement | null;
+  mobileToolsSlot?: HTMLElement | null;
+  mobileExportSlot?: HTMLElement | null;
+  onCloseMobileAccount?: () => void;
+  onCloseMobileControls?: () => void;
+  onActiveConnectionChange?: (choice: AgentConnectionChoice | null) => void;
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   ws: WebSocket | null;
@@ -50,6 +59,8 @@ type ChatInterfaceProps = {
   showRawParameters?: boolean;
   showThinking?: boolean;
   sendByCtrlEnter?: boolean;
+  agyUseClaude?: boolean;
+  onAgyApiConnectionChange?: (usingApi: boolean) => void;
   externalMessageUpdate?: number;
   newSessionTrigger?: number;
   onTaskClick?: (...args: unknown[]) => void;
@@ -63,6 +74,13 @@ type ChatInterfaceProps = {
  */
 function ChatInterface({
   isActive,
+  isMobile = false,
+  mobileAccountSlot = null,
+  mobileToolsSlot = null,
+  mobileExportSlot = null,
+  onCloseMobileAccount,
+  onCloseMobileControls,
+  onActiveConnectionChange,
   selectedProject,
   selectedSession,
   ws,
@@ -74,6 +92,8 @@ function ChatInterface({
   showRawParameters,
   showThinking,
   sendByCtrlEnter,
+  agyUseClaude = false,
+  onAgyApiConnectionChange,
   externalMessageUpdate,
   newSessionTrigger,
   onShowAllTasks,
@@ -115,6 +135,8 @@ function ChatInterface({
     setProvider,
     providerModels,
     setStoredProviderModel,
+    providerEfforts,
+    setStoredProviderEffort,
     currentProviderEffort,
     currentProviderEffortOptions,
     currentProviderModel,
@@ -139,6 +161,16 @@ function ChatInterface({
     codexConnectionId: activeConnection?.id,
   });
   const usingApiConnection = provider === 'codex' && activeConnection?.kind === 'api';
+  const agyUsingApiConnection = provider === 'antigravity' && activeConnection?.kind === 'api';
+  const effectiveAgyUseClaude = agyUseClaude && !agyUsingApiConnection;
+
+  useEffect(() => {
+    onAgyApiConnectionChange?.(agyUsingApiConnection);
+  }, [agyUsingApiConnection, onAgyApiConnectionChange]);
+
+  useEffect(() => {
+    onActiveConnectionChange?.(activeConnection);
+  }, [activeConnection, onActiveConnectionChange]);
 
   const {
     chatMessages,
@@ -279,6 +311,7 @@ function ChatInterface({
     currentProviderModel,
     currentProviderEffort,
     fastMode: supportsFastMode ? fastMode : undefined,
+    agyUseClaude: effectiveAgyUseClaude,
     isLoading: isProcessing,
     processingSessions,
     canAbortSession,
@@ -419,12 +452,13 @@ function ChatInterface({
       content,
       scheduledFor,
       options: { model: currentProviderModel, effort: currentProviderEffort, permissionMode,
-        ...(supportsFastMode && fastMode !== undefined ? { fastMode } : {}) },
+        ...(supportsFastMode && fastMode !== undefined ? { fastMode } : {}),
+        ...(provider === 'antigravity' && effectiveAgyUseClaude ? { useClaudeAgy: true } : {}) },
     });
     if (scheduled) {
       setInput('');
     }
-  }, [currentProviderEffort, currentProviderModel, input, permissionMode, scheduleMessage, setInput, supportsFastMode, fastMode]);
+  }, [effectiveAgyUseClaude, currentProviderEffort, currentProviderModel, input, permissionMode, provider, scheduleMessage, setInput, supportsFastMode, fastMode]);
 
   const permissionContextValue = useMemo(() => ({
     pendingPermissionRequests,
@@ -456,6 +490,16 @@ function ChatInterface({
       console.error('Error changing the active session reasoning effort:', error);
     }
   }, [currentSessionId, provider, selectProviderEffort, selectedSession?.id]);
+
+  const handleSelectComposerModelAndEffort = useCallback(async (nextModel: string, nextEffort: string) => {
+    const targetSessionId = currentSessionId || selectedSession?.id || null;
+    try {
+      await selectProviderModel(provider, nextModel, targetSessionId);
+      await selectProviderEffort(provider, nextEffort, targetSessionId);
+    } catch (error) {
+      console.error('Error changing the active session model and reasoning effort:', error);
+    }
+  }, [currentSessionId, provider, selectProviderEffort, selectProviderModel, selectedSession?.id]);
 
   // Mirrors ChatComposer's own visibility check so the message pane can
   // reserve enough bottom space to keep the floating status tab from
@@ -491,10 +535,35 @@ function ChatInterface({
     <TokenMonitorProvider sessionId={selectedSession?.id || currentSessionId} model={currentProviderModel}>
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full min-h-0 flex-col">
-        <AgentConnections provider={provider} sessionId={selectedSession?.id || currentSessionId} disabled={isProcessing} onChoice={setActiveConnection} onProviderChange={handleAccountProviderChange} />
+        <AgentConnections
+          provider={provider}
+          sessionId={selectedSession?.id || currentSessionId}
+          disabled={isProcessing}
+          onChoice={setActiveConnection}
+          onProviderChange={handleAccountProviderChange}
+          mobileFolded={isMobile}
+          mobileSlot={mobileAccountSlot}
+          onOpenManager={onCloseMobileAccount}
+        />
+        {isMobile && (
+          <>
+            <EgressButton
+              connectionId={activeConnection?.id}
+              variant="card"
+              triggerSlot={mobileToolsSlot}
+              onBeforeOpen={onCloseMobileControls}
+            />
+            {mobileToolsSlot && createPortal(
+              <MonitorButton variant="card" onBeforeOpen={onCloseMobileControls} />,
+              mobileToolsSlot,
+            )}
+          </>
+        )}
         <MarkdownWorkspaceContext.Provider value={markdownWorkspaceValue}>
           <TranscriptSessionContext.Provider value={transcriptSessionValue}>
             <ChatMessagesPane
+              isMobile={isMobile}
+              mobileExportSlot={mobileExportSlot}
               scrollContainerRef={scrollContainerRef}
               // Not redundant with the `scroll` listener. A first page is 20 rows,
               // tool results fold into their calls, and the "load earlier" link is
@@ -514,6 +583,9 @@ function ChatInterface({
               textareaRef={textareaRef}
               providerModels={providerModels}
               setProviderModel={setStoredProviderModel}
+              providerEfforts={providerEfforts}
+              setProviderEffort={setStoredProviderEffort}
+              allowOptionEffort={!usingApiConnection}
               providerModelCatalog={providerModelCatalog}
               providerModelActions={providerModelActions}
               providerModelsLoading={providerModelsLoading}
@@ -590,6 +662,8 @@ function ChatInterface({
           model={currentProviderModel}
           availableModelOptions={currentProviderModelOptions}
           onSelectModel={handleSelectComposerModel}
+          onSelectModelAndEffort={handleSelectComposerModelAndEffort}
+          allowOptionEffort={!usingApiConnection}
           modelsLoading={providerModelsLoading}
           tokenBudget={tokenBudget}
           onShowTokenUsage={showCostModal}

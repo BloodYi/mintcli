@@ -1,13 +1,15 @@
 import { useTranslation } from 'react-i18next';
 import { useMobileMenuHandlers } from '@/modules/project-workspace/hooks/useMobileMenuHandlers';
+import { cn } from '@/shared/utils';
 
 type MobileMenuButtonProps = {
   onMenuClick: () => void;
   compact?: boolean;
+  className?: string;
 };
 
 /** Rendered by WorkspaceHeader and WorkspaceStateView to open the sidebar drawer on mobile. */
-export default function MobileMenuButton({ onMenuClick, compact = false }: MobileMenuButtonProps) {
+export default function MobileMenuButton({ onMenuClick, compact = false, className }: MobileMenuButtonProps) {
   const { t } = useTranslation();
   const { handleMobileMenuClick, handleMobileMenuTouchEnd } = useMobileMenuHandlers(onMenuClick);
 
@@ -19,11 +21,11 @@ export default function MobileMenuButton({ onMenuClick, compact = false }: Mobil
     <button
       onClick={handleMobileMenuClick}
       onTouchEnd={handleMobileMenuTouchEnd}
-      className={buttonClasses}
+      className={cn(buttonClasses, className)}
       aria-label={t('misc.openMenu')}
     >
-      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+      <svg className="h-[18px] w-[18px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7h16M4 12h12M4 17h16" />
       </svg>
     </button>
   );

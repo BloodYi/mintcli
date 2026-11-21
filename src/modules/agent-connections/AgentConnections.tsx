@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Check, Plus, Settings2 } from 'lucide-react';
 import { api, readApiJson } from '@/shared/api';
-import { Dialog, DialogContent, DialogTitle } from '@/shared/ui';
+import { Dialog, DialogContent, DialogTitle, LLMProviderLogo } from '@/shared/ui';
 import type { AgentConnectionChoice, AgentConnectionsCatalog, ApiAgent, ApiProtocol, LLMProvider, OfficialAccountLogin } from '@/shared/types';
 import { CliAccountAccess } from '@/modules/agent-connections/CliAccountAccess';
 import { AccountAuthorization } from '@/modules/agent-connections/AccountAuthorization';
@@ -18,7 +20,25 @@ const PROTOCOL_LABELS: Record<ApiProtocol, string> = { chat_completions: 'Chat C
 const rawAccountId = (item: AgentConnectionChoice) => item.kind === 'api' ? item.accountId.replace(/^api:/, '') : item.accountId;
 const labels: Record<string, string> = { chatgpt: 'Codex', api: '第三方 API', claude: 'Claude', antigravity: 'agy', cursor: 'Cursor', opencode: 'OpenCode' };
 /** The only account picker and manager in the shared workbench. Models remain in the existing composer. */
-export function AgentConnections({ provider, sessionId, disabled, onChoice, onProviderChange }: { provider: LLMProvider; sessionId?: string | null; disabled: boolean; onChoice: (choice: AgentConnectionChoice | null) => void; onProviderChange: (provider: LLMProvider) => void }) {
+export function AgentConnections({
+  provider,
+  sessionId,
+  disabled,
+  onChoice,
+  onProviderChange,
+  mobileFolded = false,
+  mobileSlot = null,
+  onOpenManager,
+}: {
+  provider: LLMProvider;
+  sessionId?: string | null;
+  disabled: boolean;
+  onChoice: (choice: AgentConnectionChoice | null) => void;
+  onProviderChange: (provider: LLMProvider) => void;
+  mobileFolded?: boolean;
+  mobileSlot?: HTMLElement | null;
+  onOpenManager?: () => void;
+}) {
   // The server owns saved identities and cross-device selection; the browser receives safe metadata only.
   const [catalog, setCatalog] = useState<AgentConnectionsCatalog>({ activeId: '', connections: [] });
   // One dialog holds every account type instead of opening another workbench.
@@ -75,18 +95,135 @@ export function AgentConnections({ provider, sessionId, disabled, onChoice, onPr
     }).catch(() => closePlaceholder());
   };
 
-  return <>
-    <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-background/95 px-2.5 py-1.5 text-xs sm:gap-2 sm:px-3 sm:py-2" data-testid="agent-connections">
-      <label htmlFor="agent-account" className="shrink-0 font-medium text-muted-foreground">账号</label>
-      <select id="agent-account" aria-label="切换账号" value={active?.id || ''} disabled={disabled || pending} className="h-8 min-w-0 flex-1 truncate rounded-lg border border-border bg-background pl-2.5 pr-7 text-xs leading-tight sm:max-w-md" onChange={event => void run(() => select(event.target.value))}>
-        {!active && <option value="">请添加或选择账号</option>}
-        {catalog.connections.map(item => <option key={item.id} value={item.id}>{labels[item.kind]} · {item.name}{item.agent && item.kind === 'api' ? ' · ' + AGENT_LABELS[item.agent] : ''}{item.email ? ' · ' + item.email : ''}{item.authorized ? '' : '（待登录）'}</option>)}
-      </select>
-      <button type="button" className="h-8 shrink-0 whitespace-nowrap rounded-lg border border-border bg-background px-2.5 text-xs font-medium transition-colors hover:bg-muted/60" onClick={() => edit(active)}>管理账号</button>
-      {active?.email && <span className="hidden max-w-[15rem] truncate text-muted-foreground sm:inline">{active.email}</span>}
-      {!open && (notice || catalog.warning) && <span className="w-full text-[11px] text-muted-foreground sm:w-auto" role="status">{notice || catalog.warning}</span>}
+  const mobileFoldedContent = (
+    <div className="space-y-3.5" data-testid="agent-connections">
+      <section className="space-y-2" aria-label="切换账号">
+        <div className="flex items-center justify-between px-1">
+          <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            切换账号
+          </h3>
+          <button
+            type="button"
+            className="inline-flex h-7 items-center gap-1 rounded-full border border-border/65 bg-background px-2.5 text-[11px] font-medium text-foreground/85 transition-colors active:scale-95 hover:bg-muted/60"
+            onClick={() => {
+              onOpenManager?.();
+              edit(active);
+            }}
+          >
+            <Settings2 className="h-3 w-3 text-muted-foreground" aria-hidden="true" />
+            <span>管理账号</span>
+          </button>
+        </div>
+
+        {catalog.connections.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-2.5 rounded-2xl border border-dashed border-border/70 bg-muted/20 px-4 py-5 text-center">
+            <p className="text-xs text-muted-foreground">还没有可用账号</p>
+            <button
+              type="button"
+              className="inline-flex h-8 items-center gap-1.5 rounded-full bg-primary px-3.5 text-xs font-medium text-primary-foreground shadow-sm transition-opacity active:scale-95 hover:opacity-90"
+              onClick={() => {
+                onOpenManager?.();
+                edit();
+              }}
+            >
+              <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>添加账号 / API</span>
+            </button>
+          </div>
+        ) : (
+          <div
+            role="radiogroup"
+            aria-label="切换账号"
+            className="max-h-[34dvh] divide-y divide-border/45 overflow-y-auto overscroll-contain rounded-2xl border border-border/55 bg-card/85 shadow-sm"
+          >
+            {catalog.connections.map((item) => {
+              const isSelected = active?.id === item.id;
+              const subtitleParts: string[] = [];
+              if (item.kind === 'api' && item.agent) {
+                subtitleParts.push(AGENT_LABELS[item.agent]);
+              }
+              if (item.email && item.email.trim().toLowerCase() !== item.name.trim().toLowerCase()) {
+                subtitleParts.push(item.email);
+              }
+              if (!item.authorized) {
+                subtitleParts.push('待登录');
+              }
+              const subtitle = subtitleParts.join(' · ');
+
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={isSelected}
+                  disabled={disabled || pending}
+                  onClick={() => {
+                    if (!isSelected) {
+                      void run(() => select(item.id));
+                    }
+                  }}
+                  className={
+                    isSelected
+                      ? 'flex w-full items-center gap-3 bg-primary/[0.06] px-3.5 py-2.5 text-left transition-colors disabled:opacity-60'
+                      : 'flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors active:bg-muted/60 hover:bg-muted/40 disabled:opacity-60'
+                  }
+                >
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted/65">
+                    <LLMProviderLogo provider={item.provider} className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className="truncate text-[13px] font-semibold leading-snug text-foreground">
+                        {item.name}
+                      </span>
+                      <span className="shrink-0 rounded-md bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+                        {labels[item.kind] || item.kind}
+                      </span>
+                    </span>
+                    {subtitle && (
+                      <span className="mt-0.5 block truncate text-[11px] leading-tight text-muted-foreground">
+                        {subtitle}
+                      </span>
+                    )}
+                  </span>
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+                    {isSelected && <Check className="h-4 w-4 text-primary" aria-hidden="true" />}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {!open && (notice || catalog.warning) && (
+          <p className="px-1 text-[11px] text-muted-foreground" role="status">
+            {notice || catalog.warning}
+          </p>
+        )}
+      </section>
+
+      <AccountQuota id={active?.id} embedded showUtilities={false} />
     </div>
-    <AccountQuota id={active?.id} />
+  );
+
+  return <>
+    {mobileFolded ? (
+      mobileSlot ? createPortal(mobileFoldedContent, mobileSlot) : null
+    ) : (
+      <>
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-background/95 px-2.5 py-1.5 text-xs sm:gap-2 sm:px-3 sm:py-2" data-testid="agent-connections">
+          <label htmlFor="agent-account" className="shrink-0 font-medium text-muted-foreground">账号</label>
+          <select id="agent-account" aria-label="切换账号" value={active?.id || ''} disabled={disabled || pending} className="h-8 min-w-0 flex-1 truncate rounded-lg border border-border bg-background pl-2.5 pr-7 text-xs leading-tight sm:max-w-md" onChange={event => void run(() => select(event.target.value))}>
+            {!active && <option value="">请添加或选择账号</option>}
+            {catalog.connections.map(item => <option key={item.id} value={item.id}>{labels[item.kind]} · {item.name}{item.agent && item.kind === 'api' ? ' · ' + AGENT_LABELS[item.agent] : ''}{item.email ? ' · ' + item.email : ''}{item.authorized ? '' : '（待登录）'}</option>)}
+          </select>
+          <button type="button" className="h-8 shrink-0 whitespace-nowrap rounded-lg border border-border bg-background px-2.5 text-xs font-medium transition-colors hover:bg-muted/60" onClick={() => edit(active)}>管理账号</button>
+          {active?.email && <span className="hidden max-w-[15rem] truncate text-muted-foreground sm:inline">{active.email}</span>}
+          {!open && (notice || catalog.warning) && <span className="w-full text-[11px] text-muted-foreground sm:w-auto" role="status">{notice || catalog.warning}</span>}
+        </div>
+        <AccountQuota id={active?.id} />
+      </>
+    )}
     <Dialog open={open} onOpenChange={value => { if (!pending) { setOpen(value); if (!value) { setForm({ ...empty }); setCode(''); } } }}>
       <DialogContent className="max-h-[90dvh] w-[calc(100%-1.5rem)] space-y-4 overflow-y-auto p-5 sm:max-w-2xl" aria-describedby="accounts-help" aria-labelledby="accounts-title">
         <DialogTitle>账号管理</DialogTitle>

@@ -130,6 +130,16 @@ function QuickSettingsPanelView({ selectedProject, onInsertCommand }: QuickSetti
     };
   }, [close, isOpen, isPinned]);
 
+  useEffect(() => {
+    const handleExternalOpen = () => {
+      if (!isOpen) toggle();
+    };
+    window.addEventListener('mintcli:open-quick-settings', handleExternalOpen);
+    return () => {
+      window.removeEventListener('mintcli:open-quick-settings', handleExternalOpen);
+    };
+  }, [isOpen, toggle]);
+
   const panelBody = (
     <div className="flex h-full flex-col">
       <QuickSettingsPanelHeader
@@ -166,14 +176,16 @@ function QuickSettingsPanelView({ selectedProject, onInsertCommand }: QuickSetti
 
   return (
     <>
-      <QuickSettingsHandle
-        isOpen={isOpen}
-        isDragging={isDragging}
-        style={handleStyle}
-        onClick={handleToggleFromHandle}
-        onMouseDown={startDrag}
-        onTouchStart={startDrag}
-      />
+      {!isMobile && (
+        <QuickSettingsHandle
+          isOpen={isOpen}
+          isDragging={isDragging}
+          style={handleStyle}
+          onClick={handleToggleFromHandle}
+          onMouseDown={startDrag}
+          onTouchStart={startDrag}
+        />
+      )}
 
       {/* Docked: a layout column while open, gone while collapsed via the handle (the pin is kept). */}
       {isPinned ? (

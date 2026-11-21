@@ -40,7 +40,7 @@ export const PromptInput = React.forwardRef<HTMLFormElement, PromptInputProps>(
           ref={ref}
           data-slot="prompt-input"
           className={cn(
-            'relative overflow-hidden rounded-xl border border-border/50 bg-card/80 shadow-sm backdrop-blur-sm transition-all duration-200 focus-within:border-primary/30 focus-within:shadow-md focus-within:ring-1 focus-within:ring-primary/15',
+            'relative overflow-hidden rounded-[24px] border border-border/60 bg-card/95 shadow-[0_4px_20px_-6px_rgba(0,0,0,0.1)] backdrop-blur-md transition-all duration-200 focus-within:border-primary/35 focus-within:shadow-md focus-within:ring-1 focus-within:ring-primary/15 dark:shadow-[0_6px_24px_-6px_rgba(0,0,0,0.45)] sm:rounded-xl sm:border-border/50 sm:bg-card/80 sm:shadow-sm sm:backdrop-blur-sm sm:dark:shadow-sm',
             className
           )}
           {...props}
@@ -96,7 +96,7 @@ export const PromptInputTextarea = React.forwardRef<
     ref={ref}
     data-slot="prompt-input-textarea"
     className={cn(
-      'chat-input-placeholder block max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent px-4 py-2 text-sm leading-6 text-foreground placeholder-muted-foreground/50 focus:outline-none sm:max-h-[300px]',
+      'chat-input-placeholder block max-h-[36vh] w-full resize-none overflow-y-auto bg-transparent px-4 pb-1.5 pt-3 text-[16px] leading-6 text-foreground placeholder-muted-foreground/50 focus:outline-none sm:max-h-[300px] sm:py-2 sm:text-sm',
       className
     )}
     {...props}
@@ -114,7 +114,7 @@ export const PromptInputFooter = React.forwardRef<
   <div
     ref={ref}
     data-slot="prompt-input-footer"
-    className={cn('flex items-center justify-between border-t border-border/30 px-3 py-2', className)}
+    className={cn('flex items-center justify-between border-t-0 px-2.5 pb-2 pt-0.5 sm:border-t sm:border-border/30 sm:px-3 sm:py-2', className)}
     {...props}
   />
 ));

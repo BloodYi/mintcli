@@ -2,6 +2,7 @@ import React, { useCallback, useMemo, useState } from "react";
 import { ChevronDown, Plus } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 
+import { DEFAULT_EFFORT_VALUE } from "@/shared/constants";
 import type {
   ProjectSession,
   LLMProvider,
@@ -24,6 +25,10 @@ import {
 } from "@/shared/ui";
 import ModelGroupList, { type ModelGroup } from "@/modules/chat/composer/ModelGroupList";
 import ModelLibraryPanel from "@/modules/chat/modals/ModelLibraryPanel";
+import {
+  groupModelsByThinkingEffort,
+  resolveActiveModelEffort,
+} from "@/modules/chat/utils/modelEffortGroups";
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 
 const PROVIDER_META: { id: LLMProvider; name: string }[] = [
@@ -57,6 +62,9 @@ type ProviderSelectionEmptyStateProps = {
   providerModels: Record<LLMProvider, string>;
   /** Records the pick as this provider's default and persists it. */
   setProviderModel: (provider: LLMProvider, model: string) => void;
+  providerEfforts?: Partial<Record<LLMProvider, string>>;
+  setProviderEffort?: (provider: LLMProvider, effort: string) => void;
+  allowOptionEffort?: boolean;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelActions: ProviderModelActions;
   providerModelsLoading: boolean;
@@ -95,6 +103,9 @@ export default function ProviderSelectionEmptyState({
   textareaRef,
   providerModels,
   setProviderModel,
+  providerEfforts,
+  setProviderEffort,
+  allowOptionEffort = true,
   providerModelCatalog,
   providerModelActions,
   providerModelsLoading,
@@ -154,24 +165,39 @@ export default function ProviderSelectionEmptyState({
   });
 
   const currentModel = providerModels[provider];
+  const currentEffort = providerEfforts?.[provider] || DEFAULT_EFFORT_VALUE;
+  const defaultEffortLabel = t("composer.effortDefault", { defaultValue: "Default" });
 
   const currentModelLabel = useMemo(() => {
     const config = getModelConfig(provider, providerModelCatalog);
-    const found = config.OPTIONS.find(
-      (o: { value: string; label: string }) => o.value === currentModel,
+    const grouped = groupModelsByThinkingEffort(config.OPTIONS, {
+      allowOptionEffort,
+      defaultEffortLabel,
+    });
+    const summary = resolveActiveModelEffort(
+      grouped,
+      currentModel,
+      currentEffort,
+      defaultEffortLabel,
     );
-    return found?.label || currentModel;
-  }, [provider, currentModel, providerModelCatalog]);
+    if (summary.showEffortBadge && summary.effortLabel) {
+      return `${summary.modelLabel} · ${summary.effortLabel}`;
+    }
+    return summary.modelLabel;
+  }, [allowOptionEffort, currentEffort, currentModel, defaultEffortLabel, provider, providerModelCatalog]);
 
   const handleModelSelect = useCallback(
-    (providerId: LLMProvider, modelValue: string) => {
+    (providerId: LLMProvider, modelValue: string, effortValue?: string) => {
       setProvider(providerId);
       writeSelectedProvider(providerId);
       setProviderModel(providerId, modelValue);
+      if (effortValue !== undefined && setProviderEffort) {
+        setProviderEffort(providerId, effortValue);
+      }
       setPickerOpen(false);
       setTimeout(() => textareaRef.current?.focus(), 100);
     },
-    [setProvider, setProviderModel, setPickerOpen, textareaRef],
+    [setProvider, setProviderEffort, setProviderModel, setPickerOpen, textareaRef],
   );
 
   const openModelLibrary = () => {
@@ -186,13 +212,16 @@ export default function ProviderSelectionEmptyState({
 
   if (!selectedSession && !currentSessionId) {
     return (
-      <div className="flex h-full items-center justify-center px-4">
+      <div className="flex min-h-[calc(100dvh-13rem)] items-center justify-center px-4 sm:h-full sm:min-h-0">
         <div className="w-full max-w-[34.25rem]">
-          <div className="mb-8 text-center">
-            <h2 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
+          <div className="mb-7 text-center sm:mb-8">
+            <div className="mx-auto mb-3.5 flex h-12 w-12 items-center justify-center rounded-2xl border border-border/50 bg-muted/40 shadow-sm sm:hidden">
+              <LLMProviderLogo provider={provider} className="h-6 w-6" />
+            </div>
+            <h2 className="text-xl font-semibold tracking-tight text-foreground sm:text-xl">
               {getProviderDisplayName(provider)} · 新聊天
             </h2>
-            <p className="mt-1 text-[13px] text-muted-foreground">
+            <p className="mt-1.5 text-[13px] text-muted-foreground">
               {t("providerSelection.description")}
             </p>
           </div>
@@ -200,7 +229,7 @@ export default function ProviderSelectionEmptyState({
           <Dialog open={dialogOpen} onOpenChange={setPickerOpen}>
             <DialogTrigger asChild>
               <Card
-                className="group mx-auto max-w-xs cursor-pointer border-border/60 transition-all duration-150 hover:border-border hover:shadow-md active:scale-[0.99]"
+                className="group mx-auto max-w-xs cursor-pointer rounded-2xl border-border/60 bg-card/80 shadow-sm transition-all duration-150 hover:border-border hover:shadow-md active:scale-[0.98] sm:rounded-xl"
                 role="button"
                 tabIndex={0}
               >
@@ -278,6 +307,9 @@ export default function ProviderSelectionEmptyState({
                     groups={visibleProviderGroups}
                     provider={provider}
                     currentModel={currentModel}
+                    currentEffort={currentEffort}
+                    allowOptionEffort={allowOptionEffort}
+                    defaultEffortLabel={defaultEffortLabel}
                     loading={providerModelsLoading}
                     searching={modelSearch.trim().length > 0}
                     onSelect={handleModelSelect}
@@ -315,10 +347,10 @@ export default function ProviderSelectionEmptyState({
             </DialogContent>
           </Dialog>
 
-          <p className="mt-4 text-center text-sm text-muted-foreground/70">
+          <p className="mt-4 text-center text-xs text-muted-foreground/75 sm:text-sm">
             {
               {
-                antigravity: "已准备好使用 agy，可在上方切换账号。",
+                antigravity: "已准备好使用 agy，可在控制菜单中切换账号与额度。",
                 claude: t("providerSelection.readyPrompt.claude", {
                   model: providerModels.claude,
                 }),
@@ -336,7 +368,7 @@ export default function ProviderSelectionEmptyState({
             }
           </p>
 
-          <p className="mt-3 flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground/60">
+          <p className="mt-3 hidden items-center justify-center gap-1.5 text-center text-xs text-muted-foreground/60 sm:flex">
             <Trans
               ns="chat"
               i18nKey="providerSelection.pressToSearch"

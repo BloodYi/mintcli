@@ -7,12 +7,9 @@ const VIEWPORT_MARGIN = 8;
 const MENU_GAP = 8;
 
 /**
- * Positions a composer popover above its trigger and right-aligned to it.
- *
- * Anchoring with `right`/`bottom` rather than `left`/`top` lets the menu grow
- * upward and leftward without measuring itself first, so it never paints in the
- * wrong spot for a frame. The same anchor works on phones because `maxWidth`
- * shrinks the menu instead of letting it run off the left edge.
+ * Positions a composer popover above its trigger and right-aligned to it when
+ * space permits, clamping horizontally inside the viewport on narrow phones so
+ * left-side triggers (such as Schedule Send) never clip off the left edge.
  */
 export function useComposerMenuAnchor(
   isOpen: boolean,
@@ -29,12 +26,18 @@ export function useComposerMenuAnchor(
       return;
     }
 
-    const right = Math.max(VIEWPORT_MARGIN, window.innerWidth - rect.right);
+    const viewportWidth = window.innerWidth;
+    const availableWidth = Math.max(160, viewportWidth - VIEWPORT_MARGIN * 2);
+    const maxWidth = Math.min(preferredWidth, availableWidth);
+    const preferredRight = Math.max(VIEWPORT_MARGIN, viewportWidth - rect.right);
+    const maxRight = Math.max(VIEWPORT_MARGIN, viewportWidth - VIEWPORT_MARGIN - maxWidth);
+    const right = Math.min(preferredRight, maxRight);
+
     setAnchor({
       right,
       bottom: window.innerHeight - rect.top + MENU_GAP,
       maxHeight: Math.max(160, rect.top - MENU_GAP - VIEWPORT_MARGIN),
-      maxWidth: Math.max(200, Math.min(preferredWidth, window.innerWidth - right - VIEWPORT_MARGIN)),
+      maxWidth,
     });
   }, [preferredWidth]);
 

@@ -69,6 +69,8 @@ type ChatComposerProps = {
   model: string;
   availableModelOptions: ProviderModelOption[];
   onSelectModel: (model: string) => void;
+  onSelectModelAndEffort?: (model: string, effort: string) => void;
+  allowOptionEffort?: boolean;
   modelsLoading: boolean;
   tokenBudget: Record<string, unknown> | null;
   onShowTokenUsage: () => void;
@@ -152,6 +154,8 @@ export default function ChatComposer({
   model,
   availableModelOptions,
   onSelectModel,
+  onSelectModelAndEffort,
+  allowOptionEffort = true,
   modelsLoading,
   tokenBudget,
   onShowTokenUsage,
@@ -287,7 +291,7 @@ export default function ChatComposer({
       : t('input.send');
 
   return (
-    <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-2 pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
+    <div className="chat-composer-shell relative flex-shrink-0 bg-gradient-to-t from-background via-background/95 to-transparent px-3 pb-[max(0.625rem,env(safe-area-inset-bottom))] pt-1 sm:bg-none sm:px-4 sm:pb-4 sm:pt-0 md:px-4 md:pb-6">
       {!hasPendingPermissions && (
         <div className="pointer-events-none absolute bottom-full left-1/2 z-10 w-[calc(100%-1rem)] max-w-[54.25rem] -translate-x-1/2 translate-y-px bg-transparent sm:w-[calc(100%-2rem)]">
           <ActivityIndicator activity={activity} onAbort={onAbortSession} isInputFocused={isInputFocused} />
@@ -438,8 +442,8 @@ export default function ChatComposer({
           )}
 
           <PromptInputBody>
-            <div ref={inputHighlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
-              <div className="chat-input-placeholder block w-full whitespace-pre-wrap break-words px-4 py-2 text-sm leading-6 text-transparent">
+            <div ref={inputHighlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden rounded-[24px] sm:rounded-xl">
+              <div className="chat-input-placeholder block w-full whitespace-pre-wrap break-words px-4 pb-1.5 pt-3 text-[16px] leading-6 text-transparent sm:py-2 sm:text-sm">
                 {renderInputWithMentions(input)}
               </div>
             </div>
@@ -504,10 +508,12 @@ export default function ChatComposer({
           </PromptInputTools>
 
           <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5 sm:gap-2">
-            <ScheduleMessagePopover
-              disabled={!input.trim()}
-              onSchedule={onScheduleMessage}
-            />
+            <span className={input.trim() ? 'inline-flex' : 'hidden sm:inline-flex'}>
+              <ScheduleMessagePopover
+                disabled={!input.trim()}
+                onSchedule={onScheduleMessage}
+              />
+            </span>
 
             {supportsFastMode && (
               <button
@@ -534,10 +540,14 @@ export default function ChatComposer({
               model={model}
               modelOptions={availableModelOptions}
               onSelectModel={onSelectModel}
+              onSelectModelAndEffort={onSelectModelAndEffort}
+              allowOptionEffort={allowOptionEffort}
               modelsLoading={modelsLoading}
             />
 
-            <MonitorButton model />
+            <span className="hidden sm:inline-flex">
+              <MonitorButton model />
+            </span>
 
             <ComposerPermissionMenu
               permissionMode={permissionMode}
@@ -585,7 +595,7 @@ export default function ChatComposer({
               }
               aria-label={submitAriaLabel}
               title={submitAriaLabel}
-              className="h-9 w-9 sm:h-10 sm:w-10"
+              className="h-9 w-9 rounded-full sm:h-10 sm:w-10 sm:rounded-lg"
             >
               {isTranscribing ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

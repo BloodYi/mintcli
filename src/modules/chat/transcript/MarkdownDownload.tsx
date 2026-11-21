@@ -12,9 +12,12 @@ export function MarkdownDownload({ path, children }: { path: string; children: R
     setStatus('pending');
     try {
       const filename = path.split('/').pop() || 'download';
-      const response = path.includes('/.cloudcli/assets/')
+      let response = path.includes('/.cloudcli/assets/')
         ? await api.assets.file(filename)
-        : projectId && await api.readFileBlob(projectId, path);
+        : projectId ? await api.readFileBlob(projectId, path) : null;
+      if ((!response || !response.ok) && api.antigravity?.download) {
+        response = await api.antigravity.download(path);
+      }
       if (!response || !response.ok) throw new Error('File unavailable');
       const url = URL.createObjectURL(await response.blob());
       const link = document.createElement('a');

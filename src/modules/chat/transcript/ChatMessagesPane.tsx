@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { memo, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 
 import type { BackgroundTaskSummary,
@@ -28,6 +29,8 @@ import { BackgroundTasksStrip } from '@/modules/chat/transcript/BackgroundTasksS
 const INITIAL_MOUNTED_TAIL_ROWS = 30;
 
 type ChatMessagesPaneProps = {
+  isMobile?: boolean;
+  mobileExportSlot?: HTMLElement | null;
   scrollContainerRef: RefObject<HTMLDivElement>;
   onWheel: () => void;
   onTouchMove: () => void;
@@ -44,6 +47,9 @@ type ChatMessagesPaneProps = {
   textareaRef: RefObject<HTMLTextAreaElement>;
   providerModels: Record<LLMProvider, string>;
   setProviderModel: (provider: LLMProvider, model: string) => void;
+  providerEfforts?: Partial<Record<LLMProvider, string>>;
+  setProviderEffort?: (provider: LLMProvider, effort: string) => void;
+  allowOptionEffort?: boolean;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelActions: ProviderModelActions;
   providerModelsLoading: boolean;
@@ -99,6 +105,8 @@ const getGroupedMessageKey = (message: ChatMessage): string =>
  * load-all-history overlay.
  */
 function ChatMessagesPane({
+  isMobile = false,
+  mobileExportSlot = null,
   scrollContainerRef,
   onWheel,
   onTouchMove,
@@ -113,6 +121,9 @@ function ChatMessagesPane({
   textareaRef,
   providerModels,
   setProviderModel,
+  providerEfforts,
+  setProviderEffort,
+  allowOptionEffort = true,
   providerModelCatalog,
   providerModelActions,
   providerModelsLoading,
@@ -185,19 +196,42 @@ function ChatMessagesPane({
     [messageKeyMap],
   );
 
+  const exportMenuNode = (
+    <ChatExportMenu
+      messages={chatMessages}
+      sessionTitle={selectedSession?.summary || selectedSession?.title}
+      provider={provider}
+      selectedProject={selectedProject}
+      createDiff={createDiff}
+      onLoadFullTranscript={onLoadFullTranscript}
+      triggerClassName={isMobile
+        ? 'h-10 w-10 rounded-xl border border-border/55 bg-muted/35 text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+        : undefined}
+    />
+  );
+
   return (
     <div
       ref={scrollContainerRef}
       onWheel={onWheel}
       onTouchMove={onTouchMove}
-      className={`chat-messages-pane relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden pt-3 sm:pt-4 ${
+      className={`chat-messages-pane relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden ${
+        isMobile ? 'pt-[calc(3.75rem+env(safe-area-inset-top))]' : 'pt-3 sm:pt-4'
+      } ${
         hasActivityIndicator ? 'pb-12 sm:pb-14' : 'pb-3 sm:pb-4'
       }`}
     >
+      {chatMessages.length > 0 && isMobile && mobileExportSlot && createPortal(exportMenuNode, mobileExportSlot)}
       {chatMessages.length > 0 && (
-        <div className="pointer-events-none sticky right-4 top-3 z-10 mb-2 flex items-start justify-between gap-2 sm:px-4">
+        <div
+          className={
+            isMobile
+              ? 'pointer-events-none sticky top-[calc(3.75rem+env(safe-area-inset-top))] z-10 flex items-start justify-between gap-2 px-4 [&:has(>:empty)]:mb-0'
+              : 'pointer-events-none sticky right-4 top-3 z-10 mb-2 flex items-start justify-between gap-2 sm:px-4'
+          }
+        >
           {/* Running background work stays in view while the transcript scrolls under it. */}
-          <div className="pointer-events-auto min-w-0 pl-4 sm:pl-0">
+          <div className={isMobile ? 'pointer-events-auto min-w-0 empty:hidden' : 'pointer-events-auto min-w-0 pl-4 sm:pl-0'}>
             <BackgroundTasksStrip
               messages={chatMessages}
               tasks={backgroundTasks}
@@ -207,16 +241,11 @@ function ChatMessagesPane({
               onLoadAll={loadAllMessages}
             />
           </div>
-          <div className="pointer-events-auto">
-            <ChatExportMenu
-              messages={chatMessages}
-              sessionTitle={selectedSession?.summary || selectedSession?.title}
-              provider={provider}
-              selectedProject={selectedProject}
-              createDiff={createDiff}
-              onLoadFullTranscript={onLoadFullTranscript}
-            />
-          </div>
+          {!isMobile && (
+            <div className="pointer-events-auto">
+              {exportMenuNode}
+            </div>
+          )}
         </div>
       )}
       <div className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
@@ -236,6 +265,9 @@ function ChatMessagesPane({
           textareaRef={textareaRef}
           providerModels={providerModels}
           setProviderModel={setProviderModel}
+          providerEfforts={providerEfforts}
+          setProviderEffort={setProviderEffort}
+          allowOptionEffort={allowOptionEffort}
           providerModelCatalog={providerModelCatalog}
           providerModelActions={providerModelActions}
           providerModelsLoading={providerModelsLoading}

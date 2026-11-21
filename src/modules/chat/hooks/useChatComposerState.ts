@@ -48,6 +48,7 @@ type UseChatComposerStateArgs = {
   currentProviderModel: string;
   currentProviderEffort: string;
   fastMode?: boolean;
+  agyUseClaude?: boolean;
   isLoading: boolean;
   processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
@@ -211,6 +212,7 @@ export function useChatComposerState({
   currentProviderModel,
   currentProviderEffort,
   fastMode,
+  agyUseClaude,
   isLoading,
   processingSessions,
   canAbortSession,
@@ -700,12 +702,14 @@ export function useChatComposerState({
       model: currentProviderModel,
       effort: currentProviderEffort,
       ...(provider === 'codex' && fastMode !== undefined ? { fastMode } : {}),
+      ...(provider === 'antigravity' && agyUseClaude ? { useClaudeAgy: true } : {}),
       permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
       toolsSettings,
       skipPermissions: toolsSettings?.skipPermissions || false,
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
     };
   }, [
+    agyUseClaude,
     connectionId,
     fastMode,
     currentProviderEffort,

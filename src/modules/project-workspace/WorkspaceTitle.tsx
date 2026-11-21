@@ -11,6 +11,8 @@ type WorkspaceTitleProps = {
   selectedProject: Project;
   selectedSession: ProjectSession | null;
   shouldShowTasksTab: boolean;
+  /** Single-line compact mode used by the floating mobile header pill. */
+  compact?: boolean;
   /** Persists a new title for a session; resolves false when the backend refuses it. */
   onRenameSession: (sessionId: string, summary: string) => Promise<boolean>;
 };
@@ -49,6 +51,7 @@ export default function WorkspaceTitle({
   selectedProject,
   selectedSession,
   shouldShowTasksTab,
+  compact = false,
   onRenameSession,
 }: WorkspaceTitleProps) {
   const { t } = useTranslation();
@@ -78,10 +81,10 @@ export default function WorkspaceTitle({
   });
 
   return (
-    <div className="scrollbar-hide flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
+    <div className={compact ? 'flex min-w-0 items-center gap-1.5' : 'scrollbar-hide flex min-w-0 flex-1 items-center gap-2 overflow-x-auto'}>
       {showSessionIcon && (
-        <div className="flex h-5 w-5 flex-shrink-0 items-center justify-center">
-          <LLMProviderLogo provider={selectedSession?.__provider} className="h-4 w-4" />
+        <div className={compact ? 'flex h-4 w-4 flex-shrink-0 items-center justify-center' : 'flex h-5 w-5 flex-shrink-0 items-center justify-center'}>
+          <LLMProviderLogo provider={selectedSession?.__provider} className={compact ? 'h-3.5 w-3.5' : 'h-4 w-4'} />
         </div>
       )}
 
@@ -108,24 +111,38 @@ export default function WorkspaceTitle({
               <h2
                 title={t('mainContent.renameSessionHint', { title: sessionTitle })}
                 onDoubleClick={startRenaming}
-                className="cursor-text truncate text-sm font-semibold leading-tight text-foreground"
+                className={compact
+                  ? 'cursor-text truncate text-[13px] font-semibold leading-tight text-foreground'
+                  : 'cursor-text truncate text-sm font-semibold leading-tight text-foreground'}
               >
                 {sessionTitle}
               </h2>
             )}
-            <div className="truncate text-[11px] leading-tight text-muted-foreground">{selectedProject.displayName}</div>
+            {!compact && (
+              <div className="truncate text-[11px] leading-tight text-muted-foreground">{selectedProject.displayName}</div>
+            )}
           </div>
         ) : showChatNewSession ? (
           <div className="min-w-0">
-            <h2 className="truncate text-base font-semibold leading-tight text-foreground">{t('mainContent.newSession')}</h2>
-            <div className="truncate text-xs leading-tight text-muted-foreground">{selectedProject.displayName}</div>
+            <h2 className={compact
+              ? 'truncate text-[13px] font-semibold leading-tight text-foreground'
+              : 'truncate text-base font-semibold leading-tight text-foreground'}>
+              {t('mainContent.newSession')}
+            </h2>
+            {!compact && (
+              <div className="truncate text-xs leading-tight text-muted-foreground">{selectedProject.displayName}</div>
+            )}
           </div>
         ) : (
           <div className="min-w-0">
-            <h2 className="truncate text-sm font-semibold leading-tight text-foreground">
+            <h2 className={compact
+              ? 'truncate text-[13px] font-semibold leading-tight text-foreground'
+              : 'truncate text-sm font-semibold leading-tight text-foreground'}>
               {getTabTitle(activeTab, shouldShowTasksTab, t, pluginDisplayName)}
             </h2>
-            <div className="truncate text-[11px] leading-tight text-muted-foreground">{selectedProject.displayName}</div>
+            {!compact && (
+              <div className="truncate text-[11px] leading-tight text-muted-foreground">{selectedProject.displayName}</div>
+            )}
           </div>
         )}
       </div>

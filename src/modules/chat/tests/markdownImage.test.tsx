@@ -110,3 +110,21 @@ test('sandbox output paths are preserved for inline images and local downloads',
     assert.deepEqual(readFileBlob.mock.calls.map(call => call[1]), ['/mnt/data/preview.png', '/mnt/data/report 1.zip']);
   } finally { anchor.mockRestore(); }
 });
+
+test('/api/download?path=... links extract the target file path for MarkdownDownload', async () => {
+  readFileBlob.mockResolvedValue({ ok: true, blob: async () => new Blob(['mp4']) });
+  const downloads: string[] = [];
+  const anchor = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+    downloads.push(this.download);
+  });
+  try {
+    const view = renderInProject(
+      '[下载视频](/api/download?path=/home/ubuntu/video.mp4) [下载文本](/api/download?path=notes%201.txt)',
+    );
+    view.getByRole('button', { name: '下载视频' }).click();
+    view.getByRole('button', { name: '下载文本' }).click();
+    await waitFor(() => assert.equal(anchor.mock.calls.length, 2));
+    assert.deepEqual(readFileBlob.mock.calls.map(call => call[1]), ['/home/ubuntu/video.mp4', 'notes 1.txt']);
+    assert.deepEqual(downloads, ['video.mp4', 'notes 1.txt']);
+  } finally { anchor.mockRestore(); }
+});

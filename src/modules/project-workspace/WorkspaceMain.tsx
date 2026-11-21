@@ -8,11 +8,15 @@ import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { TaskMasterPanel, useTaskMasterProjectSync, useTasksSettings } from '@/modules/task-master';
-import type { AppTab, DirectoryRevealRequest, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab } from '@/shared/types';
-import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
+import type { AgentConnectionChoice, AppTab, DirectoryRevealRequest, LLMProvider, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab } from '@/shared/types';
+import { useSetUiPreference, useUiPreferences } from '@/shared/context/UiPreferencesContext';
+import { readSelectedProvider } from '@/shared/selectedProvider';
+import { subscribeToUserPreferences } from '@/shared/userSettings';
 import { useFileOpenResolver } from '@/modules/project-workspace/hooks/useFileOpenResolver';
 import { EditorSidebar, useEditorSidebar } from '@/modules/code-editor';
 import WorkspaceHeader from '@/modules/project-workspace/WorkspaceHeader';
+import MobileAccountSheet from '@/modules/project-workspace/MobileAccountSheet';
+import MobileWorkspaceSheet from '@/modules/project-workspace/MobileWorkspaceSheet';
 import WorkspaceStateView from '@/modules/project-workspace/WorkspaceStateView';
 import WorkspaceErrorBoundary from '@/modules/project-workspace/WorkspaceErrorBoundary';
 
@@ -60,10 +64,55 @@ function WorkspaceMain({
   onRenameSession,
 }: WorkspaceMainProps) {
   const preferences = useUiPreferences();
+  const setUiPreference = useSetUiPreference();
   const handleStartNewSession = useCallback(() => {
     if (selectedProject) onProjectSelect(selectedProject);
   }, [onProjectSelect, selectedProject]);
-  const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
+  const { showRawParameters, showThinking, sendByCtrlEnter, agyUseClaude } = preferences;
+  const [storedProvider, setStoredProvider] = useState<LLMProvider>(readSelectedProvider);
+  const [activeConnection, setActiveConnection] = useState<AgentConnectionChoice | null>(null);
+  const [agyUsingApiConnection, setAgyUsingApiConnection] = useState(false);
+  const [mobileAccountOpen, setMobileAccountOpen] = useState(false);
+  const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
+  const [mobileAccountSlot, setMobileAccountSlot] = useState<HTMLDivElement | null>(null);
+  const [mobileToolsSlot, setMobileToolsSlot] = useState<HTMLDivElement | null>(null);
+  const [mobileExportSlot, setMobileExportSlot] = useState<HTMLDivElement | null>(null);
+  const isMobileAccountOpen = isMobile && mobileAccountOpen;
+  const isMobileControlsOpen = isMobile && mobileControlsOpen;
+
+  const handleOpenMobileAccount = useCallback(() => {
+    setMobileControlsOpen(false);
+    setMobileAccountOpen(true);
+  }, []);
+
+  const handleCloseMobileAccount = useCallback(() => {
+    setMobileAccountOpen(false);
+  }, []);
+
+  const handleOpenMobileControls = useCallback(() => {
+    setMobileAccountOpen(false);
+    setMobileControlsOpen(true);
+  }, []);
+
+  const handleCloseMobileControls = useCallback(() => {
+    setMobileControlsOpen(false);
+  }, []);
+
+  const handleOpenQuickSettings = useCallback(() => {
+    window.dispatchEvent(new CustomEvent('mintcli:open-quick-settings'));
+  }, []);
+
+  useEffect(() => subscribeToUserPreferences(() => {
+    setStoredProvider(readSelectedProvider());
+  }), []);
+
+  const activeProvider = selectedSession?.__provider ?? storedProvider;
+  const showAgyClaudeToggle = activeTab === 'chat' && activeProvider === 'antigravity';
+
+  const handleToggleAgyUseClaude = useCallback(() => {
+    if (agyUsingApiConnection) return;
+    setUiPreference('agyUseClaude', !agyUseClaude);
+  }, [agyUseClaude, agyUsingApiConnection, setUiPreference]);
 
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const browserUseEnabled = useBrowserUseEnabled();
@@ -145,7 +194,7 @@ function WorkspaceMain({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="relative flex h-full flex-col">
       <WorkspaceHeader
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -155,8 +204,46 @@ function WorkspaceMain({
         shouldShowBrowserTab={shouldShowBrowserTab}
         isMobile={isMobile}
         onMenuClick={onMenuClick}
+        onOpenMobileAccount={isMobile ? handleOpenMobileAccount : undefined}
+        mobileAccountOpen={isMobileAccountOpen}
+        activeAccount={activeConnection}
+        activeProvider={activeProvider}
+        onOpenMobileControls={isMobile ? handleOpenMobileControls : undefined}
+        mobileControlsOpen={isMobileControlsOpen}
+        onStartNewSession={isMobile ? handleStartNewSession : undefined}
         onRenameSession={onRenameSession}
+        agyUseClaude={agyUseClaude}
+        agyUseClaudeDisabled={agyUsingApiConnection}
+        onToggleAgyUseClaude={showAgyClaudeToggle ? handleToggleAgyUseClaude : undefined}
       />
+
+      {isMobile && (
+        <>
+          <MobileAccountSheet
+            open={isMobileAccountOpen}
+            onOpenChange={setMobileAccountOpen}
+            onAccountSlotChange={setMobileAccountSlot}
+          />
+          <MobileWorkspaceSheet
+            open={isMobileControlsOpen}
+            onOpenChange={setMobileControlsOpen}
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            selectedProject={selectedProject}
+            selectedSession={selectedSession}
+            shouldShowTasksTab={shouldShowTasksTab}
+            shouldShowBrowserTab={shouldShowBrowserTab}
+            agyUseClaude={agyUseClaude}
+            agyUseClaudeDisabled={agyUsingApiConnection}
+            onToggleAgyUseClaude={showAgyClaudeToggle ? handleToggleAgyUseClaude : undefined}
+            onStartNewSession={handleStartNewSession}
+            onShowSettings={onShowSettings}
+            onOpenQuickSettings={handleOpenQuickSettings}
+            onToolsSlotChange={setMobileToolsSlot}
+            onExportSlotChange={setMobileExportSlot}
+          />
+        </>
+      )}
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className={`flex min-h-0 min-w-[200px] flex-col overflow-hidden ${editorExpanded ? 'hidden' : ''} flex-1`}>
@@ -164,6 +251,13 @@ function WorkspaceMain({
             <WorkspaceErrorBoundary showDetails>
               <ChatInterface
                 isActive={activeTab === 'chat'}
+                isMobile={isMobile}
+                mobileAccountSlot={isMobile ? mobileAccountSlot : null}
+                mobileToolsSlot={isMobile ? mobileToolsSlot : null}
+                mobileExportSlot={isMobile ? mobileExportSlot : null}
+                onCloseMobileAccount={isMobile ? handleCloseMobileAccount : undefined}
+                onCloseMobileControls={isMobile ? handleCloseMobileControls : undefined}
+                onActiveConnectionChange={setActiveConnection}
                 selectedProject={selectedProject}
                 selectedSession={selectedSession}
                 ws={ws}
@@ -176,6 +270,8 @@ function WorkspaceMain({
                 showRawParameters={showRawParameters}
                 showThinking={showThinking}
                 sendByCtrlEnter={sendByCtrlEnter}
+                agyUseClaude={agyUseClaude}
+                onAgyApiConnectionChange={setAgyUsingApiConnection}
                 externalMessageUpdate={externalMessageUpdate}
                 newSessionTrigger={newSessionTrigger}
                 onShowAllTasks={tasksEnabled ? showAllTasks : null}

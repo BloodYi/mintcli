@@ -48,7 +48,7 @@ export function ScheduleMessagePopover({ disabled, onSchedule }: ScheduleMessage
   // Portalled and anchored like the model and permission menus: the composer
   // sits inside the scrolling transcript's stacking context, so a popover
   // positioned inside it is clipped by the message pane.
-  const { triggerRef, menuRef, anchor, updateAnchor } = useComposerMenuAnchor(isOpen, close);
+  const { triggerRef, menuRef, anchor, updateAnchor } = useComposerMenuAnchor(isOpen, close, 272);
   // Seeded an hour out, because a picker that opens on "now" is never what
   // scheduling means.
   const [customValue, setCustomValue] = useState(() => toLocalInputValue(new Date(Date.now() + 3_600_000)));
@@ -100,7 +100,7 @@ export function ScheduleMessagePopover({ disabled, onSchedule }: ScheduleMessage
           ))}
 
           <ComposerMenuSeparator />
-          <div className="px-2.5 pb-1.5">
+          <div className="min-w-0 px-2.5 pb-1.5">
             <label className="block text-[11px] font-medium text-muted-foreground" htmlFor="schedule-at">
               {t('schedule.customLabel')}
             </label>
@@ -109,7 +109,7 @@ export function ScheduleMessagePopover({ disabled, onSchedule }: ScheduleMessage
               type="datetime-local"
               value={customValue}
               onChange={(event) => setCustomValue(event.target.value)}
-              className="mt-1 w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs text-foreground"
+              className="mt-1 box-border block w-full min-w-0 max-w-full rounded-md border border-border/60 bg-background px-2 py-1.5 text-xs text-foreground"
             />
             <button
               type="button"

@@ -298,6 +298,13 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
         if (href?.startsWith('/downloads/')) {
           return <a href={href} download className="text-blue-600 hover:underline dark:text-blue-400">{linkChildren}</a>;
         }
+        if (href?.startsWith('/api/download?')) {
+          const rawPath = new URL(href, 'http://localhost').searchParams.get('path')?.trim();
+          if (rawPath) {
+            const targetPath = rawPath.startsWith('file://') ? rawPath.replace(/^file:\/\/+/, '/') : rawPath;
+            return <MarkdownDownload path={targetPath}>{linkChildren}</MarkdownDownload>;
+          }
+        }
         if (href && !isExternalHref(href) && (href.startsWith('/mnt/data/') || href.includes('/.cloudcli/assets/') ||
           /\.(?:zip|gz|7z|pdf|docx?|xlsx?|pptx?|csv|png|jpe?g|gif|webp|svg|mp[34]|wav|webm)$/i.test(href))) {
           let path = href;

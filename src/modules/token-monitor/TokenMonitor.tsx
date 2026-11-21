@@ -29,11 +29,60 @@ function TokenCounts({ tokens, native = false }: { tokens: MonitorTokens; native
 }
 
 /** Used by chat, account quotas and plugin tabs to open the same session inspector. */
-export function MonitorButton({ model = false }: { model?: boolean }) {
+export function MonitorButton({
+  model = false,
+  variant = 'compact',
+  onBeforeOpen,
+}: {
+  model?: boolean;
+  variant?: 'compact' | 'card';
+  onBeforeOpen?: () => void;
+}) {
   const monitor = useContext(MonitorContext);
   if (!monitor) return null;
+  const handleClick = () => {
+    onBeforeOpen?.();
+    monitor.toggle();
+  };
+  if (variant === 'card') {
+    const subtitle = monitor.snapshot?.returnedModel
+      ? monitor.snapshot.returnedModel
+      : '用量与真实返回';
+    return (
+      <button
+        type="button"
+        aria-label="开关监控窗口"
+        aria-haspopup="dialog"
+        aria-expanded={monitor.open}
+        onClick={handleClick}
+        title="Token Monitor"
+        className="flex min-w-0 items-center gap-2.5 rounded-2xl border border-border/55 bg-card/85 px-3 py-2.5 text-left transition-all active:scale-[0.98] hover:bg-muted/50"
+      >
+        <span
+          className={
+            monitor.warning
+              ? 'relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400'
+              : 'relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500/12 text-emerald-600 dark:text-emerald-400'
+          }
+        >
+          <Activity className="h-4 w-4" />
+          {monitor.warning && (
+            <span
+              role="status"
+              aria-label="监控有提醒"
+              className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-amber-500 ring-2 ring-background"
+            />
+          )}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13px] font-semibold leading-tight text-foreground">监控窗口</span>
+          <span className="mt-0.5 block truncate text-[11px] leading-tight text-muted-foreground">{subtitle}</span>
+        </span>
+      </button>
+    );
+  }
   return <button type="button" aria-label={model ? '查看真实返回模型与 token' : '开关监控窗口'} aria-haspopup="dialog" aria-expanded={monitor.open}
-    onClick={monitor.toggle} title={model ? '查看接口报告的模型、回复与用量' : 'Token Monitor'}
+    onClick={handleClick} title={model ? '查看接口报告的模型、回复与用量' : 'Token Monitor'}
     className="flex h-8 min-w-0 items-center gap-1 rounded-lg border border-border px-2 text-xs hover:bg-muted">
     <Activity className="h-3.5 w-3.5 shrink-0" />
     <span className={model ? 'hidden max-w-32 truncate sm:inline' : ''}>{model ? (monitor.snapshot?.returnedModel ? '返回：' + monitor.snapshot.returnedModel : '真实返回') : '监控窗口'}</span>
