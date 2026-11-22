@@ -389,6 +389,41 @@ export const sessionsDb = {
   },
 
   /**
+   * Rewinds a session to a prefix of its normalized history by superseding the
+   * current provider transcript and storing the surviving prefix as a handoff
+   * (or clearing the handoff when nothing precedes the recalled turn).
+   */
+  rewindSessionWithHandoff(
+    sessionId: string,
+    messages: NormalizedMessage[],
+    promptPrefix: string,
+  ): void {
+    const db = getConnection();
+    db.transaction(() => {
+      const previous = sessionsDb.getSessionById(sessionId);
+      if (!previous) throw new Error('Session no longer exists');
+      if (previous.provider_session_id) {
+        sessionsDb.markProviderSessionSuperseded({
+          providerSessionId: previous.provider_session_id,
+          provider: previous.provider,
+          sessionId,
+          jsonlPath: previous.jsonl_path,
+        });
+      }
+      if (messages.length > 0) {
+        db.prepare(`INSERT INTO session_handoffs (session_id, messages_json, prompt_prefix) VALUES (?, ?, ?)
+          ON CONFLICT(session_id) DO UPDATE SET messages_json = excluded.messages_json, prompt_prefix = excluded.prompt_prefix`)
+          .run(sessionId, JSON.stringify(messages), promptPrefix);
+      } else {
+        db.prepare('DELETE FROM session_handoffs WHERE session_id = ?').run(sessionId);
+      }
+      db.prepare(`UPDATE sessions SET provider_session_id = NULL, jsonl_path = NULL,
+        updated_at = CURRENT_TIMESTAMP WHERE session_id = ?`)
+        .run(sessionId);
+    })();
+  },
+
+  /**
    * Records that a session has left a provider session behind for good.
    *
    * The transcript stays on disk, which is deliberate — the abandoned attempt

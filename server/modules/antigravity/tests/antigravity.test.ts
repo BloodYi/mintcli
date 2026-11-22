@@ -45,6 +45,21 @@ test('forwards message recall to the authenticated native conversation endpoint'
   assert.deepEqual(await (await bridge.request('POST', target, { message_id: 'latest' })).json(), { status: 'recalled' });
 });
 
+test('allows authenticated ACP info probes with optional refresh query', async () => {
+  const seen: string[] = [];
+  const bridge = createAntigravityBridge({ credentialsFile: '/not-present', fetch: async (url) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname === '/api/login') {
+      return new Response('{}', { headers: { 'set-cookie': 'agy_session=fixture' } });
+    }
+    seen.push(parsed.pathname + parsed.search);
+    return Response.json({ ok: true, acp: { available: true, protocolVersion: 1, serverVersion: '1.5.14' } });
+  } });
+  const body = await (await bridge.request('GET', '/api/acp-info?refresh=1')).json() as { ok: boolean };
+  assert.equal(body.ok, true);
+  assert.deepEqual(seen, ['/api/acp-info?refresh=1']);
+});
+
 test('account switch must name a stored account, and an expired backend session is retried only after reauthentication', async () => {
   let logins = 0;
   let expire = true;

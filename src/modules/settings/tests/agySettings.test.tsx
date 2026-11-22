@@ -21,23 +21,23 @@ const renderSettings = () => render(<AgentsSettingsTab
   codexPermissionMode="default" onCodexPermissionModeChange={vi.fn()} projects={[]}
 />);
 
-it('agy appears alongside all CLI providers and uses its native connection status with a CLI version row', async () => {
+it('Antigravity appears alongside all CLI providers and uses its native connection status with a CLI version row', async () => {
   renderSettings();
-  for (const name of ['Claude', 'Cursor', 'Codex', 'OpenCode', 'agy']) expect(screen.getByRole('button', { name })).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'agy' }));
-  expect(screen.getByRole('button', { name: 'agy' }).getAttribute('aria-pressed')).toBe('true');
+  for (const name of ['Claude', 'Cursor', 'Codex', 'OpenCode', 'Antigravity']) expect(screen.getByRole('button', { name })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Antigravity' }));
+  expect(screen.getByRole('button', { name: 'Antigravity' }).getAttribute('aria-pressed')).toBe('true');
   expect(screen.getByText('已连接 · agy@example.test')).toBeTruthy();
-  expect(screen.getByText(/在上方“管理账号”中添加、登录和切换 agy 账号/)).toBeTruthy();
+  expect(screen.getByText(/在上方“管理账号”中添加、登录和切换 Antigravity 账号/)).toBeTruthy();
   expect(screen.getByTestId('provider-cli-version')).toBeTruthy();
   expect(api.providers.cliStatus).toHaveBeenCalledWith('antigravity', false);
   expect(screen.getAllByRole('tab')).toHaveLength(1);
 });
 
-it('switching from a CLI settings editor to agy never mounts unsupported native editors', async () => {
+it('switching from a CLI settings editor to Antigravity never mounts unsupported native editors', async () => {
   renderSettings();
   fireEvent.click(screen.getByRole('tab', { name: /MCP/ }));
   expect(screen.getByText('CLI MCP editor')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'agy' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Antigravity' }));
   await waitFor(() => expect(screen.getByText('统一账号管理')).toBeTruthy());
   expect(screen.queryByText('CLI MCP editor')).toBeNull();
   expect(views.mcp.mock.calls.some(([props]) => props.selectedProvider === 'antigravity')).toBe(false);

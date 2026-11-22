@@ -1,8 +1,10 @@
 import spawn from 'cross-spawn';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 import { antigravityBridge } from '@/modules/antigravity/index.js';
+import { egressEnvironment, egressFetch } from '@/modules/egress/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import { resolveBundledClaudeExecutablePath, resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
@@ -134,6 +136,7 @@ type UpdaterRun = {
 type RunUpdaterOptions = {
   timeoutMs: number;
   killGraceMs: number;
+  env: Record<string, string>;
 };
 
 type ProviderCliServiceDependencies = {
@@ -141,6 +144,8 @@ type ProviderCliServiceDependencies = {
   /** Providers with a chat run, background work or a busy Claude CLI session right now. */
   listBusyProviders(): Promise<LLMProvider[]>;
   fetch: typeof fetch;
+  /** Resolves the environment passed to CLI updaters so they follow the provider's egress configuration. */
+  resolveUpdaterEnv(provider: LLMProvider): Record<string, string>;
   platformMode: boolean;
   /** Enable isolated installations; native updater behavior remains available for unmanaged hosts. */
   managedUpdates: boolean;
@@ -150,6 +155,39 @@ type ProviderCliServiceDependencies = {
   updateKillGraceMs: number;
   probeAntigravityAcp(refresh: boolean): Promise<ProviderAcpStatus | null>;
 };
+
+const directReleaseAgent = new Agent();
+
+async function fetchPublicReleaseMetadata(
+  provider: LLMProvider,
+  url: string,
+  timeoutMs: number,
+  customFetch?: typeof fetch,
+): Promise<Response> {
+  const headers = { accept: 'application/json' };
+  if (customFetch) {
+    return customFetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
+  }
+  const providerFetch = egressFetch(provider);
+  try {
+    const response = await providerFetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
+    if (response.ok) return response;
+    throw new Error(`Release lookup returned HTTP ${response.status}`);
+  } catch (error) {
+    const env = egressEnvironment(provider, process.env);
+    const usedProxy = env.MINTCLI_SELECTED_EGRESS_PORT !== '0'
+      && Boolean(env.MINTCLI_SELECTED_EGRESS_PORT || process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy);
+    if (!usedProxy) {
+      throw error;
+    }
+    // Only public release metadata uses this direct fallback when a configured proxy is unavailable.
+    return undiciFetch(url, {
+      dispatcher: directReleaseAgent,
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    }) as unknown as Promise<Response>;
+  }
+}
 
 async function defaultProbeAntigravityAcp(refresh: boolean): Promise<ProviderAcpStatus | null> {
   try {
@@ -174,6 +212,7 @@ const defaultDependencies: ProviderCliServiceDependencies = {
   resolveProvider: (provider) => providerRegistry.resolveProvider(provider),
   listBusyProviders: async () => (await sessionsService.listRunningSessions()).map((session) => session.provider),
   fetch: (input, init) => fetch(input, init),
+  resolveUpdaterEnv: (provider) => ({ ...egressEnvironment(provider, process.env), NO_COLOR: '1' }),
   platformMode: IS_PLATFORM,
   managedUpdates: process.env.MINTCLI_MANAGED_CLIS === '1' && ['linux', 'darwin'].includes(process.platform),
   now: () => Date.now(),
@@ -266,7 +305,7 @@ function runUpdater(command: string, args: string[], options: RunUpdaterOptions)
     };
 
     const child = spawn(command, args, {
-      env: { ...process.env, NO_COLOR: '1' },
+      env: options.env,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
       windowsHide: true,
@@ -360,14 +399,16 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
   const updatesInProgress = new Map<LLMProvider, UpdateInProgress>();
   const lastUpdateResults = new Map<LLMProvider, ProviderCliUpdateResult>();
 
-  const fetchLatestVersion = async (npmPackage: string): Promise<string | null> => {
+  const fetchLatestVersion = async (provider: LLMProvider, npmPackage: string): Promise<string | null> => {
     const source = npmPackage === 'cursor' ? 'https://cursor.com/install'
       : npmPackage === 'antigravity' ? `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/${process.platform === 'darwin' ? 'darwin' : 'linux'}_${process.arch === 'x64' ? 'amd64' : process.arch}.json`
       : `${NPM_REGISTRY_URL}/${npmPackage.replace('/', '%2F')}/latest`;
-    const response = await dependencies.fetch(source, {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(dependencies.latestVersionTimeoutMs),
-    });
+    const response = await fetchPublicReleaseMetadata(
+      provider,
+      source,
+      dependencies.latestVersionTimeoutMs,
+      dependencyOverrides.fetch,
+    );
     if (!response.ok) {
       return null;
     }
@@ -380,7 +421,7 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
   };
 
   /** Never throws: an unreachable registry only means no "update available" hint. */
-  const getLatestVersion = (npmPackage: string, refresh = false): Promise<string | null> => {
+  const getLatestVersion = (provider: LLMProvider, npmPackage: string, refresh = false): Promise<string | null> => {
     if (refresh) latestVersionCache.delete(npmPackage);
     const cached = latestVersionCache.get(npmPackage);
     if (cached && cached.expiresAt > dependencies.now()) {
@@ -390,7 +431,7 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
     // Concurrent page loads share one request instead of each asking the registry.
     let lookup = latestVersionLookups.get(npmPackage);
     if (!lookup) {
-      lookup = fetchLatestVersion(npmPackage)
+      lookup = fetchLatestVersion(provider, npmPackage)
         .catch(() => null)
         .then((version) => {
           const ttl = version ? LATEST_VERSION_TTL_MS : LATEST_VERSION_FAILURE_TTL_MS;
@@ -430,6 +471,7 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
     const run = await runUpdater(update.command, update.args, {
       timeoutMs: dependencies.updateTimeoutMs,
       killGraceMs: dependencies.updateKillGraceMs,
+      env: dependencies.resolveUpdaterEnv(provider.id),
     });
     let installedVersion = provider.auth.checkInstalled().version;
     if (provider.id === 'antigravity') {
@@ -474,7 +516,7 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
         : dependencies.managedUpdates && ['cursor', 'antigravity'].includes(provider.id) ? provider.id : CLI_UPDATERS[provider.id]?.npmPackage;
       const [latestVersion, acp] = await Promise.all([
         installed && !dependencies.platformMode && npmPackage
-          ? getLatestVersion(npmPackage, refresh)
+          ? getLatestVersion(provider.id, npmPackage, refresh)
           : Promise.resolve(null),
         provider.id === 'antigravity' && installed && !running
           ? dependencies.probeAntigravityAcp(refresh).catch(() => null)

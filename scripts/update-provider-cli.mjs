@@ -7,15 +7,29 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 const PACKAGES = { codex: '@openai/codex', claude: '@anthropic-ai/claude-code', opencode: 'opencode-ai' };
 const BINARIES = { codex: 'codex', claude: 'claude', opencode: 'opencode', cursor: 'cursor-agent', antigravity: 'agy' };
 const AGY_RELEASE = 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/';
+const directAgent = new Agent();
+
+async function fetchWithDirectFallback(url, init) {
+  try {
+    const response = await fetch(url, init);
+    if (response.ok) return response;
+    throw new Error(`HTTP ${response.status}`);
+  } catch (error) {
+    const hasProxy = Boolean(process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy);
+    if (!hasProxy) throw error;
+    return undiciFetch(url, { ...init, dispatcher: directAgent });
+  }
+}
 
 async function download(url, file, expectedHash) {
   const parsed = new URL(url);
   if (parsed.protocol !== 'https:' || !['downloads.cursor.com', 'storage.googleapis.com'].includes(parsed.hostname)) throw new Error('Unexpected CLI download origin');
-  const response = await fetch(url, { signal: AbortSignal.timeout(300_000), redirect: 'error' });
+  const response = await fetchWithDirectFallback(url, { signal: AbortSignal.timeout(300_000), redirect: 'error' });
   if (!response.ok || !response.body) throw new Error(`Download returned HTTP ${response.status}`);
   const hash = createHash('sha512');
   const stream = Readable.fromWeb(response.body);
@@ -72,7 +86,7 @@ async function latestRelease(provider) {
     const musl = process.platform === 'linux' && !process.report.getReport().header.glibcVersionRuntime;
     source = AGY_RELEASE + `${process.platform}_${process.arch === 'x64' ? 'amd64' : process.arch}${musl ? '_musl' : ''}.json`;
   }
-  const response = await fetch(source, { signal: AbortSignal.timeout(20_000) });
+  const response = await fetchWithDirectFallback(source, { signal: AbortSignal.timeout(20_000) });
   if (!response.ok) throw new Error(`Release check returned HTTP ${response.status}`);
   if (provider === 'cursor') {
     const version = (await response.text()).match(/downloads\.cursor\.com\/lab\/([\w.-]+)\//)?.[1];
