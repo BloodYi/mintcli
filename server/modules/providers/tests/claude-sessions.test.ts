@@ -669,6 +669,43 @@ test('a live SDK tool result caps the strings inside its structured output', () 
   assert.match(forwarded?.originalFile ?? '', /… 10000 more characters$/);
 });
 
+test('queued_command attachment rows normalize as user messages for string and block prompts', () => {
+  const provider = new ClaudeSessionsProvider();
+
+  const [fromString] = provider.normalizeMessage({
+    type: 'attachment',
+    uuid: 'queued-string-1',
+    timestamp: '2026-08-21T10:02:00.000Z',
+    attachment: {
+      type: 'queued_command',
+      prompt: 'also inspect tests',
+    },
+  }, SESSION_ID);
+
+  assert.equal(fromString?.kind, 'text');
+  assert.equal(fromString?.role, 'user');
+  assert.equal(fromString?.content, 'also inspect tests');
+
+  const [fromBlocks] = provider.normalizeMessage({
+    type: 'attachment',
+    uuid: 'queued-blocks-1',
+    timestamp: '2026-08-21T10:02:05.000Z',
+    attachment: {
+      type: 'queued_command',
+      prompt: [
+        { type: 'text', text: 'check screenshot' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'QUJD' } },
+      ],
+    },
+  }, SESSION_ID);
+
+  assert.equal(fromBlocks?.kind, 'text');
+  assert.equal(fromBlocks?.role, 'user');
+  assert.equal(fromBlocks?.content, 'check screenshot');
+  assert.ok(Array.isArray(fromBlocks?.images));
+  assert.equal(fromBlocks.images.length, 1);
+});
+
 const WORKFLOW_SESSION_ID = 'claude-workflow-session';
 const WORKFLOW_TOOL_USE_ID = 'toolu_workflow_1';
 const WORKFLOW_RUN_ID = 'wf_16fbf852-274';

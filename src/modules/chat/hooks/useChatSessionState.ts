@@ -1001,6 +1001,11 @@ export function useChatSessionState({
     scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
   });
 
+  const lastChatMessage = chatMessages[chatMessages.length - 1];
+  const streamingTailLength = lastChatMessage?.isStreaming
+    ? String(lastChatMessage.content || '').length
+    : 0;
+
   useEffect(() => {
     if (!isActive) return;
     if (!scrollContainerRef.current || chatMessages.length === 0) return;
@@ -1008,13 +1013,14 @@ export function useChatSessionState({
     if (searchScrollActiveRef.current) return;
 
     if (!isUserScrolledUp) {
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (!isUserScrolledUpRef.current) {
           scrollToBottom();
         }
       }, 50);
+      return () => clearTimeout(timer);
     }
-  }, [chatMessages.length, isActive, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
+  }, [chatMessages.length, streamingTailLength, isActive, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;

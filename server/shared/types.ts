@@ -347,6 +347,8 @@ export type NormalizedMessage = {
   seq?: number;
   role?: 'user' | 'assistant';
   content?: string;
+  /** True while this row is actively receiving streamed tokens/chunks. */
+  isStreaming?: boolean;
   /**
    * The model that produced this assistant message, as the provider reported
    * it on the transcript row (today: Claude's `message.model`, e.g.

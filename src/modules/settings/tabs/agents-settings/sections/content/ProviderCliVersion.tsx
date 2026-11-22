@@ -141,6 +141,22 @@ export default function ProviderCliVersion({ agent, installedVersion, textClass,
               <span className="text-muted-foreground">{detail}</span>
             ) : null}
           </div>
+          {status?.acp && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground" data-testid="provider-cli-acp">
+              {status.acp.available ? (
+                <>
+                  {status.acp.serverVersion && (
+                    <span>{t('agents.cli.acpVersion', { version: status.acp.serverVersion })}</span>
+                  )}
+                  {status.acp.protocolVersion !== null && (
+                    <span>{t('agents.cli.acpProtocol', { protocol: status.acp.protocolVersion })}</span>
+                  )}
+                </>
+              ) : (
+                <span>{t('agents.cli.acpUnavailable')}</span>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button type="button" size="sm" variant="outline" onClick={() => void checkForUpdates()} disabled={checking || updating}>

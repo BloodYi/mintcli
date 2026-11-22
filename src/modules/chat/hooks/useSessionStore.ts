@@ -813,15 +813,15 @@ export function useSessionStore() {
   const updateStreaming = useCallback((sessionId: string, accumulatedText: string, msgProvider: LLMProvider) => {
     const slot = getSlot(sessionId);
     const streamId = `__streaming_${sessionId}`;
+    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     const msg: NormalizedMessage = {
       id: streamId,
       sessionId,
-      timestamp: new Date().toISOString(),
+      timestamp: idx >= 0 ? slot.realtimeMessages[idx].timestamp : new Date().toISOString(),
       provider: msgProvider,
       kind: 'stream_delta',
       content: accumulatedText,
     };
-    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     if (idx >= 0) {
       slot.realtimeMessages = [...slot.realtimeMessages];
       slot.realtimeMessages[idx] = msg;
@@ -869,8 +869,54 @@ export function useSessionStore() {
     return storeRef.current.get(sessionId);
   }, []);
 
+  const resetAndFetchFromServer = useCallback(async (
+    sessionId: string,
+    opts: {
+      limit?: number | null;
+      offset?: number;
+      canRequest?: CanRequestHistory;
+    } = {},
+  ) => {
+    const slot = getSlot(sessionId);
+    slot.status = 'loading';
+    notify(sessionId);
+
+    return enqueueHistoryMutation(slot, async () => {
+      const { canRequest = () => true, ...requestOptions } = opts;
+      if (!canRequest()) {
+        slot.status = 'idle';
+        notify(sessionId);
+        return null;
+      }
+
+      try {
+        const data = await requestSessionHistoryPage(sessionId, requestOptions);
+        slot.serverMessages = data.messages;
+        slot.realtimeMessages = EMPTY;
+        slot.total = data.total;
+        slot.hasMore = data.hasMore;
+        slot.offset = (requestOptions.offset ?? 0) + data.messages.length;
+        slot.fetchedAt = Date.now();
+        slot.status = 'idle';
+        recomputeMergedIfNeeded(slot);
+        if (data.tokenUsage !== undefined) {
+          slot.tokenUsage = data.tokenUsage;
+        }
+
+        notify(sessionId);
+        return slot;
+      } catch (error) {
+        console.error(`[SessionStore] reset fetch failed for ${sessionId}:`, error);
+        slot.status = 'error';
+        notify(sessionId);
+        return slot;
+      }
+    });
+  }, [getSlot, notify]);
+
   return useMemo(() => ({
     fetchFromServer,
+    resetAndFetchFromServer,
     fetchMore,
     appendRealtime,
     truncateAt,
@@ -882,7 +928,7 @@ export function useSessionStore() {
     getMessages,
     getSessionSlot,
   }), [
-    fetchFromServer, fetchMore, appendRealtime, truncateAt, refreshLatestFromServer,
+    fetchFromServer, resetAndFetchFromServer, fetchMore, appendRealtime, truncateAt, refreshLatestFromServer,
     setActiveSession, isStale, updateStreaming, finalizeStreaming,
     getMessages, getSessionSlot,
   ]);

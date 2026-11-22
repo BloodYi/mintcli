@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 
 import type { WebSocket } from 'ws';
 
@@ -74,6 +73,17 @@ export type ProviderRuntimeGateway = {
     writer: ProviderRuntimeWriter,
   ): Promise<unknown>;
   abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
+  /**
+   * Injects a follow-up user message into an actively running provider turn
+   * without interrupting or aborting it. Optional for test doubles and
+   * turn-based providers that have no live stdin channel.
+   */
+  injectMessage?(
+    provider: LLMProvider,
+    sessionId: string,
+    command: string,
+    options: AnyRecord,
+  ): Promise<boolean>;
   stopBackgroundTask(provider: LLMProvider, sessionId: string, taskId: string): Promise<boolean>;
   /** Whether a provider runtime still holds background work for the session after its turn ended. */
   hasBackgroundWork(sessionId: string): boolean;
@@ -86,106 +96,132 @@ type ChatWebSocketDependencies = {
   runtime: ProviderRuntimeGateway;
 };
 
-// Keep cleanup separate from the registry's terminal event: a provider can
-// announce completion before its process and transcript have finished closing.
+type QueuedFollowUp = {
+  ws: WebSocket;
+  userId: string | number | null;
+  data: AnyRecord;
+  dependencies: ChatWebSocketDependencies;
+};
+
+// Keep cleanup and non-interrupting follow-ups scoped to each run instance:
+// a provider can announce completion before its process and transcript have
+// finished closing, and tying follow-ups to the run lifecycle guarantees an
+// abort or registry reset can never leave orphaned queues behind.
 const runLifecycles = new WeakMap<NonNullable<ReturnType<typeof chatRunRegistry.getRun>>, {
   settled: Promise<void>;
   data: AnyRecord;
+  followUps: QueuedFollowUp[];
+  aborted: boolean;
 }>();
-// Serialize only admission, never the model turn, so consecutive follow-ups
-// can interrupt in order without two runtimes writing the same transcript.
-const immediateAdmissions = new Map<string, Promise<void>>();
 
-async function handleChatSendNow(
-  ws: WebSocket,
-  userId: string | number | null,
-  data: AnyRecord,
-  dependencies: ChatWebSocketDependencies,
-): Promise<void> {
-  const resolved = resolveSendTarget(ws, data, dependencies, 'chat.send-now');
-  if (!resolved) return;
-  const { sessionId } = resolved;
-  const options = (data.options ?? {}) as AnyRecord;
-  const hasAttachments = [options.images, options.files, options.attachments]
-    .some((value) => filterAttachmentsToUploadStore(value).length > 0);
-  if (!(typeof data.content === 'string' && data.content.trim()) && !hasAttachments) {
-    sendProtocolError(ws, 'CONTENT_REQUIRED', 'chat.send-now requires content or attachments.', sessionId);
-    return;
+// Serialize admission (never the model turn) so consecutive messages arrive
+// in order without racing live injection against run startup/settlement.
+const sendAdmissions = new Map<string, Promise<void>>();
+
+function enqueueSessionAdmission(sessionId: string, task: () => Promise<void>): Promise<void> {
+  const previous = sendAdmissions.get(sessionId) ?? Promise.resolve();
+  const admission = previous.catch(() => undefined).then(task);
+  sendAdmissions.set(sessionId, admission);
+  return admission.finally(() => {
+    if (sendAdmissions.get(sessionId) === admission) {
+      sendAdmissions.delete(sessionId);
+    }
+  });
+}
+
+function collectVerifiedAttachments(options: AnyRecord): ChatAttachmentDescriptor[] {
+  const attachmentCandidates = [
+    ...normalizeAttachmentDescriptors(options.images),
+    ...normalizeAttachmentDescriptors(options.files),
+    ...normalizeAttachmentDescriptors(options.attachments),
+  ];
+  const verifiedAttachments = filterAttachmentsToUploadStore(attachmentCandidates);
+  return verifiedAttachments.filter(
+    (descriptor, index, all) => all.findIndex((candidate) => candidate.path === descriptor.path) === index,
+  );
+}
+
+async function waitForLifecycleSettlement(
+  lifecycle: { settled: Promise<void> } | undefined,
+): Promise<boolean> {
+  if (!lifecycle) {
+    return true;
   }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = await Promise.race([
+    lifecycle.settled.then(() => true),
+    new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), 10000); }),
+  ]);
+  clearTimeout(timer);
+  return settled;
+}
 
-  const previous = immediateAdmissions.get(sessionId) ?? Promise.resolve();
-  const admission = previous.catch(() => undefined).then(async () => {
-    const activeRun = chatRunRegistry.getRun(sessionId);
-    const lifecycle = activeRun && runLifecycles.get(activeRun);
-    if (activeRun?.status === 'running') {
-      // A fresh runtime may still be authenticating and not yet be abortable.
-      // Retry briefly instead of starting a second process alongside it.
-      const deadline = Date.now() + 5000;
-      let aborted = false;
-      while (chatRunRegistry.isProcessing(sessionId) && !aborted && Date.now() < deadline) {
-        aborted = await dependencies.runtime.abort(activeRun.provider, sessionId);
-        if (!aborted) await delay(25);
-      }
-      if (!aborted && chatRunRegistry.isProcessing(sessionId)) {
-        sendProtocolError(ws, 'INTERRUPT_FAILED', 'The active run could not be interrupted. Please retry.', sessionId);
-        return;
-      }
-      if (aborted) chatRunRegistry.completeRunIfCurrent(activeRun, { exitCode: 0, aborted: true });
-    }
-
-    if (lifecycle) {
-      // Abort signals are asynchronous. Wait for cleanup, not the old answer,
-      // before resuming its history. Never overlap transcript writers.
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const settled = await Promise.race([
-        lifecycle.settled.then(() => true),
-        new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), 10000); }),
-      ]);
-      clearTimeout(timer);
-      if (!settled) {
-        sendProtocolError(ws, 'INTERRUPT_FAILED', 'The interrupted run is still closing. Please retry.', sessionId);
-        return;
-      }
-    }
-
-    // Re-read after cleanup: the first run can discover its native id while
-    // stopping. If it never created history, carry its original request forward.
-    const session = sessionsDb.getSessionById(sessionId);
-    if (!session) {
-      sendProtocolError(ws, 'SESSION_NOT_FOUND', 'The session no longer exists.', sessionId);
+function drainRunFollowUps(
+  sessionId: string,
+  completedRun: NonNullable<ReturnType<typeof chatRunRegistry.getRun>>,
+): Promise<void> {
+  return enqueueSessionAdmission(sessionId, async () => {
+    const lifecycle = runLifecycles.get(completedRun);
+    if (
+      !lifecycle
+      || lifecycle.aborted
+      || lifecycle.followUps.length === 0
+      || chatRunRegistry.isProcessing(sessionId)
+      || chatRunRegistry.getRun(sessionId) !== completedRun
+    ) {
       return;
     }
-    let nextData = data;
-    if (lifecycle && !session.provider_session_id) {
-      const earlierOptions = (lifecycle.data.options ?? {}) as AnyRecord;
-      nextData = {
-        ...data,
-        content: [lifecycle.data.content, data.content].filter(Boolean).join('\n\n'),
-        options: {
-          ...options,
-          attachments: [
-            ...normalizeAttachmentDescriptors(earlierOptions.images),
-            ...normalizeAttachmentDescriptors(earlierOptions.files),
-            ...normalizeAttachmentDescriptors(earlierOptions.attachments),
-            ...normalizeAttachmentDescriptors(options.images),
-            ...normalizeAttachmentDescriptors(options.files),
-            ...normalizeAttachmentDescriptors(options.attachments),
-          ],
-        },
-      };
+
+    const settled = await waitForLifecycleSettlement(lifecycle);
+    if (
+      !settled
+      || lifecycle.aborted
+      || lifecycle.followUps.length === 0
+      || chatRunRegistry.isProcessing(sessionId)
+      || chatRunRegistry.getRun(sessionId) !== completedRun
+    ) {
+      return;
     }
-    // dispatchRun reserves the session synchronously, before its first await.
-    // Release admission now so the next follow-up can interrupt this new turn.
-    void dispatchRun(ws, userId, sessionId, session, nextData, dependencies).catch((error) => {
-      sendProtocolError(ws, 'INTERNAL_ERROR', String(error), sessionId);
+
+    const next = lifecycle.followUps.shift();
+    const remaining = lifecycle.followUps.splice(0);
+    if (!next) {
+      return;
+    }
+
+    let session: ReturnType<typeof sessionsDb.getSessionById>;
+    try {
+      session = sessionsDb.getSessionById(sessionId);
+    } catch {
+      return;
+    }
+    if (!session) {
+      sendProtocolError(next.ws, 'SESSION_NOT_FOUND', 'The session no longer exists.', sessionId);
+      return;
+    }
+
+    const provider = session.provider as LLMProvider;
+    void dispatchRun(
+      next.ws,
+      next.userId,
+      sessionId,
+      session,
+      next.data,
+      next.dependencies,
+      {},
+      (nextRun) => {
+        nextRun.writer.send({
+          kind: 'status',
+          provider,
+          sessionId,
+          canInterrupt: true,
+        });
+      },
+      remaining,
+    ).catch((error) => {
+      sendProtocolError(next.ws, 'INTERNAL_ERROR', String(error), sessionId);
     });
   });
-  immediateAdmissions.set(sessionId, admission);
-  try {
-    await admission;
-  } finally {
-    if (immediateAdmissions.get(sessionId) === admission) immediateAdmissions.delete(sessionId);
-  }
 }
 
 /**
@@ -247,22 +283,104 @@ function readRequiredSessionId(data: AnyRecord): string | null {
 }
 
 /**
- * Handles `chat.send`: resolves the session row (provider, project path, and
- * provider-native id all come from the database — never from the client),
- * registers the run, and dispatches to the provider runtime.
+ * Handles `chat.send` (and legacy `chat.send-now`): resolves the session row
+ * from the database and delivers the message without interrupting an active
+ * run — injecting live into runtimes that support stdin injection (Claude) or
+ * queuing behind the active turn for turn-based providers.
  */
 async function handleChatSend(
   ws: WebSocket,
   userId: string | number | null,
   data: AnyRecord,
-  dependencies: ChatWebSocketDependencies
+  dependencies: ChatWebSocketDependencies,
+  frameName: 'chat.send' | 'chat.send-now' = 'chat.send',
 ): Promise<void> {
-  const resolved = resolveSendTarget(ws, data, dependencies, 'chat.send');
+  const resolved = resolveSendTarget(ws, data, dependencies, frameName);
   if (!resolved) {
     return;
   }
 
-  await dispatchRun(ws, userId, resolved.sessionId, resolved.session, data, dependencies);
+  const { sessionId } = resolved;
+  const clientOptions = (data.options ?? {}) as AnyRecord;
+  const command = typeof data.content === 'string' ? data.content : '';
+  const verifiedAttachments = collectVerifiedAttachments(clientOptions);
+  const hasContent = command.trim().length > 0 || verifiedAttachments.length > 0;
+
+  await enqueueSessionAdmission(sessionId, async () => {
+    const activeRun = chatRunRegistry.getRun(sessionId);
+    const isRunning = activeRun?.status === 'running';
+
+    if ((isRunning || frameName === 'chat.send-now') && !hasContent) {
+      sendProtocolError(ws, 'CONTENT_REQUIRED', `${frameName} requires content or attachments.`, sessionId);
+      return;
+    }
+
+    if (isRunning && activeRun) {
+      const lifecycle = runLifecycles.get(activeRun);
+      const hasQueued = (lifecycle?.followUps.length ?? 0) > 0;
+      const latestSession = sessionsDb.getSessionById(sessionId);
+      if (!latestSession) {
+        sendProtocolError(ws, 'SESSION_NOT_FOUND', 'The session no longer exists.', sessionId);
+        return;
+      }
+
+      if (!hasQueued && dependencies.runtime.injectMessage) {
+        const injectOptions: AnyRecord = {
+          ...clientOptions,
+          attachments: verifiedAttachments,
+          images: verifiedAttachments.filter(isImageAttachmentDescriptor),
+          files: verifiedAttachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
+          sessionId,
+          cwd: clientOptions.cwd ?? latestSession.project_path ?? undefined,
+          projectPath: latestSession.project_path ?? clientOptions.projectPath,
+        };
+        const injected = await dependencies.runtime.injectMessage(
+          activeRun.provider,
+          sessionId,
+          command,
+          injectOptions,
+        );
+        if (injected) {
+          return;
+        }
+      }
+
+      // If the active run is still running after declining live injection,
+      // queue this follow-up without interrupting or aborting the current turn.
+      if (lifecycle && !lifecycle.aborted && chatRunRegistry.getRun(sessionId) === activeRun && activeRun.status === 'running') {
+        lifecycle.followUps.push({ ws, userId, data, dependencies });
+        return;
+      }
+    }
+
+    const previousRun = chatRunRegistry.getRun(sessionId);
+    const lifecycle = previousRun ? runLifecycles.get(previousRun) : undefined;
+    if (previousRun && lifecycle && !lifecycle.aborted && lifecycle.followUps.length > 0) {
+      lifecycle.followUps.push({ ws, userId, data, dependencies });
+      void drainRunFollowUps(sessionId, previousRun);
+      return;
+    }
+
+    if (lifecycle) {
+      const settled = await waitForLifecycleSettlement(lifecycle);
+      if (!settled) {
+        sendProtocolError(ws, 'RUN_IN_PROGRESS', 'The previous run is still closing. Please retry.', sessionId);
+        return;
+      }
+    }
+
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      sendProtocolError(ws, 'SESSION_NOT_FOUND', 'The session no longer exists.', sessionId);
+      return;
+    }
+
+    // dispatchRun reserves the session synchronously before its first await,
+    // so admission can release immediately while the model turn runs.
+    void dispatchRun(ws, userId, sessionId, session, data, dependencies).catch((error) => {
+      sendProtocolError(ws, 'INTERNAL_ERROR', String(error), sessionId);
+    });
+  });
 }
 
 type ResolvedSendTarget = {
@@ -322,6 +440,7 @@ async function dispatchRun(
   dependencies: ChatWebSocketDependencies,
   extraRuntimeOptions: AnyRecord = {},
   beforeRun?: (run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>) => void | Promise<void>,
+  initialFollowUps: QueuedFollowUp[] = [],
 ): Promise<{ started: boolean; error: string | null }> {
   const provider = session.provider as LLMProvider;
 
@@ -364,15 +483,7 @@ async function dispatchRun(
     providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
   }
 
-  const attachmentCandidates = [
-    ...normalizeAttachmentDescriptors(clientOptions.images),
-    ...normalizeAttachmentDescriptors(clientOptions.files),
-    ...normalizeAttachmentDescriptors(clientOptions.attachments),
-  ];
-  const verifiedAttachments = filterAttachmentsToUploadStore(attachmentCandidates);
-  const uniqueAttachments = verifiedAttachments.filter(
-    (descriptor, index, all) => all.findIndex((candidate) => candidate.path === descriptor.path) === index,
-  );
+  const uniqueAttachments = collectVerifiedAttachments(clientOptions);
 
   // The provider runtimes receive the stable app session id. When their
   // CLI/SDK needs the provider-native id for resume, they resolve it from the
@@ -396,7 +507,8 @@ async function dispatchRun(
 
   let markSettled!: () => void;
   const settled = new Promise<void>((resolve) => { markSettled = resolve; });
-  runLifecycles.set(run, { settled, data });
+  const lifecycle = { settled, data, followUps: [...initialFollowUps], aborted: false };
+  runLifecycles.set(run, lifecycle);
 
   let failure: string | null = null;
   try {
@@ -432,6 +544,9 @@ async function dispatchRun(
     // settles, and the session-keyed completeRun would kill that new run.
     chatRunRegistry.completeRunIfCurrent(run, { exitCode: 1 });
     markSettled();
+    if (!lifecycle.aborted && lifecycle.followUps.length > 0) {
+      void drainRunFollowUps(sessionId, run);
+    }
   }
 
   return { started: true, error: failure };
@@ -559,6 +674,11 @@ async function handleChatAbort(
   }
 
   const run = chatRunRegistry.getRun(sessionId);
+  const lifecycle = run ? runLifecycles.get(run) : undefined;
+  if (lifecycle) {
+    lifecycle.aborted = true;
+    lifecycle.followUps.length = 0;
+  }
   if (!run || run.status !== 'running') {
     sendProtocolError(ws, 'NO_ACTIVE_RUN', `Session "${sessionId}" has no active run.`, sessionId);
     return;
@@ -772,6 +892,11 @@ export async function runDetachedChatTurn(
     // interrupted run end before this turn's stream begins. The interrupted
     // run's own dispatch settles later through completeRunIfCurrent, which is
     // scoped to that run and cannot touch the one started here.
+    const activeLifecycle = runLifecycles.get(activeRun);
+    if (activeLifecycle) {
+      activeLifecycle.aborted = true;
+      activeLifecycle.followUps.length = 0;
+    }
     const aborted = await dependencies.runtime.abort(activeRun.provider, input.sessionId);
     chatRunRegistry.completeRun(input.sessionId, {
       exitCode: aborted ? 0 : 1,
@@ -814,10 +939,10 @@ export function handleChatConnection(
           await handleChatEditSend(ws, userId, data, dependencies);
           return;
         case 'chat.send-now':
-          await handleChatSendNow(ws, userId, data, dependencies);
+          await handleChatSend(ws, userId, data, dependencies, 'chat.send-now');
           return;
         case 'chat.send':
-          await handleChatSend(ws, userId, data, dependencies);
+          await handleChatSend(ws, userId, data, dependencies, 'chat.send');
           return;
         case 'chat.abort':
           await handleChatAbort(ws, data, dependencies);

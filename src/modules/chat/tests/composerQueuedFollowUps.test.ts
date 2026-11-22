@@ -26,6 +26,10 @@ type StoredDraft = { text: string; queuedMessage: StoredQueued | null };
 const PROJECT: Project = { projectId: 'project-1', displayName: 'Project One', fullPath: '/tmp/project-one' };
 const SESSION_1: ProjectSession = { id: 'session-1' };
 const SESSION_2: ProjectSession = { id: 'session-2' };
+const BACKGROUND_SESSIONS: SessionActivityMap = new Map([
+  ['session-1', { statusText: null, canInterrupt: false, startedAt: 1, background: true, tasks: [] }],
+  ['session-2', { statusText: null, canInterrupt: false, startedAt: 1, background: true, tasks: [] }],
+]);
 
 let server: Map<string, StoredDraft>;
 let refuseQueueing = false;
@@ -148,7 +152,9 @@ type Props = {
 
 const render = (initialProps: Partial<Props> = {}) => {
   const errors: ChatMessage[] = [];
+  const addedMessages: ChatMessage[] = [];
   const sent: Array<Record<string, unknown>> = [];
+  const processingCalls: Array<{ sessionId: string | null | undefined; activity: unknown }> = [];
   const view = renderHook(
     ({ session, isLoading, model, processingSessions }: Props) => useChatComposerState({
       selectedProject: PROJECT,
@@ -165,16 +171,26 @@ const render = (initialProps: Partial<Props> = {}) => {
       canAbortSession: false,
       tokenBudget: null,
       sendMessage: (message) => { sent.push(message as Record<string, unknown>); },
+      onSessionProcessing: (sessionId, activity) => { processingCalls.push({ sessionId, activity }); },
       scrollToBottom: () => undefined,
       addMessage: (message) => {
+        addedMessages.push(message);
         if (message.type === 'error') errors.push(message);
       },
       setIsUserScrolledUp: () => undefined,
       setPendingPermissionRequests: () => undefined,
     }),
-    { initialProps: { session: SESSION_1, isLoading: true, model: 'model-1', ...initialProps } },
+    {
+      initialProps: {
+        session: SESSION_1,
+        isLoading: false,
+        model: 'model-1',
+        processingSessions: BACKGROUND_SESSIONS,
+        ...initialProps,
+      },
+    },
   );
-  return { view, errors, sent };
+  return { view, errors, addedMessages, sent, processingCalls };
 };
 
 type View = ReturnType<typeof render>['view'];
@@ -184,8 +200,14 @@ const submit = async (view: View, text: string, files: File[] = []) => {
     view.result.current.setInput(text);
     view.result.current.setAttachedFiles(files);
   });
+  let pending!: Promise<void>;
+  act(() => {
+    pending = view.result.current.handleSubmit({ preventDefault: () => undefined } as never);
+  });
+  await waitFor(() => assert.notEqual(view.result.current.backgroundSendPrompt, null));
   await act(async () => {
-    await view.result.current.handleSubmit({ preventDefault: () => undefined } as never);
+    view.result.current.resolveBackgroundSendPrompt('queue' as BackgroundSendChoice);
+    await pending;
   });
 };
 
@@ -197,13 +219,42 @@ const hold = () => {
   return { gate, release };
 };
 
-// Presses Enter without waiting for the submit to finish.
-const startSubmit = (view: View) => {
+// Presses Enter without waiting for upload/queue settlement.
+const startRawSubmit = (view: View) => {
   let pending!: Promise<void>;
   act(() => {
     pending = view.result.current.handleSubmit({ preventDefault: () => undefined } as never);
   });
   return pending;
+};
+
+// Presses Enter and selects 'queue' once the background-work prompt appears
+// (or returns immediately if the submit settled without prompting), without
+// waiting for the server append request to settle.
+const startSubmit = async (view: View): Promise<{ pending: Promise<void> }> => {
+  let settled = false;
+  const pending = startRawSubmit(view);
+  void pending.finally(() => { settled = true; });
+  await waitFor(() => {
+    assert.ok(settled || view.result.current.backgroundSendPrompt !== null);
+  });
+  if (!settled && view.result.current.backgroundSendPrompt) {
+    act(() => {
+      view.result.current.resolveBackgroundSendPrompt('queue' as BackgroundSendChoice);
+    });
+  }
+  return { pending };
+};
+
+// Releases a gated upload, chooses 'queue' once the background-work prompt opens,
+// and waits for the submission to finish.
+const finishQueuedUpload = async (view: View, releaseUpload: () => void, pending: Promise<void>) => {
+  await act(async () => { releaseUpload(); });
+  await waitFor(() => assert.notEqual(view.result.current.backgroundSendPrompt, null));
+  await act(async () => {
+    view.result.current.resolveBackgroundSendPrompt('queue' as BackgroundSendChoice);
+    await pending;
+  });
 };
 
 beforeEach(() => {
@@ -230,7 +281,7 @@ test('follow-ups A, B and C queued during one turn are all kept, in order, and t
 
   await submit(view, 'follow-up A');
   await submit(view, 'follow-up B', [new File(['b'], 'b.txt', { type: 'text/plain' })]);
-  view.rerender({ session: SESSION_1, isLoading: true, model: 'model-2' });
+  view.rerender({ session: SESSION_1, isLoading: false, model: 'model-2', processingSessions: BACKGROUND_SESSIONS });
   await submit(view, 'follow-up C');
 
   assert.equal(queuedOnServer()?.content, 'follow-up A\n\nfollow-up B\n\nfollow-up C', 'all three will be sent, in order');
@@ -394,15 +445,9 @@ test('switching sessions during the upload still queues the follow-up behind the
     view.result.current.setInput('follow-up B');
     view.result.current.setAttachedFiles([new File(['b'], 'b.txt', { type: 'text/plain' })]);
   });
-  let pending!: Promise<void>;
-  act(() => {
-    pending = view.result.current.handleSubmit({ preventDefault: () => undefined } as never);
-  });
-  view.rerender({ session: SESSION_2, isLoading: true, model: 'model-1' });
-  await act(async () => {
-    releaseUpload();
-    await pending;
-  });
+  const pending = startRawSubmit(view);
+  view.rerender({ session: SESSION_2, isLoading: false, model: 'model-1', processingSessions: BACKGROUND_SESSIONS });
+  await finishQueuedUpload(view, releaseUpload, pending);
 
   assert.equal(queuedOnServer('session-1')?.content, 'follow-up A\n\nfollow-up B');
   assert.equal(view.result.current.queuedDraft, null, 'the session now open has no card of its own');
@@ -415,7 +460,7 @@ test('what the user types while a follow-up is being queued stays in the compose
   appendGate = response.gate;
 
   await act(async () => { view.result.current.setInput('follow-up A'); });
-  const pending = startSubmit(view);
+  const { pending } = await startSubmit(view);
   await waitFor(() => assert.equal(appendRequestCount, 1));
   assert.equal(view.result.current.input, '', 'the composer empties when the message is taken');
 
@@ -444,7 +489,7 @@ test('a follow-up the server refuses goes back in front of what was typed meanwh
     view.result.current.setInput('follow-up A');
     view.result.current.setAttachedFiles([fileA]);
   });
-  const pending = startSubmit(view);
+  const { pending } = await startSubmit(view);
   await waitFor(() => assert.equal(appendRequestCount, 1));
   await act(async () => {
     view.result.current.setInput('more');
@@ -467,11 +512,11 @@ test('Enter pressed again while a follow-up is being queued neither sends it twi
   appendGate = response.gate;
 
   await act(async () => { view.result.current.setInput('follow-up A'); });
-  const first = startSubmit(view);
+  const { pending: first } = await startSubmit(view);
   await waitFor(() => assert.equal(appendRequestCount, 1));
-  const again = startSubmit(view);
+  const { pending: again } = await startSubmit(view);
   await act(async () => { view.result.current.setInput('follow-up B'); });
-  const next = startSubmit(view);
+  const { pending: next } = await startSubmit(view);
   await act(async () => {
     response.release();
     await Promise.all([first, again, next]);
@@ -493,10 +538,10 @@ test('Enter pressed while a refused follow-up is still being answered keeps both
   appendGate = response.gate;
 
   await act(async () => { view.result.current.setInput('follow-up A'); });
-  const first = startSubmit(view);
+  const { pending: first } = await startSubmit(view);
   await waitFor(() => assert.equal(appendRequestCount, 1));
   await act(async () => { view.result.current.setInput('follow-up B'); });
-  const next = startSubmit(view);
+  const { pending: next } = await startSubmit(view);
   await act(async () => {
     response.release();
     await Promise.all([first, next]);
@@ -517,7 +562,7 @@ test('Edit then Enter re-queues the merged message even when the clear reaches t
   clearGate = clear.gate;
   await act(async () => { view.result.current.editQueuedDraft(); });
   assert.equal(view.result.current.input, 'follow-up A\n\nfollow-up B');
-  const pending = startSubmit(view);
+  const { pending } = await startSubmit(view);
   // Give the re-queue every chance to overtake the clear.
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
   await act(async () => {
@@ -536,7 +581,7 @@ test('Edit used while a follow-up is being queued takes back only the message it
   const response = hold();
   appendGate = response.gate;
   await act(async () => { view.result.current.setInput('follow-up B'); });
-  const pending = startSubmit(view);
+  const { pending } = await startSubmit(view);
   // The server has appended B, but this page has not heard back yet.
   await waitFor(() => assert.equal(queuedOnServer()?.content, 'follow-up A\n\nfollow-up B'));
   await act(async () => { view.result.current.editQueuedDraft(); });
@@ -627,12 +672,9 @@ test('a refused follow-up goes back to the session it was typed in, after a swit
     view.result.current.setInput('follow-up B');
     view.result.current.setAttachedFiles([new File(['b'], 'b.txt', { type: 'text/plain' })]);
   });
-  const pending = startSubmit(view);
-  view.rerender({ session: SESSION_2, isLoading: true, model: 'model-1' });
-  await act(async () => {
-    upload.release();
-    await pending;
-  });
+  const pending = startRawSubmit(view);
+  view.rerender({ session: SESSION_2, isLoading: false, model: 'model-1', processingSessions: BACKGROUND_SESSIONS });
+  await finishQueuedUpload(view, upload.release, pending);
 
   assert.equal(errors.length, 1);
   assert.equal(readDraftText('session-1'), 'follow-up B', 'it is waiting there to be sent again');
@@ -645,9 +687,9 @@ test('a follow-up refused after a switch made while it was being queued goes bac
   const response = hold();
   appendGate = response.gate;
   await act(async () => { view.result.current.setInput('follow-up A'); });
-  const pending = startSubmit(view);
+  const { pending } = await startSubmit(view);
   await waitFor(() => assert.equal(appendRequestCount, 1));
-  view.rerender({ session: SESSION_2, isLoading: true, model: 'model-1' });
+  view.rerender({ session: SESSION_2, isLoading: false, model: 'model-1', processingSessions: BACKGROUND_SESSIONS });
   await act(async () => { view.result.current.setInput('typed in session 2'); });
   await act(async () => {
     response.release();
@@ -666,9 +708,9 @@ test('a follow-up refused after a switch keeps the draft written meanwhile in th
   const response = hold();
   appendGate = response.gate;
   await act(async () => { view.result.current.setInput('follow-up A'); });
-  const pending = startSubmit(view);
+  const { pending } = await startSubmit(view);
   await waitFor(() => assert.equal(appendRequestCount, 1));
-  view.rerender({ session: SESSION_2, isLoading: true, model: 'model-1' });
+  view.rerender({ session: SESSION_2, isLoading: false, model: 'model-1', processingSessions: BACKGROUND_SESSIONS });
   // Another device changed that session's draft meanwhile.
   writeDraftText('session-1', 'written on the laptop');
   await act(async () => {
@@ -688,34 +730,53 @@ test('a session switch during the upload keeps a draft that changed in the sessi
     view.result.current.setInput('follow-up B');
     view.result.current.setAttachedFiles([new File(['b'], 'b.txt', { type: 'text/plain' })]);
   });
-  const pending = startSubmit(view);
-  view.rerender({ session: SESSION_2, isLoading: true, model: 'model-1' });
+  const pending = startRawSubmit(view);
+  view.rerender({ session: SESSION_2, isLoading: false, model: 'model-1', processingSessions: BACKGROUND_SESSIONS });
   // Another device changed that session's draft meanwhile.
   writeDraftText('session-1', 'written on the laptop');
-  await act(async () => {
-    upload.release();
-    await pending;
-  });
+  await finishQueuedUpload(view, upload.release, pending);
 
   assert.equal(queuedOnServer('session-1')?.content, 'follow-up B');
   assert.equal(readDraftText('session-1'), 'written on the laptop');
 });
 
 
-test('send now bypasses the busy queue and uploads the follow-up attachments once', async () => {
-  const { view, sent } = render();
+test('submitting while a turn is running sends chat.send directly without queueing and uploads attachments once', async () => {
+  const { view, sent, addedMessages, processingCalls } = render({ isLoading: true, processingSessions: new Map() });
   await act(async () => {
     view.result.current.setInput('new constraint');
     view.result.current.setAttachedFiles([new File(['notes'], 'b.txt', { type: 'text/plain' })]);
   });
   await act(async () => {
-    await view.result.current.handleSendNow({ preventDefault: () => undefined } as never);
+    await view.result.current.handleSubmit({ preventDefault: () => undefined } as never);
   });
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].type, 'chat.send-now');
+  assert.equal(sent[0].type, 'chat.send');
   assert.equal(sent[0].sessionId, 'session-1');
   assert.equal(sent[0].content, 'new constraint');
   assert.deepEqual((sent[0].options as Record<string, unknown>).attachments, [{ name: 'b.txt', path: '/uploads/b.txt' }]);
   assert.equal(queuedOnServer(), null);
+  assert.equal(view.result.current.queuedDraft, null);
   assert.equal(view.result.current.input, '');
+  assert.equal(addedMessages.filter((message) => message.type === 'user').length, 1);
+  assert.deepEqual(processingCalls, [{ sessionId: 'session-1', activity: undefined }]);
+});
+
+test('consecutive follow-ups submitted while a turn is running are sent directly in order via chat.send', async () => {
+  const { view, sent } = render({ isLoading: true, processingSessions: new Map() });
+
+  await act(async () => { view.result.current.setInput('follow-up 1'); });
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault: () => undefined } as never); });
+
+  await act(async () => { view.result.current.setInput('follow-up 2'); });
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault: () => undefined } as never); });
+
+  assert.deepEqual(
+    sent.map((frame) => ({ type: frame.type, content: frame.content })),
+    [
+      { type: 'chat.send', content: 'follow-up 1' },
+      { type: 'chat.send', content: 'follow-up 2' },
+    ],
+  );
+  assert.equal(queuedOnServer(), null);
 });

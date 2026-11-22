@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -18,6 +19,44 @@ from process_lifecycle import reap_cli_process
 
 logger = logging.getLogger("antigravity-chat.acp")
 ACP_SETUP_TIMEOUT_SECONDS = 30.0
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
+_ACP_SESSION_RE = re.compile(
+    r"(?:Created conversation|Starting conversation update stream for|Sending user message to conversation)\s+"
+    r"([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\b"
+)
+_ACP_HTTP_RE = re.compile(
+    r"URL:\s+(https?://\S+)\s+Trace:\s+([A-Za-z0-9._:-]{1,200})\s+ResponseID:\s+([A-Za-z0-9._:-]{1,200})"
+)
+_ACP_RESPONSE_ID_RE = re.compile(r"\[streamGenerateContent\] ResponseID:\s+([A-Za-z0-9._:-]{1,200})")
+
+
+def _append_unique(target: list[str], value: str) -> None:
+    if value and value not in target:
+        target.append(value)
+
+
+def _collect_acp_log_trace(log_path: Path, session_id: str | None = None) -> dict[str, list[str]]:
+    trace: dict[str, list[str]] = {
+        "session_ids": [],
+        "response_ids": [],
+        "trace_ids": [],
+        "upstream_urls": [],
+    }
+    if session_id and _UUID_RE.fullmatch(session_id):
+        _append_unique(trace["session_ids"], session_id)
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return trace
+    for match in _ACP_SESSION_RE.finditer(text):
+        _append_unique(trace["session_ids"], match.group(1))
+    for match in _ACP_HTTP_RE.finditer(text):
+        _append_unique(trace["upstream_urls"], match.group(1))
+        _append_unique(trace["trace_ids"], match.group(2))
+        _append_unique(trace["response_ids"], match.group(3))
+    for match in _ACP_RESPONSE_ID_RE.finditer(text):
+        _append_unique(trace["response_ids"], match.group(1))
+    return trace
 
 
 def _extract_content_text(content: Any) -> str:
@@ -102,6 +141,9 @@ async def stream_agy_acp(
     persist_conversation: bool = True,
     save_conversation_cb: Callable[[str, str], Awaitable[Any]] | None = None,
     route_info_factory: Callable[[str | None, str | None], dict] | None = None,
+    route_enricher: Callable[[dict[str, Any], dict[str, list[str]]], None] | None = None,
+    system_append: str | None = None,
+    fallback_prompt: str | None = None,
     update_lease: Any = None,
     timeout: int = 0,
 ):
@@ -113,6 +155,8 @@ async def stream_agy_acp(
         "transport": "acp",
     }
     route_info["transport"] = "acp"
+    if model and model != "default":
+        route_info["cli_config_model"] = model
 
     log_dir = tempfile.TemporaryDirectory(prefix="agy-acp-", dir=str(scratch_dir))
     log_path = Path(log_dir.name) / "acp.log"
@@ -231,23 +275,37 @@ async def stream_agy_acp(
             yield {"event": "error", "error": f"agy acp initialize failed: {msg}"}
             return
 
+        init_result = init_res.get("result") if isinstance(init_res.get("result"), dict) else {}
+        agent_caps = init_result.get("agentCapabilities") if isinstance(init_result.get("agentCapabilities"), dict) else {}
+        meta_caps = agent_caps.get("_meta") if isinstance(agent_caps.get("_meta"), dict) else {}
+        agy_caps = meta_caps.get("antigravity") if isinstance(meta_caps.get("antigravity"), dict) else {}
+        sys_caps = agy_caps.get("systemPrompt") if isinstance(agy_caps.get("systemPrompt"), dict) else {}
+        supports_system_append = sys_caps.get("append") is True
+
+        clean_system_append = (system_append or "").strip()
+        session_meta: dict[str, Any] = {}
+        if clean_system_append and supports_system_append:
+            session_meta = {"_meta": {"antigravity": {"systemPrompt": {"append": clean_system_append}}}}
+
         # 2. Resume existing session or create a new one
         session_res: dict[str, Any] | None = None
+        resumed_existing = False
         if conversation_id:
             resumed = await _call(
                 "session/resume",
-                {"sessionId": conversation_id, "cwd": target_cwd, "mcpServers": []},
+                {"sessionId": conversation_id, "cwd": target_cwd, "mcpServers": [], **session_meta},
                 setup_deadline,
             )
             if "error" not in resumed and isinstance(resumed.get("result"), dict):
                 session_res = resumed
+                resumed_existing = True
             else:
                 logger.info("agy acp session/resume fell back to session/new for %s", conversation_id)
 
         if session_res is None:
             session_res = await _call(
                 "session/new",
-                {"cwd": target_cwd, "mcpServers": []},
+                {"cwd": target_cwd, "mcpServers": [], **session_meta},
                 setup_deadline,
             )
         if "error" in session_res:
@@ -285,6 +343,9 @@ async def stream_agy_acp(
         phase = "session/prompt"
         prompt_req_id = next_id
         next_id += 1
+        effective_prompt = fallback_prompt if (not resumed_existing and fallback_prompt) else prompt
+        if clean_system_append and not supports_system_append and not resumed_existing:
+            effective_prompt = f"{clean_system_append}\n\n{effective_prompt}" if effective_prompt else clean_system_append
         await _send(
             {
                 "jsonrpc": "2.0",
@@ -292,7 +353,7 @@ async def stream_agy_acp(
                 "method": "session/prompt",
                 "params": {
                     "sessionId": session_id,
-                    "prompt": [{"type": "text", "text": prompt}],
+                    "prompt": [{"type": "text", "text": effective_prompt}],
                 },
             }
         )
@@ -333,11 +394,39 @@ async def stream_agy_acp(
                         or "tool"
                     )
                     status = str(update.get("status") or "running")
-                    yield {"event": "tool", "tool": tool_name, "status": status}
+                    tool_event: dict[str, Any] = {
+                        "event": "tool",
+                        "tool": tool_name,
+                        "tool_name": str(update.get("name") or update.get("kind") or tool_name),
+                        "status": status,
+                    }
+                    tool_id = update.get("toolCallId") or update.get("id")
+                    if tool_id:
+                        tool_event["tool_id"] = str(tool_id)
+                    raw_input = update.get("rawInput")
+                    if raw_input is None:
+                        raw_input = update.get("input") if update.get("input") is not None else update.get("arguments")
+                    if raw_input is not None:
+                        tool_event["tool_input"] = raw_input
+                    raw_output = update.get("rawOutput")
+                    if raw_output is None:
+                        raw_output = update.get("output") if update.get("output") is not None else update.get("result")
+                    if raw_output is None and update.get("content") is not None:
+                        extracted = _extract_content_text(update.get("content"))
+                        if extracted:
+                            raw_output = extracted
+                    if raw_output is not None:
+                        tool_event["tool_output"] = (
+                            raw_output if isinstance(raw_output, str) else json.dumps(raw_output, ensure_ascii=False)
+                        )
+                    yield tool_event
                 continue
 
             # Handle final response for session/prompt
             if msg.get("id") == prompt_req_id:
+                if route_enricher:
+                    trace = await asyncio.to_thread(_collect_acp_log_trace, log_path, session_id)
+                    await asyncio.to_thread(route_enricher, route_info, trace)
                 if "error" in msg:
                     err = msg["error"]
                     err_msg = err.get("message") if isinstance(err, dict) else str(err)
@@ -387,3 +476,116 @@ async def stream_agy_acp(
         if update_lease:
             update_lease.close()
         log_dir.cleanup()
+
+
+async def probe_agy_acp_info(
+    agy_bin: str,
+    *,
+    run_env: dict[str, str] | None = None,
+    cwd: str | None = None,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    """Probe the first-party `agy acp` server via JSON-RPC `initialize`."""
+    proc: asyncio.subprocess.Process | None = None
+    stderr_tail = bytearray()
+    stderr_task: asyncio.Task | None = None
+
+    def _unavailable(error: str) -> dict[str, Any]:
+        return {
+            "available": False,
+            "protocolVersion": None,
+            "serverName": None,
+            "serverVersion": None,
+            "supportsSystemPromptAppend": False,
+            "error": error,
+        }
+
+    try:
+        acp_env = dict(run_env) if run_env is not None else dict(os.environ)
+        acp_env.pop("AGY_UPSTREAM_PROFILE", None)
+        proc = await asyncio.create_subprocess_exec(
+            agy_bin,
+            "acp",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=acp_env,
+            start_new_session=os.name == "posix",
+            limit=1024 * 1024,
+        )
+
+        async def _drain_stderr() -> None:
+            assert proc is not None and proc.stderr is not None
+            while True:
+                chunk = await proc.stderr.read(4096)
+                if not chunk:
+                    return
+                stderr_tail.extend(chunk)
+                del stderr_tail[:-2000]
+
+        stderr_task = asyncio.create_task(_drain_stderr())
+        deadline = asyncio.get_running_loop().time() + max(timeout, 1.0)
+
+        assert proc.stdin is not None and proc.stdout is not None
+        req = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientCapabilities": {},
+                "clientInfo": {"name": "mintcli-bridge", "version": "1.0.0"},
+            },
+        }
+        proc.stdin.write((json.dumps(req, ensure_ascii=False) + "\n").encode("utf-8"))
+        await asyncio.wait_for(proc.stdin.drain(), timeout=max(deadline - asyncio.get_running_loop().time(), 0.1))
+
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return _unavailable(f"agy acp initialize timed out after {timeout:g}s")
+            raw_line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+            if not raw_line:
+                err_txt = stderr_tail.decode("utf-8", errors="replace").strip()
+                return _unavailable(err_txt or "agy acp closed stdout during initialize")
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(msg, dict) or msg.get("id") != 1:
+                continue
+            if "error" in msg:
+                err = msg["error"]
+                err_msg = err.get("message") if isinstance(err, dict) else str(err)
+                return _unavailable(err_msg or "agy acp initialize error")
+            result = msg.get("result") if isinstance(msg.get("result"), dict) else {}
+            agent_info = result.get("agentInfo") if isinstance(result.get("agentInfo"), dict) else {}
+            agent_caps = result.get("agentCapabilities") if isinstance(result.get("agentCapabilities"), dict) else {}
+            meta_caps = agent_caps.get("_meta") if isinstance(agent_caps.get("_meta"), dict) else {}
+            agy_caps = meta_caps.get("antigravity") if isinstance(meta_caps.get("antigravity"), dict) else {}
+            sys_caps = agy_caps.get("systemPrompt") if isinstance(agy_caps.get("systemPrompt"), dict) else {}
+            protocol_version = result.get("protocolVersion")
+            return {
+                "available": True,
+                "protocolVersion": protocol_version if isinstance(protocol_version, int) and not isinstance(protocol_version, bool) else None,
+                "serverName": str(agent_info.get("name")) if agent_info.get("name") else None,
+                "serverVersion": str(agent_info.get("version")) if agent_info.get("version") else None,
+                "supportsSystemPromptAppend": sys_caps.get("append") is True,
+            }
+    except asyncio.TimeoutError:
+        return _unavailable(f"agy acp initialize timed out after {timeout:g}s")
+    except Exception as exc:
+        return _unavailable(str(exc))
+    finally:
+        if stderr_task is not None:
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        await reap_cli_process(proc)
+

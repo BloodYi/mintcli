@@ -91,8 +91,6 @@ type CommandExecutionResult = {
 
 
 type SubmitOptions = {
-  /** Interrupt the active turn and resume with this follow-up immediately. */
-  sendNow?: boolean;
   /**
    * Send the text as a chat message even when it starts with "/" (or is
    * "help"). Set only for the re-submit of a custom command's expanded body:
@@ -890,44 +888,6 @@ export function useChatComposerState({
         return;
       }
 
-      // A turn is already in flight: stash this message instead of sending it.
-      // Upload attached files now so the queued record contains durable image
-      // descriptors that can be sent even if another session is open later.
-      if (isLoading && !submitOptions?.sendNow) {
-        // A run can restart in the tiny gap between scheduling and flushing a
-        // queued submission. Put the same durable draft back without uploading
-        // its files again.
-        if (queuedSubmission) {
-          queuedDraftSessionRef.current = sessionKey;
-          setQueuedDraft(queuedSubmission);
-          return;
-        }
-
-        const queuedOptions = buildSendOptions(currentInput);
-        const queuedSessionKey = sessionKey;
-        let uploadedAttachments: unknown[] = [];
-        try {
-          uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          console.error('Queued file upload failed:', error);
-          addMessage({
-            type: 'error',
-            content: `Failed to upload files: ${message}`,
-            timestamp: new Date(),
-          });
-          return;
-        }
-
-        await queueMessage({
-          content: currentInput,
-          attachments: currentAttachments,
-          uploadedAttachments,
-          options: queuedOptions,
-        }, queuedSessionKey);
-        return;
-      }
-
       // Intercept slash commands only when "/" is the first input character.
       // Also accept exact "help" as a convenience alias for users who expect CLI-style help.
       const commandInput = currentInput.trimEnd();
@@ -1085,12 +1045,12 @@ export function useChatComposerState({
 
       addMessage(userMessage);
       // Mark this request as processing in the per-session activity map (the
-      // single source of truth the indicator derives from). The id is always
-      // concrete at this point — no pending placeholder exists anymore.
-      onSessionProcessing?.(targetSessionId, {
-        statusText: null,
-        canInterrupt: true,
-      });
+      // single source of truth the indicator derives from). When a turn is
+      // already in flight, keep its live status text intact while continuing.
+      onSessionProcessing?.(
+        targetSessionId,
+        isLoading ? undefined : { statusText: null, canInterrupt: true },
+      );
 
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
@@ -1102,7 +1062,7 @@ export function useChatComposerState({
         // Replacing an already-sent message is its own frame: it changes the
         // shape of the conversation, so it gets validated separately and can
         // report why it was refused.
-        type: editingAnchorId ? 'chat.edit-send' : submitOptions?.sendNow ? 'chat.send-now' : 'chat.send',
+        type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
         sessionId: targetSessionId,
         ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
         content: messageContent,
@@ -1186,12 +1146,6 @@ export function useChatComposerState({
       }
     },
     [submitMessage],
-  );
-
-  const handleSendNow = useCallback(
-    (event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent) =>
-      handleSubmit(event, undefined, { sendNow: true, skipCommandInterception: true }),
-    [handleSubmit],
   );
 
   useEffect(() => {
@@ -1527,12 +1481,30 @@ export function useChatComposerState({
     inputValueRef.current = '';
   }, [setInput]);
 
+  const loadRecalledInput = useCallback((value: string) => {
+    setEditingAnchorId(null);
+    setInput(value);
+    inputValueRef.current = value;
+    // Double rAF ensures focus lands on the composer even after a confirmation
+    // dialog unmounts and runs its focus-restoration effect.
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        const caretPosition = textarea.value.length;
+        textarea.setSelectionRange(caretPosition, caretPosition);
+      });
+    });
+  }, [setInput]);
+
   return {
     input,
     setInput,
     editingAnchorId,
     beginEditMessage,
     cancelEditMessage,
+    loadRecalledInput,
     textareaRef,
     inputHighlightRef,
     isTextareaExpanded,
@@ -1558,7 +1530,6 @@ export function useChatComposerState({
     isDragActive,
     openAttachmentPicker: open,
     handleSubmit,
-    handleSendNow,
     backgroundSendPrompt,
     resolveBackgroundSendPrompt,
     queuedDraft,

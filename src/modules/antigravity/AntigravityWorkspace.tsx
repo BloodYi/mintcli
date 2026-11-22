@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api, readApiJson } from '@/shared/api';
 import type { AntigravityMessage } from '@/shared/types';
 import { useAntigravity } from '@/modules/antigravity/hooks/useAntigravity';
+import { MarkdownImage, MarkdownVideo, isImagePath, isVideoPath } from '@/modules/chat';
 import { QuotaWindow } from '@/shared/ui/QuotaWindow';
 
 const CONTROL = 'min-h-10 rounded-md border border-border bg-background px-3 py-2 text-sm disabled:opacity-50';
@@ -105,11 +106,32 @@ export function AntigravityWorkspace() {
             <p className="mb-2 text-xs font-semibold text-muted-foreground">{message.role === 'user' ? '你' : 'Antigravity'}</p>
             {message.thinking && <details className="mb-3 text-sm text-muted-foreground"><summary className="cursor-pointer">查看 agy 返回的思考</summary><div className="mt-2 whitespace-pre-wrap break-words">{message.thinking}</div></details>}
             <div className="prose prose-sm max-w-none break-words dark:prose-invert prose-pre:overflow-x-auto">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                a: ({ href, children }) => href?.startsWith('/api/download?')
-                  ? <button type="button" className="break-all text-primary underline" onClick={() => void download(new URL(href, window.location.origin).searchParams.get('path') || '', 'agy-file')}>{children}</button>
-                  : <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
-              }}>{message.content || (message.status === 'streaming' ? '正在等待 agy 回复…' : '')}</ReactMarkdown>
+              <ReactMarkdown
+                urlTransform={url => (url.startsWith('file://') ? url.replace(/^file:\/\/+/, '/') : defaultUrlTransform(url))}
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  img: MarkdownImage,
+                  p: ({ children }) => <div className="mb-2 last:mb-0">{children}</div>,
+                  a: ({ href, children }) => {
+                    if (href?.startsWith('/api/download?')) {
+                      const targetPath = new URL(href, window.location.origin).searchParams.get('path') || '';
+                      const btn = (
+                        <button type="button" className="break-all text-primary underline" onClick={() => void download(targetPath, 'agy-file')}>
+                          {children}
+                        </button>
+                      );
+                      if (isImagePath(targetPath)) {
+                        return <span className="my-1 block"><MarkdownImage src={targetPath} /><span className="inline-block text-xs">{btn}</span></span>;
+                      }
+                      if (isVideoPath(targetPath)) {
+                        return <span className="my-1 block"><MarkdownVideo src={targetPath} /><span className="inline-block text-xs">{btn}</span></span>;
+                      }
+                      return btn;
+                    }
+                    return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
+                  },
+                }}
+              >{message.content || (message.status === 'streaming' ? '正在等待 agy 回复…' : '')}</ReactMarkdown>
             </div>
             {message.attachments?.map(file => <button key={file.path} type="button" className={CONTROL + ' mr-2 mt-2 max-w-full truncate'} onClick={() => void download(file.path, file.filename)}>📎 {file.filename}</button>)}
             {message.tool && <p className="mt-3 break-words text-xs text-muted-foreground">工具：{message.tool}</p>}

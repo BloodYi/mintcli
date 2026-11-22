@@ -242,7 +242,7 @@ export const api = {
       const body = new FormData(); body.append('file', file);
       return authenticatedFetch('/api/antigravity/upload', { method: 'POST', body });
     },
-    download: (path: string) => get('/api/antigravity/download' + query({ path })),
+    download: (path: string, options: ApiRequestOptions = {}) => get('/api/antigravity/download' + query({ path }), options),
   },
   agentConnections: {
     startOfficialLogin: (provider: 'cursor' | 'opencode' | 'antigravity', name: string) => post('/api/agent-connections/official-logins', { provider, name }),
@@ -363,6 +363,10 @@ export const api = {
   // `upToAnchorId` (all of it when omitted). The source is left untouched.
   forkSession: (sessionId: string, body: { upToAnchorId?: string; title?: string } = {}) =>
     post(`/api/providers/sessions/${encodeURIComponent(sessionId)}/fork`, body),
+  recallSessionMessage: (
+    sessionId: string,
+    body: { messageId?: string; anchorId?: string; userTurnFromEnd?: number; content?: string },
+  ) => post(`/api/providers/sessions/${encodeURIComponent(sessionId)}/recall`, body),
   renameSession: (sessionId: string, summary: string) =>
     put(`/api/providers/sessions/${sessionId}`, { summary }),
   // What one agent of a workflow run did, read from its transcript on demand
@@ -578,7 +582,8 @@ export const api = {
         headers: {}, // Let browser set Content-Type for FormData
         body: formData,
       }),
-    file: (storedName: string) => get(`/api/assets/files/${encodeURIComponent(storedName)}`),
+    file: (storedName: string, options: ApiRequestOptions = {}) =>
+      get(`/api/assets/files/${encodeURIComponent(storedName)}`, options),
     image: (filename: string, options: ApiRequestOptions = {}) =>
       get(`/api/assets/images/${encodeURIComponent(filename)}`, options),
   },

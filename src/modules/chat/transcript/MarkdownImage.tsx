@@ -5,35 +5,18 @@ import { ImageOff } from 'lucide-react';
 import { api } from '@/shared/api';
 import { useMarkdownWorkspaceProjectId } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { ImageLightbox } from '@/modules/chat/transcript/ChatMessageImages';
+import { MarkdownVideo } from '@/modules/chat/transcript/MarkdownVideo';
+import {
+  fetchMediaBlob,
+  isBrowserLoadableMediaSrc,
+  isVideoPath,
+} from '@/modules/chat/transcript/markdownMedia';
 
 type MarkdownImageProps = {
   node?: unknown;
   src?: string;
   alt?: string;
   title?: string;
-};
-
-// Sources the browser can load on its own. Anything else is a workspace file
-// reference and has to go through the authenticated project files route.
-const isBrowserLoadableSrc = (src: string): boolean => src.startsWith('/downloads/') || /^(https?:|data:|blob:)/i.test(src);
-
-// Turn the markdown src into the path the file-tree route expects. Relative
-// paths are resolved against the project root server-side; absolute paths are
-// accepted as long as they stay inside it.
-const toWorkspacePath = (src: string): string => {
-  let workspacePath = src.trim();
-  if (workspacePath.startsWith('file://')) {
-    workspacePath = workspacePath.slice('file://'.length);
-  }
-  if (workspacePath.startsWith('./')) {
-    workspacePath = workspacePath.slice(2);
-  }
-  try {
-    workspacePath = decodeURI(workspacePath);
-  } catch {
-    // Keep the raw value when it is not valid percent-encoding.
-  }
-  return workspacePath;
 };
 
 type LoadedImage = { key: string; url: string | null; failed: boolean };
@@ -44,14 +27,15 @@ type LoadedImage = { key: string; url: string | null; failed: boolean };
  * (a bare <img src> cannot carry the auth header) and exposed as object URLs.
  */
 function useMarkdownImageSrc(src: string, projectId: string | null): { src: string | null; failed: boolean } {
-  const passthrough = isBrowserLoadableSrc(src);
+  const passthrough = isBrowserLoadableMediaSrc(src);
+  const canFetch = Boolean(projectId || api.antigravity?.download || src.includes('/.cloudcli/assets/'));
   // Keyed by what was requested so a src change reads as "loading" until the
   // new fetch settles, without resetting state synchronously in the effect.
   const key = `${projectId ?? ''}:${src}`;
   const [loaded, setLoaded] = useState<LoadedImage | null>(null);
 
   useEffect(() => {
-    if (passthrough || !projectId) {
+    if (passthrough || !canFetch) {
       return;
     }
 
@@ -60,16 +44,12 @@ function useMarkdownImageSrc(src: string, projectId: string | null): { src: stri
 
     const load = async () => {
       try {
-        const path = toWorkspacePath(src);
-        const response = path.includes('/.cloudcli/assets/')
-          ? await api.assets.image(path.split('/').pop()!, { signal: controller.signal })
-          : await api.readFileBlob(projectId, path, { signal: controller.signal });
-        if (!response.ok) {
+        const blob = await fetchMediaBlob(src, projectId, 'image', controller.signal);
+        if (controller.signal.aborted) return;
+        if (!blob) {
           setLoaded({ key, url: null, failed: true });
           return;
         }
-        const blob = await response.blob();
-        if (controller.signal.aborted) return;
         objectUrl = URL.createObjectURL(blob);
         setLoaded({ key, url: objectUrl, failed: false });
       } catch (error) {
@@ -88,42 +68,31 @@ function useMarkdownImageSrc(src: string, projectId: string | null): { src: stri
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [key, passthrough, projectId, src]);
+  }, [canFetch, key, passthrough, projectId, src]);
 
   if (passthrough) {
     return { src, failed: false };
   }
-  if (!projectId) {
+  if (!canFetch) {
     return { src: null, failed: true };
   }
   const current = loaded && loaded.key === key ? loaded : null;
   return { src: current?.url ?? null, failed: current?.failed ?? false };
 }
 
-/**
- * `img` renderer for chat markdown. Shows images the model references by
- * workspace path (screenshots it took, files it generated) inline, with the
- * same click-to-expand lightbox as user attachments. Used by the shared
- * Markdown component overrides.
- */
-export function MarkdownImage({ node: _node, src, alt, title }: MarkdownImageProps) {
+function MarkdownImageInner({ src, alt, title }: { src: string; alt?: string; title?: string }) {
   const { t } = useTranslation();
   const projectId = useMarkdownWorkspaceProjectId();
-  const source = src ?? '';
-  const { src: resolved, failed } = useMarkdownImageSrc(source, projectId);
+  const { src: resolved, failed } = useMarkdownImageSrc(src, projectId);
   const [expanded, setExpanded] = useState(false);
 
-  if (!source) {
-    return null;
-  }
-
-  const label = alt || title || source;
+  const label = alt || title || src;
 
   if (failed) {
     return (
       <span
         className="my-1 inline-flex max-w-full items-center gap-1.5 rounded-md border border-border/60 bg-muted px-2 py-1 text-xs text-muted-foreground"
-        title={source}
+        title={src}
       >
         <ImageOff className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         <span className="truncate">{label}</span>
@@ -154,4 +123,23 @@ export function MarkdownImage({ node: _node, src, alt, title }: MarkdownImagePro
       {expanded && <ImageLightbox src={resolved} alt={label} onClose={() => setExpanded(false)} />}
     </>
   );
+}
+
+/**
+ * `img` renderer for chat markdown. Shows images the model references by
+ * workspace path (screenshots it took, files it generated) inline, with the
+ * same click-to-expand lightbox as user attachments. Video paths embedded via
+ * `![alt](video.mp4)` are delegated to an inline video player.
+ */
+export function MarkdownImage({ node: _node, src, alt, title }: MarkdownImageProps) {
+  const source = src ?? '';
+  if (!source) {
+    return null;
+  }
+
+  if (isVideoPath(source)) {
+    return <MarkdownVideo src={source} alt={alt} title={title} />;
+  }
+
+  return <MarkdownImageInner src={source} alt={alt} title={title} />;
 }

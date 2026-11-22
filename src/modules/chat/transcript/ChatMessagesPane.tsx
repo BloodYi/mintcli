@@ -85,6 +85,8 @@ type ChatMessagesPaneProps = {
   onEditMessage?: (message: ChatMessage) => void;
   /** Branches the conversation into a new session ending at a message. */
   onForkFromMessage?: (message: ChatMessage) => void;
+  /** Recalls a user message (and any subsequent turns) back into the composer. */
+  onRecallMessage?: (message: ChatMessage) => void;
   /** Fetches the whole transcript for an export, which otherwise only sees the loaded page. */
   onLoadFullTranscript?: () => Promise<ChatMessage[]>;
 };
@@ -149,6 +151,7 @@ function ChatMessagesPane({
   createDiff,
   onEditMessage,
   onForkFromMessage,
+  onRecallMessage,
   onLoadFullTranscript,
   onFileOpen,
   onShowSettings,
@@ -386,6 +389,7 @@ function ChatMessagesPane({
                     provider={provider}
                     onEditMessage={onEditMessage}
                     onForkFromMessage={onForkFromMessage}
+                    onRecallMessage={onRecallMessage}
                   />
                 </LazyMessageRow>
               );

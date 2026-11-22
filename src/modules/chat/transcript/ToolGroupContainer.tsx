@@ -6,6 +6,7 @@ import { getToolConfig } from '@/modules/chat/tools';
 import MessageComponent from '@/modules/chat/transcript/MessageComponent';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { DiffStatsBadge } from '@/modules/chat/tools/DiffStatsBadge';
+import { ToolStatusBadge } from '@/modules/chat/tools/ToolStatusBadge';
 import { parseToolPayload, summarizeDiff } from '@/modules/chat/utils/messageTransforms';
 
 type ToolGroupContainerProps = {
@@ -100,6 +101,11 @@ function ToolGroupContainer({
 
   const preview = group.preview;
   const groupDiffStats = useGroupDiffStats(group.toolName, group.messages, createDiff);
+  const hasRunningTool = group.messages.some(
+    (message) =>
+      message.toolStatus === 'in_progress'
+      || (!message.toolResult && message.toolStatus !== 'completed' && message.toolStatus !== 'failed'),
+  );
 
   // Keys only have to be unique among this group's own rows, so repeats of the
   // same key are disambiguated here by occurrence.
@@ -138,7 +144,12 @@ function ToolGroupContainer({
             <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{preview}</span>
           </>
         )}
-        {groupDiffStats && <DiffStatsBadge stats={groupDiffStats} className="ml-auto pl-2" />}
+        {(hasRunningTool || groupDiffStats) && (
+          <span className="ml-auto flex flex-shrink-0 items-center gap-1.5 pl-2">
+            {hasRunningTool && <ToolStatusBadge status="running" />}
+            {groupDiffStats && <DiffStatsBadge stats={groupDiffStats} />}
+          </span>
+        )}
       </button>
 
       {showChildren && (

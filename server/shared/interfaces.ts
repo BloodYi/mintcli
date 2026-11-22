@@ -38,6 +38,16 @@ export interface IProviderRuntime {
     context: ProviderRuntimeContext,
   ): Promise<unknown>;
   abort(sessionId: string): boolean | Promise<boolean>;
+  /**
+   * Injects a follow-up user message into an actively running turn without
+   * interrupting or aborting it. Resolves `true` when accepted by the live
+   * runtime process, or `false` when no injectable active turn exists.
+   */
+  injectMessage?(
+    sessionId: string,
+    command: string,
+    options: AnyRecord,
+  ): boolean | Promise<boolean>;
   permissions?: ProviderRuntimePermissionGateway;
   /**
    * Sessions with background tasks still outstanding, whether or not their
@@ -239,6 +249,17 @@ export interface IProviderSessions {
    * gateway branches on.
    */
   rewindSession?(sessionId: string, keepThroughId: string | null): Promise<void>;
+
+  /**
+   * Immediately truncates a provider-native conversation before the specified
+   * user turn, used by providers that own their own message store and replay
+   * mechanism (such as Antigravity). Returns `false` if the provider cannot
+   * recall the message natively and the caller should fall back.
+   */
+  recallMessage?(
+    sessionId: string,
+    input: { messageId?: string; userTurnFromEnd?: number },
+  ): Promise<boolean>;
 
   /**
    * Reads what one agent of a workflow run did, from the transcript the run

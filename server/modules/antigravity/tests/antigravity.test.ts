@@ -31,6 +31,20 @@ test('native backend login is shared, its cookie never goes in the public respon
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+test('forwards message recall to the authenticated native conversation endpoint', async () => {
+  const target = '/api/conversations/fixture/recall';
+  const bridge = createAntigravityBridge({ credentialsFile: '/not-present', fetch: async (url, init) => {
+    if (new URL(String(url)).pathname === '/api/login') {
+      return new Response('{}', { headers: { 'set-cookie': 'agy_session=fixture' } });
+    }
+    assert.equal(new URL(String(url)).pathname, target);
+    assert.equal(init?.method, 'POST');
+    assert.deepEqual(JSON.parse(String(init?.body)), { message_id: 'latest' });
+    return Response.json({ status: 'recalled' });
+  } });
+  assert.deepEqual(await (await bridge.request('POST', target, { message_id: 'latest' })).json(), { status: 'recalled' });
+});
+
 test('account switch must name a stored account, and an expired backend session is retried only after reauthentication', async () => {
   let logins = 0;
   let expire = true;

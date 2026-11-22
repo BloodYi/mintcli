@@ -111,7 +111,7 @@ test('sandbox output paths are preserved for inline images and local downloads',
   } finally { anchor.mockRestore(); }
 });
 
-test('/api/download?path=... links extract the target file path for MarkdownDownload', async () => {
+test('/api/download?path=... links extract the target file path for MarkdownDownload and inline media preview', async () => {
   readFileBlob.mockResolvedValue({ ok: true, blob: async () => new Blob(['mp4']) });
   const downloads: string[] = [];
   const anchor = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
@@ -121,10 +121,51 @@ test('/api/download?path=... links extract the target file path for MarkdownDown
     const view = renderInProject(
       '[下载视频](/api/download?path=/home/ubuntu/video.mp4) [下载文本](/api/download?path=notes%201.txt)',
     );
+    await waitFor(() => {
+      const video = view.container.querySelector('video');
+      assert.ok(video);
+      assert.equal(video.getAttribute('src'), OBJECT_URL);
+    });
     view.getByRole('button', { name: '下载视频' }).click();
     view.getByRole('button', { name: '下载文本' }).click();
     await waitFor(() => assert.equal(anchor.mock.calls.length, 2));
-    assert.deepEqual(readFileBlob.mock.calls.map(call => call[1]), ['/home/ubuntu/video.mp4', 'notes 1.txt']);
+    assert.ok(readFileBlob.mock.calls.some(call => call[1] === '/home/ubuntu/video.mp4'));
+    assert.ok(readFileBlob.mock.calls.some(call => call[1] === 'notes 1.txt'));
     assert.deepEqual(downloads, ['video.mp4', 'notes 1.txt']);
   } finally { anchor.mockRestore(); }
+});
+
+test('a workspace video embedded with markdown image syntax renders an inline video player', async () => {
+  readFileBlob.mockResolvedValue({ ok: true, blob: async () => new Blob(['mp4'], { type: 'application/mp4' }) });
+
+  const { container, unmount } = renderInProject('![演示视频](videos/demo.mp4)');
+
+  await waitFor(() => {
+    const video = container.querySelector('video');
+    assert.ok(video);
+    assert.equal(video.getAttribute('src'), OBJECT_URL);
+    assert.equal(video.controls, true);
+  });
+  assert.equal(readFileBlob.mock.calls[0]?.[1], 'videos/demo.mp4');
+
+  unmount();
+  await waitFor(() => assert.equal(revokeObjectURL.mock.calls[0]?.[0], OBJECT_URL));
+});
+
+test('file:// image and video links are preserved and rendered inline', async () => {
+  readFileBlob.mockResolvedValue({ ok: true, blob: async () => new Blob(['bytes']) });
+
+  const { findByRole, container } = renderInProject(
+    '![截图](file:///home/ubuntu/shot.png)\n\n[下载图片](/api/download?path=/home/ubuntu/photo.jpg)',
+  );
+
+  await waitFor(() => {
+    const imgs = container.querySelectorAll('img');
+    assert.equal(imgs.length, 2);
+  });
+  assert.ok(await findByRole('button', { name: '下载图片' }));
+  assert.deepEqual(
+    readFileBlob.mock.calls.map(call => call[1]),
+    ['/home/ubuntu/shot.png', '/home/ubuntu/photo.jpg'],
+  );
 });

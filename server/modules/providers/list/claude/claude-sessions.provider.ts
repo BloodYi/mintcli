@@ -1357,13 +1357,26 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       return [];
     }
 
-    if (raw.message?.role === 'user' && raw.message?.content && raw.isMeta !== true) {
-      if (Array.isArray(raw.message.content)) {
+    // Mid-tool user messages injected into a live Claude session are persisted
+    // on disk as `type: "attachment"` rows with `attachment.type === "queued_command"`.
+    // Normalize their `prompt` through the same user-content pipeline so they
+    // survive refresh and reconcile against optimistic user bubbles.
+    const queuedCommandAttachment =
+      raw.type === 'attachment' ? readObjectRecord(raw.attachment) : null;
+    const userMessageContent =
+      raw.message?.role === 'user'
+        ? raw.message.content
+        : queuedCommandAttachment?.type === 'queued_command'
+          ? queuedCommandAttachment.prompt
+          : null;
+
+    if (userMessageContent && raw.isMeta !== true) {
+      if (Array.isArray(userMessageContent)) {
         // Image attachments sent through the SDK are persisted as base64
         // `image` blocks next to the prompt text. Collect them so the UI can
         // render them on the user bubble.
         const imageAttachments: Array<{ data: string }> = [];
-        for (const part of raw.message.content) {
+        for (const part of userMessageContent) {
           if (part?.type === 'image' && part.source?.type === 'base64' && typeof part.source.data === 'string') {
             const mediaType = typeof part.source.media_type === 'string' ? part.source.media_type : 'image/png';
             imageAttachments.push({ data: `data:${mediaType};base64,${part.source.data}` });
@@ -1372,8 +1385,8 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         let imagesAttached = false;
         let filesAttached = false;
 
-        for (let partIndex = 0; partIndex < raw.message.content.length; partIndex++) {
-          const part = raw.message.content[partIndex];
+        for (let partIndex = 0; partIndex < userMessageContent.length; partIndex++) {
+          const part = userMessageContent[partIndex];
           if (part.type === 'tool_result') {
             messages.push(createNormalizedMessage({
               id: `${baseId}_tr_${part.tool_use_id}`,
@@ -1420,7 +1433,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         }
 
         if (messages.length === 0) {
-          const textParts = raw.message.content
+          const textParts = userMessageContent
             .filter((part: AnyRecord) => part.type === 'text')
             .map((part: AnyRecord) => part.text)
             .filter(Boolean)
@@ -1453,8 +1466,8 @@ export class ClaudeSessionsProvider implements IProviderSessions {
             images: imageAttachments,
           }));
         }
-      } else if (typeof raw.message.content === 'string') {
-        const text = raw.message.content;
+      } else if (typeof userMessageContent === 'string') {
+        const text = userMessageContent;
 
         /**
          * Claude stores compact summaries as synthetic "user" rows so the CLI

@@ -374,6 +374,9 @@
       "updatingHint": "正在伺服器上執行 {{command}}，可能需要幾分鐘。",
       "runsCommand": "在伺服器上執行 {{command}}",
       "output": "{{command}} 的輸出",
+      "acpVersion": "官方原生 ACP：v{{version}}",
+      "acpProtocol": "協定 v{{protocol}}",
+      "acpUnavailable": "官方原生 ACP：不可用",
       "result": {
         "updated": "已更新至 v{{version}}。",
         "alreadyUpToDate": "已是最新版本（v{{version}}）。",

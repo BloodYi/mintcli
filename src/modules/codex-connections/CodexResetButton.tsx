@@ -5,7 +5,17 @@ import type { CodexResetCredits } from '@/shared/types';
 import { Dialog, DialogContent, DialogTitle } from '@/shared/ui';
 
 /** Used by the unified agent-account quota and legacy Codex quota bars for explicit, account-scoped official resets. */
-export function CodexResetButton({ connectionId, credits, onReset }: { connectionId: string; credits?: CodexResetCredits | null; onReset: () => void }) {
+export function CodexResetButton({
+  connectionId,
+  credits,
+  onReset,
+  embedded = false,
+}: {
+  connectionId: string;
+  credits?: CodexResetCredits | null;
+  onReset: () => void;
+  embedded?: boolean;
+}) {
   const helpId = 'reset-credit-' + useId();
   // Keep confirmation and result messages tied to the account shown when the user opened the dialog.
   const [reset, setReset] = useState<{ id: string; busy: boolean; message: string; open: boolean; creditId?: string } | null>(null);
@@ -33,11 +43,31 @@ export function CodexResetButton({ connectionId, credits, onReset }: { connectio
     }
   };
   return <>
-      <button type="button" disabled={reset?.busy || !credits?.availableCount} className="shrink-0 rounded border border-border px-2 py-1 disabled:opacity-50" onClick={() => setReset({ id: connectionId, busy: false, message: '', open: true, creditId: credits?.credits?.[0]?.id })}>
+      <button
+        type="button"
+        disabled={reset?.busy || !credits?.availableCount}
+        className={
+          embedded
+            ? 'inline-flex h-7 shrink-0 items-center rounded-full border border-border/70 bg-background px-2.5 text-[11px] font-medium text-foreground/85 transition-colors active:scale-95 hover:bg-muted/60 disabled:opacity-50'
+            : 'shrink-0 rounded border border-border px-2 py-1 disabled:opacity-50'
+        }
+        onClick={() => setReset({ id: connectionId, busy: false, message: '', open: true, creditId: credits?.credits?.[0]?.id })}
+      >
         使用重置卡{credits ? `（${credits.availableCount}）` : '（暂不可读）'}
       </button>
-      <a href="https://chatgpt.com/codex/settings/usage" target="_blank" rel="noopener noreferrer" className="text-primary underline">官方用量与重置 ↗</a>
-    {reset?.id === connectionId && reset.message && <p role="status" className="w-full">{reset.message}</p>}
+      <a
+        href="https://chatgpt.com/codex/settings/usage"
+        target="_blank"
+        rel="noopener noreferrer"
+        className={
+          embedded
+            ? 'inline-flex shrink-0 items-center whitespace-nowrap text-[11px] font-medium text-primary underline underline-offset-2'
+            : 'shrink-0 whitespace-nowrap text-primary underline'
+        }
+      >
+        官方用量与重置 ↗
+      </a>
+    {reset?.id === connectionId && reset.message && <p role="status" className="w-full text-[11px] text-muted-foreground">{reset.message}</p>}
     <Dialog open={reset?.id === connectionId && reset.open} onOpenChange={open => { if (reset && !reset.busy) setReset({ ...reset, open }); }}>
       <DialogContent className="w-[calc(100%-1.5rem)] space-y-3 p-4 sm:max-w-lg sm:p-6" aria-describedby={helpId}>
         <DialogTitle>使用 Codex 重置卡</DialogTitle>

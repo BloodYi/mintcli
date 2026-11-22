@@ -2,6 +2,7 @@ import spawn from 'cross-spawn';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { antigravityBridge } from '@/modules/antigravity/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import { resolveBundledClaudeExecutablePath, resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
@@ -85,6 +86,14 @@ type ProviderCliUpdateResult = {
   failure: CliUpdateFailure | null;
 };
 
+type ProviderAcpStatus = {
+  available: boolean;
+  protocolVersion: number | null;
+  serverName: string | null;
+  serverVersion: string | null;
+  supportsSystemPromptAppend: boolean;
+};
+
 type ProviderCliStatus = {
   provider: LLMProvider;
   installed: boolean;
@@ -104,6 +113,8 @@ type ProviderCliStatus = {
   updateInProgress: boolean;
   /** The most recent finished update run since the server started, or null. */
   lastUpdate: ProviderCliUpdateResult | null;
+  /** Official native ACP handshake info (Antigravity only). */
+  acp?: ProviderAcpStatus | null;
 };
 
 /** An update run that has passed its checks and started the updater. */
@@ -137,7 +148,27 @@ type ProviderCliServiceDependencies = {
   latestVersionTimeoutMs: number;
   updateTimeoutMs: number;
   updateKillGraceMs: number;
+  probeAntigravityAcp(refresh: boolean): Promise<ProviderAcpStatus | null>;
 };
+
+async function defaultProbeAntigravityAcp(refresh: boolean): Promise<ProviderAcpStatus | null> {
+  try {
+    const response = await antigravityBridge.request('GET', refresh ? '/api/acp-info?refresh=1' : '/api/acp-info');
+    if (!response.ok) return null;
+    const body = (await response.json()) as { acp?: Record<string, unknown> } | null;
+    const raw = body?.acp;
+    if (!raw || typeof raw !== 'object') return null;
+    return {
+      available: raw.available === true,
+      protocolVersion: typeof raw.protocolVersion === 'number' ? raw.protocolVersion : null,
+      serverName: typeof raw.serverName === 'string' && raw.serverName ? raw.serverName : null,
+      serverVersion: typeof raw.serverVersion === 'string' && raw.serverVersion ? raw.serverVersion : null,
+      supportsSystemPromptAppend: raw.supportsSystemPromptAppend === true,
+    };
+  } catch {
+    return null;
+  }
+}
 
 const defaultDependencies: ProviderCliServiceDependencies = {
   resolveProvider: (provider) => providerRegistry.resolveProvider(provider),
@@ -149,6 +180,7 @@ const defaultDependencies: ProviderCliServiceDependencies = {
   latestVersionTimeoutMs: LATEST_VERSION_TIMEOUT_MS,
   updateTimeoutMs: UPDATE_TIMEOUT_MS,
   updateKillGraceMs: UPDATE_KILL_GRACE_MS,
+  probeAntigravityAcp: defaultProbeAntigravityAcp,
 };
 
 /**
@@ -399,7 +431,13 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
       timeoutMs: dependencies.updateTimeoutMs,
       killGraceMs: dependencies.updateKillGraceMs,
     });
-    const installedVersion = provider.auth.checkInstalled().version;
+    let installedVersion = provider.auth.checkInstalled().version;
+    if (provider.id === 'antigravity') {
+      const refreshedAcp = await dependencies.probeAntigravityAcp(true).catch(() => null);
+      if (!installedVersion && refreshedAcp?.serverVersion) {
+        installedVersion = refreshedAcp.serverVersion;
+      }
+    }
 
     return {
       provider: provider.id,
@@ -434,9 +472,17 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
       // Bundled CLIs still need version checks: hiding them made outdated dependencies look current.
       const npmPackage = provider.id === 'codex' ? '@openai/codex'
         : dependencies.managedUpdates && ['cursor', 'antigravity'].includes(provider.id) ? provider.id : CLI_UPDATERS[provider.id]?.npmPackage;
-      const latestVersion = installed && !dependencies.platformMode && npmPackage
-        ? await getLatestVersion(npmPackage, refresh)
-        : null;
+      const [latestVersion, acp] = await Promise.all([
+        installed && !dependencies.platformMode && npmPackage
+          ? getLatestVersion(npmPackage, refresh)
+          : Promise.resolve(null),
+        provider.id === 'antigravity' && installed && !running
+          ? dependencies.probeAntigravityAcp(refresh).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      if (provider.id === 'antigravity' && !installedVersion && acp?.serverVersion) {
+        installedVersion = acp.serverVersion;
+      }
 
       // Read after the registry lookup, so a run that started meanwhile counts.
       // A run that ended meanwhile replaced the binary: the version from before
@@ -460,6 +506,7 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
         updateUnavailableReason,
         updateInProgress: Boolean(runAfterLookup),
         lastUpdate: lastUpdateResults.get(provider.id) ?? null,
+        ...(acp ? { acp } : {}),
       };
     },
 

@@ -17,16 +17,318 @@ async function json(response: Response): Promise<AnyRecord> {
   if (!response.ok) { const body = await response.json().catch(() => ({})) as AnyRecord; throw new AppError(body.detail || 'agy 操作失败，请刷新后重试', { code: 'AGY_NATIVE_ERROR', statusCode: response.status }); }
   return response.json() as Promise<AnyRecord>;
 }
+function normalizeAgyToolStatus(raw: unknown): 'in_progress' | 'failed' | 'completed' {
+  const value = String(raw || 'running').trim().toLowerCase();
+  if (value === 'error' || value === 'failed') return 'failed';
+  if (value === 'completed' || value === 'done' || value === 'success' || value === 'succeeded') return 'completed';
+  return 'in_progress';
+}
+
+function resolveAgyTimestamp(message: AnyRecord): string {
+  if (typeof message.timestamp === 'string' && message.timestamp) return message.timestamp;
+  if (typeof message.created_at === 'number' && Number.isFinite(message.created_at)) {
+    const ms = message.created_at < 1e12 ? message.created_at * 1000 : message.created_at;
+    return new Date(ms).toISOString();
+  }
+  return new Date().toISOString();
+}
+
+function readAgyModelLabel(message: AnyRecord): string | undefined {
+  const requested = typeof message.requestedModel === 'string' ? message.requestedModel.trim() : '';
+  if (requested && requested !== 'default') return requested;
+  const model = typeof message.model === 'string' ? message.model.trim() : '';
+  return model || undefined;
+}
+
 /** Same normalization for live native snapshots and old transcripts. Stable ids prevent duplicate rows. */
-export function normalizeAgy(message: AnyRecord, sessionId: string | null): NormalizedMessage[] {
+export function normalizeAgy(
+  message: AnyRecord,
+  sessionId: string | null,
+  options?: { streaming?: boolean },
+): NormalizedMessage[] {
   if (!['user', 'assistant'].includes(message.role)) return [];
-  const base = { sessionId, provider, timestamp: typeof message.timestamp === 'string' ? message.timestamp : new Date().toISOString() } as const;
+  const timestamp = resolveAgyTimestamp(message);
+  const base = { sessionId, provider, timestamp } as const;
   const id = String(message.id || randomUUID());
+  const isLiveStreaming = options?.streaming ?? message.status === 'streaming';
+  const model = message.role === 'assistant' ? readAgyModelLabel(message) : undefined;
   const result: NormalizedMessage[] = [];
-  if (message.thinking) result.push(createNormalizedMessage({ ...base, id: id + ':thinking', kind: 'thinking', content: String(message.thinking) }));
-  if (message.content || message.attachments?.length) result.push(createNormalizedMessage({ ...base, id, kind: 'text', role: message.role, content: String(message.content || ''), images: message.attachments?.filter((item: AnyRecord) => item.mimeType?.startsWith('image/')), files: message.attachments?.filter((item: AnyRecord) => !item.mimeType?.startsWith('image/')) }));
+
+  if (message.role === 'assistant' && Array.isArray(message.steps) && message.steps.length > 0) {
+    const steps = message.steps as AnyRecord[];
+    for (let index = 0; index < steps.length; index++) {
+      const step = steps[index];
+      if (!step || typeof step !== 'object') continue;
+      const stepId = String(step.id || `${id}:step:${index}`);
+      const stepTimestamp = typeof step.timestamp === 'string' && step.timestamp ? step.timestamp : timestamp;
+      const isLastActiveStep = isLiveStreaming && index === steps.length - 1;
+
+      if (step.type === 'thinking') {
+        const content = String(step.content || '');
+        if (content.trim()) {
+          result.push(createNormalizedMessage({
+            ...base,
+            timestamp: stepTimestamp,
+            id: stepId,
+            kind: 'thinking',
+            content,
+            ...(isLastActiveStep ? { isStreaming: true } : {}),
+          }));
+        }
+      } else if (step.type === 'text') {
+        const content = String(step.content || '');
+        if (content.trim()) {
+          result.push(createNormalizedMessage({
+            ...base,
+            timestamp: stepTimestamp,
+            id: stepId,
+            kind: 'text',
+            role: 'assistant',
+            content,
+            ...(model ? { model } : {}),
+            ...(isLastActiveStep ? { isStreaming: true } : {}),
+          }));
+        }
+      } else if (step.type === 'tool_use') {
+        const toolId = String(step.toolId || stepId);
+        const toolName = String(step.toolName || step.toolLabel || 'Tool');
+        const status = normalizeAgyToolStatus(step.status);
+        const rawResult = step.toolResult && typeof step.toolResult === 'object' ? step.toolResult as AnyRecord : null;
+        const toolResult = rawResult
+          ? {
+              content: String(rawResult.content ?? ''),
+              isError: Boolean(rawResult.isError),
+              ...(rawResult.toolUseResult !== undefined ? { toolUseResult: rawResult.toolUseResult } : {}),
+            }
+          : undefined;
+        result.push(createNormalizedMessage({
+          ...base,
+          timestamp: stepTimestamp,
+          id: stepId,
+          kind: 'tool_use',
+          toolId,
+          toolName,
+          toolInput: step.toolInput ?? {},
+          status,
+          ...(toolResult ? { toolResult } : {}),
+        }));
+      }
+    }
+    if (message.errorText) result.push(createNormalizedMessage({ ...base, id: id + ':error', kind: 'error', content: String(message.errorText) }));
+    return result;
+  }
+
+  if (message.thinking) {
+    result.push(createNormalizedMessage({
+      ...base,
+      id: id + ':thinking',
+      kind: 'thinking',
+      content: String(message.thinking),
+      ...(isLiveStreaming && !message.content ? { isStreaming: true } : {}),
+    }));
+  }
+  if (message.content || message.attachments?.length) {
+    result.push(createNormalizedMessage({
+      ...base,
+      id,
+      kind: 'text',
+      role: message.role,
+      content: String(message.content || ''),
+      ...(model ? { model } : {}),
+      ...(isLiveStreaming && message.role === 'assistant' ? { isStreaming: true } : {}),
+      ...(message.role === 'user' ? { transcriptAnchorId: id } : {}),
+      images: message.attachments?.filter((item: AnyRecord) => item.mimeType?.startsWith('image/')),
+      files: message.attachments?.filter((item: AnyRecord) => !item.mimeType?.startsWith('image/')),
+    }));
+  }
   if (message.errorText) result.push(createNormalizedMessage({ ...base, id: id + ':error', kind: 'error', content: String(message.errorText) }));
   return result;
+}
+
+export function applyAgyStreamEvent(
+  message: AnyRecord,
+  event: AnyRecord,
+  state: { stepSeq: number },
+): AnyRecord {
+  const ensureSteps = (target: AnyRecord): AnyRecord[] => {
+    if (!Array.isArray(target.steps)) target.steps = [];
+    return target.steps as AnyRecord[];
+  };
+  const nextStepId = (target: AnyRecord, prefix: string, preferred?: unknown) => {
+    if (typeof preferred === 'string' && preferred) return preferred;
+    state.stepSeq += 1;
+    return `${String(target.id || 'agy')}:${prefix}:${state.stepSeq}`;
+  };
+  const nowIso = () => new Date().toISOString();
+
+  if (event.event === 'snapshot' && event.message) {
+    const incoming = event.message as AnyRecord;
+    const merged: AnyRecord = {
+      ...message,
+      ...incoming,
+      steps: Array.isArray(incoming.steps)
+        ? (incoming.steps as AnyRecord[]).map((step) => ({
+            ...step,
+            ...(step.toolResult && typeof step.toolResult === 'object' ? { toolResult: { ...step.toolResult } } : {}),
+          }))
+        : ensureSteps(message),
+    };
+    state.stepSeq = Math.max(state.stepSeq, (merged.steps as AnyRecord[]).length);
+    return merged;
+  }
+
+  const steps = ensureSteps(message);
+
+  if (event.event === 'delta') {
+    const chunk = String(event.delta ?? event.text ?? '');
+    message.content = String(message.content || '') + chunk;
+    if (chunk) {
+      const preferredId = typeof event.step_id === 'string' ? event.step_id : '';
+      let target = preferredId ? steps.find((step) => step.id === preferredId && step.type === 'text') : undefined;
+      if (!target && !preferredId && steps.length > 0 && steps[steps.length - 1]?.type === 'text') {
+        target = steps[steps.length - 1];
+      }
+      if (!target) {
+        target = { id: nextStepId(message, 'text', preferredId), type: 'text', content: '', timestamp: nowIso() };
+        steps.push(target);
+      }
+      target.content = String(target.content || '') + chunk;
+    }
+    return message;
+  }
+
+  if (event.event === 'thinking') {
+    const chunk = String(event.thinking ?? event.delta ?? '');
+    const isSnapshotMode = event.mode === 'snapshot';
+    message.thinking = isSnapshotMode ? chunk : String(message.thinking || '') + chunk;
+    const stepIndex = typeof event.step_index === 'number' && Number.isInteger(event.step_index) && event.step_index >= 0
+      ? event.step_index
+      : null;
+    const preferredId = typeof event.step_id === 'string' ? event.step_id : '';
+    if (stepIndex !== null) {
+      let target = steps.find((step) => step.type === 'thinking' && (step.stepIndex === stepIndex || (preferredId && step.id === preferredId)));
+      if (!target) {
+        target = { id: nextStepId(message, 'thinking', preferredId), type: 'thinking', stepIndex, content: '', timestamp: nowIso() };
+        steps.push(target);
+      }
+      target.content = isSnapshotMode ? chunk : String(target.content || '') + chunk;
+    } else if (chunk) {
+      let target = preferredId ? steps.find((step) => step.id === preferredId && step.type === 'thinking') : undefined;
+      if (!target && !preferredId && steps.length > 0 && steps[steps.length - 1]?.type === 'thinking' && steps[steps.length - 1]?.stepIndex === undefined) {
+        target = steps[steps.length - 1];
+      }
+      if (!target) {
+        target = { id: nextStepId(message, 'thinking', preferredId), type: 'thinking', content: '', timestamp: nowIso() };
+        steps.push(target);
+      }
+      target.content = isSnapshotMode ? chunk : String(target.content || '') + chunk;
+    }
+    return message;
+  }
+
+  if (event.event === 'tool') {
+    const rawToolId = String(event.tool_id || event.toolId || '');
+    const toolLabel = String(event.tool || event.tool_name || event.name || 'Tool');
+    const toolName = String(event.tool_name || event.toolName || event.name || toolLabel);
+    const toolInput = event.tool_input !== undefined ? event.tool_input : event.args;
+    const rawStatus = String(event.status || 'running').toLowerCase();
+    const mappedStatus = rawStatus === 'error' || rawStatus === 'failed'
+      ? 'error'
+      : rawStatus === 'completed' || rawStatus === 'done' || rawStatus === 'success' || rawStatus === 'succeeded'
+        ? 'completed'
+        : 'running';
+    const isGenericToolName = (value: string) => {
+      const normalized = value.trim().toLowerCase();
+      return !normalized || normalized === 'tool' || normalized === 'executing';
+    };
+    let target = rawToolId ? steps.find((step) => step.type === 'tool_use' && step.toolId === rawToolId) : undefined;
+    if (!target) {
+      const toolId = rawToolId || nextStepId(message, 'tool');
+      target = {
+        id: typeof event.step_id === 'string' && event.step_id ? event.step_id : `${String(message.id || 'agy')}:tool:${toolId}`,
+        type: 'tool_use',
+        toolId,
+        toolName,
+        toolLabel,
+        toolInput: toolInput !== undefined ? toolInput : { summary: toolLabel },
+        status: mappedStatus,
+        timestamp: nowIso(),
+      };
+      steps.push(target);
+    } else {
+      if (!isGenericToolName(toolName) || isGenericToolName(String(target.toolName || ''))) {
+        target.toolName = toolName;
+      }
+      if (!isGenericToolName(toolLabel) || isGenericToolName(String(target.toolLabel || ''))) {
+        target.toolLabel = toolLabel;
+      }
+      if (toolInput !== undefined) target.toolInput = toolInput;
+      target.status = mappedStatus;
+    }
+    if (event.tool_output !== undefined) {
+      const isError = Boolean(event.is_error || event.isError) || mappedStatus === 'error';
+      target.toolResult = { content: String(event.tool_output), isError };
+      if (mappedStatus === 'running') target.status = isError ? 'error' : 'completed';
+    }
+    return message;
+  }
+
+  if (event.event === 'tool_result') {
+    const toolId = String(event.tool_id || event.toolId || '');
+    let target = toolId ? steps.find((step) => step.type === 'tool_use' && step.toolId === toolId) : undefined;
+    if (!target) {
+      for (let index = steps.length - 1; index >= 0; index--) {
+        if (steps[index]?.type === 'tool_use' && steps[index]?.status === 'running') {
+          target = steps[index];
+          break;
+        }
+      }
+    }
+    if (target) {
+      const isError = Boolean(event.is_error || event.isError);
+      target.toolResult = {
+        content: String(event.content ?? ''),
+        isError,
+        ...(event.tool_use_result !== undefined ? { toolUseResult: event.tool_use_result } : {}),
+      };
+      target.status = isError ? 'error' : 'completed';
+    }
+    return message;
+  }
+
+  if (event.event === 'result' && event.response) {
+    message.content = String(event.response);
+    if (!steps.some((step) => step.type === 'text' && String(step.content || '').trim())) {
+      steps.push({
+        id: nextStepId(message, 'text', event.step_id),
+        type: 'text',
+        content: String(event.response),
+        timestamp: nowIso(),
+      });
+    }
+    return message;
+  }
+
+  if (event.event === 'error') {
+    message.errorText = String(event.error || 'agy 生成失败');
+    for (const step of steps) {
+      if (step.type === 'tool_use' && step.status === 'running') step.status = 'error';
+    }
+    return message;
+  }
+
+  if (event.event === 'done') {
+    const outcome = String(event.status || 'complete');
+    message.status = outcome;
+    for (const step of steps) {
+      if (step.type === 'tool_use' && step.status === 'running') {
+        step.status = outcome === 'complete' ? 'completed' : 'error';
+      }
+    }
+    return message;
+  }
+
+  return message;
 }
 const running = new Map<string, { turnId: string; controller: AbortController }>();
 const runtime: IProviderRuntime = {
@@ -49,10 +351,34 @@ const runtime: IProviderRuntime = {
     const turnId = randomUUID().replace(/-/g, '');
     const controller = new AbortController();
     running.set(appId, { turnId, controller });
-    let message: AnyRecord = { id: turnId + ':assistant', role: 'assistant', content: '' };
+    let message: AnyRecord = { id: turnId + ':assistant', role: 'assistant', content: '', status: 'streaming', steps: [] };
     let failed = false;
+    let done = false;
+    const streamState = { stepSeq: 0 };
+    const emittedSignatures = new Map<string, string>();
     let relay: Awaited<ReturnType<typeof startApiRelay>> | null = null;
     const send = (value: NormalizedMessage) => writer.send(value);
+    const emitChanged = (items: NormalizedMessage[]) => {
+      for (const normalized of items) {
+        const signature = JSON.stringify({
+          kind: normalized.kind,
+          role: normalized.role ?? null,
+          content: normalized.content ?? null,
+          isStreaming: Boolean(normalized.isStreaming),
+          status: normalized.status ?? null,
+          toolId: normalized.toolId ?? null,
+          toolName: normalized.toolName ?? null,
+          toolInput: normalized.toolInput ?? null,
+          toolResult: normalized.toolResult ?? null,
+          model: normalized.model ?? null,
+          images: normalized.images ?? null,
+          files: normalized.files ?? null,
+        });
+        if (emittedSignatures.get(normalized.id) === signature) continue;
+        emittedSignatures.set(normalized.id, signature);
+        send(normalized);
+      }
+    };
     const capture = (value: unknown) => {
       if (!cid && typeof value === 'string' && value) {
         cid = value; writer.setSessionId?.(cid);
@@ -75,7 +401,7 @@ const runtime: IProviderRuntime = {
         : await antigravityBridge.startChatForAccount(options.connectionId, payload, controller.signal);
       if (!response.ok) { await json(response); return; }
       if (!response.body) throw new Error('agy 回复流为空');
-      let pending = '', done = false, cursor = 0;
+      let pending = '', cursor = 0;
       const decoder = new TextDecoder();
       const processEvent = (block: string) => {
         const data = block.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
@@ -84,15 +410,12 @@ const runtime: IProviderRuntime = {
         if (event.cursor && event.cursor <= cursor) return;
         cursor = event.cursor || cursor;
         capture(event.conversation_id);
-        if (event.event === 'snapshot' && event.message) message = { ...message, ...event.message };
-        if (event.event === 'delta') message.content += String(event.delta ?? event.text ?? '');
-        if (event.event === 'thinking') message.thinking = event.mode === 'snapshot' ? String(event.thinking || '') : (message.thinking || '') + String(event.thinking ?? event.delta ?? '');
-        if (event.event === 'result' && event.response) message.content = event.response;
-        if (event.event === 'tool') send(createNormalizedMessage({ provider, sessionId: appId, kind: 'status', text: String(event.tool || event.name || '正在执行工具') }));
-        if (event.event === 'error') { failed = true; message.errorText = String(event.error || 'agy 生成失败'); }
+        if (event.event === 'error') failed = true;
         if (event.event === 'done') done = true;
-        // Full text snapshots update the same transcript row and survive WebSocket replay.
-        for (const normalized of normalizeAgy(message, appId)) send(normalized);
+        message = applyAgyStreamEvent(message, event, streamState);
+        // Emit only changed step rows so thinking, tool calls, tool results and
+        // text stream inline in the conversation without flooding unchanged rows.
+        emitChanged(normalizeAgy(message, appId, { streaming: !done }));
       };
       const consume = async (stream: ReadableStream<Uint8Array>) => {
         const reader = stream.getReader();
@@ -116,6 +439,10 @@ const runtime: IProviderRuntime = {
     } catch (error) {
       if (!controller.signal.aborted) { failed = true; throw error; }
     } finally {
+      if (!done && ((Array.isArray(message.steps) && message.steps.length > 0) || message.content || message.thinking || message.errorText)) {
+        message = applyAgyStreamEvent(message, { event: 'done', status: failed ? 'error' : 'stopped' }, streamState);
+        emitChanged(normalizeAgy(message, appId, { streaming: false }));
+      }
       await relay?.close();
       running.delete(appId);
       if (cid) {
@@ -155,6 +482,21 @@ export class AntigravityProvider implements IProvider {
       const messages: NormalizedMessage[] = (data.messages || []).flatMap((item: AnyRecord, index: number) => normalizeAgy({ ...item, id: item.id || `${cid}:${index}` }, sessionId));
       const { page, hasMore } = sliceTailPage(messages, options.limit ?? null, options.offset || 0);
       return { messages: page, total: messages.length, hasMore, offset: options.offset || 0, limit: options.limit ?? null };
+    },
+    async recallMessage(sessionId: string, input: { messageId?: string; userTurnFromEnd?: number }) {
+      const cid = sessionsDb.getSessionById(sessionId)?.provider_session_id;
+      if (!cid) return false;
+      const response = await antigravityBridge.request(
+        'POST',
+        '/api/conversations/' + encodeURIComponent(cid) + '/recall',
+        {
+          ...(input.messageId ? { message_id: input.messageId } : {}),
+          ...(typeof input.userTurnFromEnd === 'number' ? { user_turn_from_end: input.userTurnFromEnd } : {}),
+        },
+      );
+      if (response.status === 404) return false;
+      await json(response);
+      return true;
     },
   };
   readonly sessionSynchronizer = {

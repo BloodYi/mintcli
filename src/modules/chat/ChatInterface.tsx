@@ -9,7 +9,7 @@ import { useWebSocket } from '@/shared/context/WebSocketContext';
 import PermissionContext from '@/modules/chat/context/PermissionContext';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { TranscriptSessionContext } from '@/modules/chat/context/TranscriptSessionContext';
-import { api } from '@/shared/api';
+import { api, readApiErrorMessage } from '@/shared/api';
 import { AgentConnections } from '@/modules/agent-connections';
 import { EgressButton } from '@/modules/egress';
 import { MonitorButton, TokenMonitorProvider } from '@/modules/token-monitor';
@@ -37,6 +37,8 @@ import {
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
 import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
+import RecallMessageDialog, { type RecallMessageTarget } from '@/modules/chat/modals/RecallMessageDialog';
+import { SESSION_MESSAGES_PAGE_SIZE } from '@/modules/chat/utils/sessionMessagePagination';
 
 type ChatInterfaceProps = {
   isActive: boolean;
@@ -275,7 +277,6 @@ function ChatInterface({
     isDragActive,
     openAttachmentPicker,
     handleSubmit,
-    handleSendNow,
     backgroundSendPrompt,
     resolveBackgroundSendPrompt,
     queuedDraft,
@@ -300,6 +301,7 @@ function ChatInterface({
     editingAnchorId,
     beginEditMessage,
     cancelEditMessage,
+    loadRecalledInput,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -389,8 +391,16 @@ function ChatInterface({
 
   usePaletteOpsRegister({ insertComposerText });
 
+  const [recallTarget, setRecallTarget] = useState<(RecallMessageTarget & { sessionId: string }) | null>(null);
+  const [isRecallingMessage, setIsRecallingMessage] = useState(false);
+  const [recallError, setRecallError] = useState<string | null>(null);
+  const activeSessionId = currentSessionId || selectedSession?.id || null;
+  const activeRecallTarget = recallTarget && recallTarget.sessionId === activeSessionId
+    ? recallTarget
+    : null;
+
   useEffect(() => {
-    if (!canAbortSession) {
+    if (!canAbortSession || activeRecallTarget) {
       return;
     }
 
@@ -407,13 +417,105 @@ function ChatInterface({
     return () => {
       document.removeEventListener('keydown', handleGlobalEscape, { capture: true });
     };
-  }, [canAbortSession, handleAbortSession]);
+  }, [activeRecallTarget, canAbortSession, handleAbortSession]);
 
   useEffect(() => {
     return () => {
       resetStreamingState();
     };
   }, [resetStreamingState]);
+
+  const handleRequestRecallMessage = useCallback((message: ChatMessage) => {
+    if (!activeSessionId) return;
+    const userMessages = chatMessages.filter((item) => item.type === 'user');
+    let userIndex = userMessages.lastIndexOf(message);
+    if (userIndex < 0 && message.transcriptAnchorId) {
+      userIndex = userMessages.findIndex(
+        (item) => item.transcriptAnchorId === message.transcriptAnchorId,
+      );
+    }
+    if (userIndex < 0 && message.modelSourceId) {
+      userIndex = userMessages.findIndex(
+        (item) => item.modelSourceId === message.modelSourceId,
+      );
+    }
+    if (userIndex < 0) return;
+
+    const userTurnFromEnd = userMessages.length - 1 - userIndex;
+    setRecallError(null);
+    setRecallTarget({
+      sessionId: activeSessionId,
+      message,
+      isLatestUserMessage: userTurnFromEnd === 0,
+      userTurnFromEnd,
+    });
+  }, [activeSessionId, chatMessages]);
+
+  const handleCancelRecallMessage = useCallback(() => {
+    if (isRecallingMessage) return;
+    setRecallTarget(null);
+    setRecallError(null);
+  }, [isRecallingMessage]);
+
+  const handleConfirmRecallMessage = useCallback(async () => {
+    if (!activeRecallTarget || !activeSessionId || isRecallingMessage) return;
+
+    setIsRecallingMessage(true);
+    setRecallError(null);
+    try {
+      const { message, userTurnFromEnd } = activeRecallTarget;
+      const response = await api.recallSessionMessage(activeSessionId, {
+        ...(message.transcriptAnchorId ? { anchorId: message.transcriptAnchorId } : {}),
+        ...(message.modelSourceId ? { messageId: message.modelSourceId } : {}),
+        userTurnFromEnd,
+        content: message.content || '',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          readApiErrorMessage(payload)
+          || t('message.recallFailed', { defaultValue: 'Failed to recall message. Please try again.' }),
+        );
+      }
+
+      resetStreamingState();
+      onSessionIdle(activeSessionId);
+      setPendingPermissionRequests((previous) =>
+        previous.filter((request) => request.sessionId !== activeSessionId),
+      );
+      lastSeqRef.current.delete(activeSessionId);
+
+      await sessionStore.resetAndFetchFromServer(activeSessionId, {
+        limit: SESSION_MESSAGES_PAGE_SIZE,
+        offset: 0,
+      });
+
+      const recalledContent = typeof payload?.data?.recalledContent === 'string'
+        ? payload.data.recalledContent
+        : (message.content || '');
+      setRecallTarget(null);
+      loadRecalledInput(recalledContent);
+    } catch (error) {
+      console.error('Error recalling message:', error);
+      setRecallError(
+        error instanceof Error && error.message
+          ? error.message
+          : t('message.recallFailed', { defaultValue: 'Failed to recall message. Please try again.' }),
+      );
+    } finally {
+      setIsRecallingMessage(false);
+    }
+  }, [
+    activeRecallTarget,
+    activeSessionId,
+    isRecallingMessage,
+    loadRecalledInput,
+    onSessionIdle,
+    resetStreamingState,
+    sessionStore,
+    setPendingPermissionRequests,
+    t,
+  ]);
 
   /**
    * Branches the conversation into a new session that ends at this message,
@@ -620,6 +722,7 @@ function ChatInterface({
               // a live stream writing into it is not recoverable.
               onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
               onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
+              onRecallMessage={activeSessionId ? handleRequestRecallMessage : undefined}
               onLoadFullTranscript={loadFullTranscript}
             />
           </TranscriptSessionContext.Provider>
@@ -677,7 +780,6 @@ function ChatInterface({
           hasInput={Boolean(input.trim())}
           onClearInput={handleClearInput}
           onSubmit={handleSubmit}
-          onSendNow={handleSendNow}
           isDragActive={isDragActive}
           queuedDraft={queuedDraft}
           backgroundSendPrompt={backgroundSendPrompt}
@@ -723,6 +825,14 @@ function ChatInterface({
         />
         </div>
       </div>
+
+      <RecallMessageDialog
+        target={activeRecallTarget}
+        isSubmitting={isRecallingMessage}
+        error={activeRecallTarget ? recallError : null}
+        onCancel={handleCancelRecallMessage}
+        onConfirm={handleConfirmRecallMessage}
+      />
 
       <CommandResultModal
         payload={commandModalPayload}

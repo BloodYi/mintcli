@@ -316,7 +316,7 @@ class ClaudeAgySubprocessTests(unittest.IsolatedAsyncioTestCase):
         (self.sdk_dir / "index.mjs").write_text(sdk_code, encoding="utf-8")
         (self.plugin_dir / "index.mjs").write_text(plugin_code, encoding="utf-8")
 
-    async def _run_stream(self, *, prompt="hello", system_append=None):
+    async def _run_stream(self, *, prompt="hello", model="test-model", system_append=None):
         env = dict(os.environ)
         env["MINTCLI_MAGPIE_AGY"] = str(self.plugin_dir)
         env["MINTCLI_CLAUDE_PATH"] = "/bin/true"
@@ -336,13 +336,39 @@ class ClaudeAgySubprocessTests(unittest.IsolatedAsyncioTestCase):
                 cwd=str(self.root),
                 scratch=self.scratch,
                 prompt=prompt,
-                model="test-model",
+                model=model,
                 turn_id="turn-123",
                 sandbox=False,
                 system_append=system_append,
             ):
                 events.append(ev)
             return events
+
+    async def test_neon_declares_its_context_window_to_claude(self):
+        self._write_mocks(
+            """
+export async function* query({ options }) {
+  yield { type: 'result', is_error: false, result: JSON.stringify({
+    model: options.model,
+    contextWindow: options.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS ?? null,
+  }) };
+}
+""",
+            "export default { async server() { return { auth: { async loader() { return {}; } } }; } };",
+        )
+        for model, window in (
+            ("gemini-4-neon", "512000"),
+            ("gemini-4-neon-low", "512000"),
+            ("gemini-4-neon-medium", "512000"),
+            ("gemini-4-neon-high", "512000"),
+            ("gemini-4-neon-xhigh", "512000"),
+            ("gemini-pro-orchestrator-neon", None),
+            ("test-model", None),
+        ):
+            with self.subTest(model=model):
+                events = await self._run_stream(model=model)
+                result = next(event for event in events if event["event"] == "result")
+                self.assertEqual(json.loads(result["response"]), {"model": model, "contextWindow": window})
 
     async def test_multistep_text_separation_tool_summary_and_retry_recovery(self):
         plugin_code = """
@@ -436,6 +462,51 @@ export async function* query({ prompt, options }) {
         self.assertTrue(any(ev.get("event") == "error" for ev in events))
         self.assertTrue(any("boom-from-plugin" in line for line in captured.output))
 
+    async def test_trace_reads_each_log_version_once_and_keeps_prior_ids(self):
+        self._write_mocks("""
+import fs from 'node:fs';
+import path from 'node:path';
+export async function* query({ options }) {
+  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR, 'magpie-agy-bridge-'));
+  const log = path.join(dir, 'agy-acp.log');
+  const readFile = fs.readFileSync;
+  let reads = 0;
+  fs.readFileSync = function(file, ...args) {
+    if (file === log) reads++;
+    return readFile.call(this, file, ...args);
+  };
+  const record = id => '[streamGenerateContent] ResponseID: ' + id + '\\n';
+  const send = async () => {
+    const res = await fetch(options.env.ANTHROPIC_BASE_URL + '/v1/messages', {
+      method: 'POST', headers: { 'x-api-key': options.env.ANTHROPIC_API_KEY }, body: '{}',
+    });
+    await res.text();
+  };
+  try {
+    fs.writeFileSync(log, record('one'));
+    await send();
+    await send();
+    fs.appendFileSync(log, record('two'));
+    await send();
+    fs.writeFileSync(log + '.new', record('six') + record('ten'));
+    fs.renameSync(log + '.new', log);
+    await send();
+    yield { type: 'result', is_error: false, result: String(reads) };
+  } finally {
+    fs.readFileSync = readFile;
+  }
+}
+""", """
+export default { async server() {
+  return { auth: { async loader() { return { fetch: async () => Response.json({}) }; } } };
+} };
+""")
+        events = await self._run_stream()
+        self.assertEqual(next(e["response"] for e in events if e["event"] == "result"), "3")
+        traces = [e for e in events if e["event"] == "agy_trace"]
+        self.assertTrue(traces[-1]["final"])
+        self.assertEqual(traces[-1]["response_ids"], ["one", "two", "six", "ten"])
+
     async def test_emits_agy_trace_even_when_workspace_removed_before_exit(self):
         acp_sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         plugin_code = f"""
@@ -505,6 +576,238 @@ export async function* query({ options }) {
             final_trace["upstream_urls"],
             ["https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"],
         )
+
+
+class ClaudeAgyOrchestratorRouteTests(unittest.IsolatedAsyncioTestCase):
+    def test_orchestrator_detection_and_prompt_enhancement(self):
+        for model_id, label in (
+            ("gemini-pro-orchestrator-neon", "Orchestrator (Neon)"),
+            ("gemini-pro-orchestrator", "Orchestrator (Carbon)"),
+            ("gemini-pro-orchestrator-argon", "Orchestrator (Argon)"),
+            ("custom-id", "Orchestrator (Neon)"),
+        ):
+            with self.subTest(model_id=model_id, label=label):
+                self.assertTrue(app._is_orchestrator_model(model_id, label))
+
+        for model_id, label in (
+            ("gemini-4-neon-high", "Gemini 4 Neon (High)"),
+            ("gemini-4-carbon-high", "Gemini 4 Carbon (High)"),
+            ("gemini-4-argon-high", "Gemini 4 Argon (High)"),
+            ("gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (XHigh)"),
+            ("claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"),
+        ):
+            with self.subTest(model_id=model_id, label=label):
+                self.assertFalse(app._is_orchestrator_model(model_id, label))
+
+        enhanced = app._claude_agy_orchestrator_system_append("Reply in Chinese.")
+        self.assertIn(app.CLAUDE_CODE_ORCHESTRATOR_PROMPT, enhanced)
+        self.assertIn("Reply in Chinese.", enhanced)
+        self.assertIn(app.DOWNLOAD_LINK_INSTRUCTION, enhanced)
+        self.assertNotIn("Do not use tools", enhanced)
+        self.assertNotIn("You are Claude Code", enhanced)
+
+    def test_pick_default_claude_agy_model_prefers_non_orchestrator(self):
+        self.assertEqual(
+            app._pick_default_claude_agy_model([
+                {"id": "gemini-pro-orchestrator-neon", "name": "Orchestrator (Neon)"},
+                {"id": "gemini-4-neon-high", "name": "Gemini 4 Neon (High)"},
+            ]),
+            "gemini-4-neon-high",
+        )
+        self.assertEqual(
+            app._pick_default_claude_agy_model([
+                {"id": "gemini-pro-orchestrator-neon", "name": "Orchestrator (Neon)"},
+            ]),
+            "gemini-pro-orchestrator-neon",
+        )
+
+    async def test_claude_agy_routes_orchestrator_models_to_official_acp_with_prompt_enhancement(self):
+        acp_sid = "33333333-4444-5555-6666-777777777777"
+        for model_id, label in (
+            ("gemini-pro-orchestrator-neon", "Orchestrator (Neon)"),
+            ("gemini-pro-orchestrator", "Orchestrator (Carbon)"),
+            ("gemini-pro-orchestrator-argon", "Orchestrator (Argon)"),
+        ):
+            with self.subTest(model_id=model_id):
+                with tempfile.TemporaryDirectory(prefix="mintcli-orch-acp-test-") as tmp:
+                    root = Path(tmp)
+                    home = root / "home"
+                    messages_dir = root / "messages"
+                    messages_dir.mkdir()
+                    _write_fake_acp_db(home, acp_sid, response_model="gemini-4-hydrogen")
+                    captured_kwargs = {}
+
+                    async def fake_stream_acp(**kwargs):
+                        captured_kwargs.update(kwargs)
+                        info = kwargs["route_info_factory"]("req-orch", kwargs["model"])
+                        kwargs["route_enricher"](
+                            info,
+                            {
+                                "session_ids": [acp_sid],
+                                "response_ids": ["Resp-Orch-1"],
+                                "trace_ids": ["0xorch"],
+                                "upstream_urls": ["https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"],
+                            },
+                        )
+                        yield {"event": "init", "conversation_id": acp_sid, "model": kwargs["model"], "transport": "acp", "route_info": info}
+                        yield {"event": "delta", "delta": "Orchestrated reply."}
+                        yield {"event": "result", "response": "Orchestrated reply.", "route_info": info}
+                        yield {"event": "metadata", "route_info": info}
+
+                    async def fail_claude_agy(**_kwargs):
+                        raise AssertionError("Orchestrator models must not route through magpie-agy/stream_claude_agy")
+                        yield  # pragma: no cover
+
+                    manager = detached_chat.TurnManager(messages_dir, app.logger)
+                    turn_id = "b" * 32
+                    req = app.ChatRequest(
+                        messages=[app.Message(role="user", content="检查项目结构")],
+                        model=model_id,
+                        model_label=label,
+                        use_claude_agy=True,
+                        cwd=str(root),
+                        turn_id=turn_id,
+                    )
+                    with patch.object(app, "MESSAGES_DIR", messages_dir), \
+                         patch.object(app, "HOME", str(home)), \
+                         patch.object(app, "SCRATCH", root), \
+                         patch.object(app, "web_turns", manager), \
+                         patch.object(app, "_within_allowed", return_value=str(root)), \
+                         patch.object(app, "_agy_environment", return_value={"HOME": str(home)}), \
+                         patch.object(app, "save_conversation_async", new=AsyncMock()), \
+                         patch.object(app, "stream_agy_acp", side_effect=fake_stream_acp), \
+                         patch.object(app, "stream_claude_agy", side_effect=fail_claude_agy):
+                        resp = await app.chat(req)
+                        async for _ in resp.body_iterator:
+                            pass
+                        await manager.turns[turn_id].task
+
+                    self.assertEqual(captured_kwargs["model"], model_id)
+                    self.assertEqual(captured_kwargs["prompt"], "检查项目结构")
+                    self.assertIn(app.CLAUDE_CODE_ORCHESTRATOR_PROMPT, captured_kwargs["system_append"])
+                    self.assertIn(app.DOWNLOAD_LINK_INSTRUCTION, captured_kwargs["system_append"])
+                    self.assertNotIn("Do not use tools", captured_kwargs["system_append"])
+                    with patch.object(app, "MESSAGES_DIR", messages_dir), patch.object(app, "HOME", str(home)):
+                        history = app.read_message_history(acp_sid)
+                    self.assertEqual(history[-1]["routeInfo"]["transport"], "acp")
+                    self.assertEqual(history[-1]["routeInfo"]["prompt_mode"], "claude_code_enhanced")
+                    self.assertEqual(history[-1]["routeInfo"]["returned_models"], ["gemini-4-hydrogen"])
+                    self.assertEqual(history[-1]["routeInfo"]["acp_session_ids"], [acp_sid])
+
+    async def test_claude_agy_orchestrator_replays_prior_claude_agy_session_and_keeps_stable_cid(self):
+        acp_sid = "44444444-5555-6666-7777-888888888888"
+        stable_cid = "mintcli-claude-existing123"
+        with tempfile.TemporaryDirectory(prefix="mintcli-orch-replay-test-") as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            messages_dir = root / "messages"
+            messages_dir.mkdir()
+            (messages_dir / f"{stable_cid}.json").write_text(
+                json.dumps([
+                    {"id": "u1", "role": "user", "content": "第一条问题", "created_at": 1700000000.0},
+                    {
+                        "id": "a1",
+                        "role": "assistant",
+                        "content": "第一条回答",
+                        "status": "complete",
+                        "created_at": 1700000001.0,
+                        "routeInfo": {"transport": "claude_agy"},
+                    },
+                ]),
+                encoding="utf-8",
+            )
+            captured_kwargs = {}
+
+            async def fake_stream_acp(**kwargs):
+                captured_kwargs.update(kwargs)
+                info = kwargs["route_info_factory"]("req-replay", kwargs["model"])
+                yield {"event": "init", "conversation_id": acp_sid, "model": kwargs["model"], "transport": "acp", "route_info": info}
+                yield {"event": "delta", "delta": "继续处理完成"}
+                yield {"event": "result", "response": "继续处理完成", "route_info": info}
+                yield {"event": "metadata", "route_info": info}
+
+            manager = detached_chat.TurnManager(messages_dir, app.logger)
+            turn_id = "c" * 32
+            req = app.ChatRequest(
+                messages=[app.Message(role="user", content="继续优化")],
+                conversation_id=stable_cid,
+                model="gemini-pro-orchestrator-neon",
+                model_label="Orchestrator (Neon)",
+                use_claude_agy=True,
+                cwd=str(root),
+                turn_id=turn_id,
+            )
+            with patch.object(app, "MESSAGES_DIR", messages_dir), \
+                 patch.object(app, "HOME", str(home)), \
+                 patch.object(app, "SCRATCH", root), \
+                 patch.object(app, "web_turns", manager), \
+                 patch.object(app, "_within_allowed", return_value=str(root)), \
+                 patch.object(app, "_agy_environment", return_value={"HOME": str(home)}), \
+                 patch.object(app, "save_conversation_async", new=AsyncMock()), \
+                 patch.object(app, "set_conversation_needs_replay_async", new=AsyncMock()), \
+                 patch.object(app, "stream_agy_acp", side_effect=fake_stream_acp):
+                resp = await app.chat(req)
+                async for _ in resp.body_iterator:
+                    pass
+                await manager.turns[turn_id].task
+
+            self.assertIsNone(captured_kwargs["conversation_id"])
+            self.assertIn("第一条问题", captured_kwargs["prompt"])
+            self.assertIn("继续优化", captured_kwargs["prompt"])
+            self.assertNotIn("Do not use tools", captured_kwargs["prompt"])
+            with patch.object(app, "MESSAGES_DIR", messages_dir), patch.object(app, "HOME", str(home)):
+                history = app.read_message_history(stable_cid)
+            self.assertEqual(history[-1]["routeInfo"]["native_conversation_id"], acp_sid)
+
+    async def test_native_non_claude_agy_channel_uses_official_acp(self):
+        captured_kwargs = {}
+
+        async def fake_stream_acp(**kwargs):
+            captured_kwargs.update(kwargs)
+            info = kwargs["route_info_factory"]("req-native-acp", kwargs["model"])
+            yield {"event": "init", "conversation_id": "acp-native-1", "model": kwargs["model"], "transport": "acp", "route_info": info}
+            yield {"event": "delta", "delta": "native acp reply"}
+            yield {"event": "result", "response": "native acp reply", "route_info": info}
+            yield {"event": "metadata", "route_info": info}
+
+        with tempfile.TemporaryDirectory(prefix="mintcli-native-acp-test-") as tmp:
+            root = Path(tmp)
+            with patch.object(app, "SCRATCH", root), \
+                 patch.object(app, "_within_allowed", return_value=str(root)), \
+                 patch.object(app, "_agy_environment", return_value={"HOME": str(root)}), \
+                 patch.object(app, "stream_agy_acp", side_effect=fake_stream_acp), \
+                 patch.object(app.asyncio, "create_subprocess_exec", side_effect=AssertionError("native channel must not spawn agy -p")):
+                events = [ev async for ev in app._stream_agy("hello native", "gemini-4-neon-medium", cwd=str(root))]
+
+        self.assertEqual(captured_kwargs["model"], "gemini-4-neon-medium")
+        self.assertEqual(captured_kwargs["prompt"], "hello native")
+        self.assertTrue(any(ev.get("event") == "delta" and ev.get("delta") == "native acp reply" for ev in events))
+
+    async def test_acp_info_endpoint_caches_and_refreshes(self):
+        calls = 0
+
+        async def fake_probe(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return {
+                "available": True,
+                "protocolVersion": 1,
+                "serverName": "Antigravity ACP Server",
+                "serverVersion": f"1.5.{13 + calls}",
+                "supportsSystemPromptAppend": True,
+            }
+
+        with patch.object(app, "_acp_info_cache", None), \
+             patch.object(app, "probe_agy_acp_info", side_effect=fake_probe):
+            first = await app.acp_info(refresh=False)
+            second = await app.acp_info(refresh=False)
+            refreshed = await app.acp_info(refresh=True)
+
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["acp"]["serverVersion"], "1.5.14")
+        self.assertEqual(second["acp"]["serverVersion"], "1.5.14")
+        self.assertEqual(refreshed["acp"]["serverVersion"], "1.5.15")
+        self.assertEqual(calls, 2)
 
 
 if __name__ == "__main__":

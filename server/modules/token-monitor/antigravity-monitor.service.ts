@@ -22,7 +22,12 @@ export async function readAntigravityMonitor(session: Row) {
     base.returnedModel = models.at(-1) || null;
     const timestamp = message.timestamp || message.created_at || '';
     const requested = message.requestedModel || route.requested_model || message.model;
-    replyModels.push({ messageIds: [id], timestamp: String(timestamp), requestedModel: valid(requested) ? requested : null, reportedModel: base.returnedModel });
+    const stepIds = Array.isArray(message.steps)
+      ? message.steps
+        .filter((step: Row) => step?.type === 'text' && typeof step.id === 'string' && step.id)
+        .map((step: Row) => String(step.id))
+      : [];
+    replyModels.push({ messageIds: [...new Set([id, ...stepIds])], timestamp: String(timestamp), requestedModel: valid(requested) ? requested : null, reportedModel: base.returnedModel });
     const content = String(message.content || '');
     const metrics = typeof message.metrics === 'string' ? message.metrics : '';
     // The native bridge historically persisted numeric usage only in this formatted snapshot.

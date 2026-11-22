@@ -10,6 +10,8 @@ import { useTranslation } from 'react-i18next';
 import { MermaidDiagram } from '@/modules/code-editor';
 import { MarkdownDownload } from '@/modules/chat/transcript/MarkdownDownload';
 import { MarkdownImage } from '@/modules/chat/transcript/MarkdownImage';
+import { MarkdownVideo } from '@/modules/chat/transcript/MarkdownVideo';
+import { isImagePath, isVideoPath } from '@/modules/chat/transcript/markdownMedia';
 import { normalizeInlineCodeFences } from '@/modules/chat/utils/chatFormatting';
 import { normalizeLatexDelimiters } from '@/modules/chat/utils/latexDelimiters';
 import { copyTextToClipboard } from '@/shared/utils';
@@ -296,19 +298,72 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
         const fileRef = looksLikeFilePath(href) ? href : looksLikeFilePath(linkText) ? linkText : undefined;
 
         if (href?.startsWith('/downloads/')) {
-          return <a href={href} download className="text-blue-600 hover:underline dark:text-blue-400">{linkChildren}</a>;
+          const downloadLink = (
+            <a href={href} download className="text-blue-600 hover:underline dark:text-blue-400">
+              {linkChildren}
+            </a>
+          );
+          if (isImagePath(href)) {
+            return (
+              <span className="my-1 block">
+                <MarkdownImage src={href} alt={linkText} />
+                <span className="inline-block text-xs">{downloadLink}</span>
+              </span>
+            );
+          }
+          if (isVideoPath(href)) {
+            return (
+              <span className="my-1 block">
+                <MarkdownVideo src={href} alt={linkText} />
+                <span className="inline-block text-xs">{downloadLink}</span>
+              </span>
+            );
+          }
+          return downloadLink;
         }
         if (href?.startsWith('/api/download?')) {
           const rawPath = new URL(href, 'http://localhost').searchParams.get('path')?.trim();
           if (rawPath) {
             const targetPath = rawPath.startsWith('file://') ? rawPath.replace(/^file:\/\/+/, '/') : rawPath;
+            if (isImagePath(targetPath)) {
+              return (
+                <span className="my-1 block">
+                  <MarkdownImage src={targetPath} alt={linkText} />
+                  <span className="inline-block text-xs"><MarkdownDownload path={targetPath}>{linkChildren}</MarkdownDownload></span>
+                </span>
+              );
+            }
+            if (isVideoPath(targetPath)) {
+              return (
+                <span className="my-1 block">
+                  <MarkdownVideo src={targetPath} alt={linkText} />
+                  <span className="inline-block text-xs"><MarkdownDownload path={targetPath}>{linkChildren}</MarkdownDownload></span>
+                </span>
+              );
+            }
             return <MarkdownDownload path={targetPath}>{linkChildren}</MarkdownDownload>;
           }
         }
         if (href && !isExternalHref(href) && (href.startsWith('/mnt/data/') || href.includes('/.cloudcli/assets/') ||
-          /\.(?:zip|gz|7z|pdf|docx?|xlsx?|pptx?|csv|png|jpe?g|gif|webp|svg|mp[34]|wav|webm)$/i.test(href))) {
+          /\.(?:zip|gz|7z|pdf|docx?|xlsx?|pptx?|csv|png|jpe?g|gif|webp|svg|avif|bmp|mp[34]|wav|webm|mov|m4v|ogv)$/i.test(href))) {
           let path = href;
           try { path = decodeURIComponent(href); } catch { /* Preserve a literal percent sign. */ }
+          if (isImagePath(path)) {
+            return (
+              <span className="my-1 block">
+                <MarkdownImage src={path} alt={linkText} />
+                <span className="inline-block text-xs"><MarkdownDownload path={path}>{linkChildren}</MarkdownDownload></span>
+              </span>
+            );
+          }
+          if (isVideoPath(path)) {
+            return (
+              <span className="my-1 block">
+                <MarkdownVideo src={path} alt={linkText} />
+                <span className="inline-block text-xs"><MarkdownDownload path={path}>{linkChildren}</MarkdownDownload></span>
+              </span>
+            );
+          }
           return <MarkdownDownload path={path}>{linkChildren}</MarkdownDownload>;
         }
         if (fileRef && !isExternalHref(href)) {
@@ -353,7 +408,16 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
   );
 
   return (
-    <ReactMarkdown urlTransform={url => url.startsWith('sandbox:/mnt/data/') ? url.slice('sandbox:'.length) : defaultUrlTransform(url)} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components as any}>
+    <ReactMarkdown
+      urlTransform={url => {
+        if (url.startsWith('sandbox:/mnt/data/')) return url.slice('sandbox:'.length);
+        if (url.startsWith('file://')) return url.replace(/^file:\/\/+/, '/');
+        return defaultUrlTransform(url);
+      }}
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
+      components={components as any}
+    >
       {content}
     </ReactMarkdown>
   );

@@ -402,6 +402,9 @@
       "updatingHint": "正在服务器上运行 {{command}}，可能需要几分钟。",
       "runsCommand": "在服务器上运行 {{command}}",
       "output": "{{command}} 的输出",
+      "acpVersion": "官方原生 ACP：v{{version}}",
+      "acpProtocol": "协议 v{{protocol}}",
+      "acpUnavailable": "官方原生 ACP：不可用",
       "result": {
         "updated": "已更新到 v{{version}}。",
         "alreadyUpToDate": "已是最新版本（v{{version}}）。",

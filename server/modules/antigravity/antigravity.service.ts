@@ -65,7 +65,7 @@ export function createAntigravityBridge(options: BridgeOptions = {}) {
 
   const request = async (method: string, target: string, body?: unknown, signal?: AbortSignal, contentType?: string): Promise<Response> => {
     if (!target.startsWith('/api/') || target.includes('..') || target.includes('\\')
-      || !/^\/api\/(?:accounts(?:\/(?:add|switch|[^/?]+))?|quota|models|chat|upload|download|fs|conversations(?:\/[^/?]+(?:\/(?:messages|activate|pin))?)?|turns\/[^/?]+(?:\/(?:events|stop))?)(?:\?[^#]*)?$/.test(target)) {
+      || !/^\/api\/(?:accounts(?:\/(?:add|switch|[^/?]+))?|quota|models|chat|upload|download|fs|conversations(?:\/[^/?]+(?:\/(?:messages|activate|pin|recall))?)?|turns\/[^/?]+(?:\/(?:events|stop))?)(?:\?[^#]*)?$/.test(target)) {
       throw new AppError('不支持的 Antigravity 操作。', { code: 'INVALID_ANTIGRAVITY_PATH', statusCode: 400 });
     }
     try {

@@ -424,6 +424,9 @@
       "updatingHint": "Running {{command}} on the server. This can take a few minutes.",
       "runsCommand": "Runs {{command}} on the server",
       "output": "Output of {{command}}",
+      "acpVersion": "Official ACP: v{{version}}",
+      "acpProtocol": "Protocol v{{protocol}}",
+      "acpUnavailable": "Official ACP: unavailable",
       "result": {
         "updated": "Updated to v{{version}}.",
         "alreadyUpToDate": "Already up to date (v{{version}}).",

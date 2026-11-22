@@ -6,6 +6,19 @@ type HistorySession = {
   recordedModels: string[]; reportedModels: string[]; status: string; totals: { total: number } | null;
 };
 
+function sameModels(previous: string[], incoming: string[]) {
+  return previous.length === incoming.length && previous.every((model, index) => model === incoming[index]);
+}
+
+function sameHistoryRow(previous: HistorySession, incoming: HistorySession) {
+  return previous.sessionId === incoming.sessionId && previous.provider === incoming.provider
+    && previous.title === incoming.title && previous.archived === incoming.archived
+    && previous.configuredModel === incoming.configuredModel && previous.status === incoming.status
+    && previous.totals?.total === incoming.totals?.total
+    && sameModels(previous.recordedModels, incoming.recordedModels)
+    && sameModels(previous.reportedModels, incoming.reportedModels);
+}
+
 /** Used by the monitor dialog to browse every indexed conversation without switching the active chat. */
 export function SessionHistory({ selectedId, onSelect, revision }: { selectedId?: string | null; onSelect: (id: string) => void; revision: number }) {
   // The history index is loaded only while the inspector is open, independently of reply polling.
@@ -22,7 +35,13 @@ export function SessionHistory({ selectedId, onSelect, revision }: { selectedId?
     const poll = async () => {
       try {
         const data = await readApiJson<{ sessions: HistorySession[] }>(await api.tokenMonitor.sessions(controller.signal));
-        if (!cancelled) { setSessions(data.sessions); setError(''); }
+        if (!cancelled) {
+          // Reuse the index and search projection when a poll changes no displayed evidence.
+          setSessions(previous => previous?.length === data.sessions.length
+            && previous.every((row, index) => sameHistoryRow(row, data.sessions[index]))
+            ? previous : data.sessions);
+          setError('');
+        }
       } catch { if (!cancelled) setError('历史会话读取失败，请刷新监控重试。'); }
       finally { if (!cancelled) timer = setTimeout(poll, 15000); }
     };
@@ -34,6 +53,7 @@ export function SessionHistory({ selectedId, onSelect, revision }: { selectedId?
     providers: [...new Set(sessions?.map(session => session.provider) || [])].sort(),
     rows: sessions?.map(session => ({
       session,
+      tokenLabel: session.totals?.total.toLocaleString() ?? '未记录',
       searchText: [
         session.sessionId, session.title, session.provider, session.provider === 'antigravity' ? 'AGY' : '',
         session.configuredModel, ...session.recordedModels, ...session.reportedModels,
@@ -58,12 +78,12 @@ export function SessionHistory({ selectedId, onSelect, revision }: { selectedId?
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     {!sessions && !error && <p role="status" className="text-xs">正在扫描历史用量…</p>}
     <div className="max-h-72 space-y-2 overflow-y-auto">
-      {filtered?.map(({ session }) => <button type="button" key={session.sessionId} onClick={() => onSelect(session.sessionId)} aria-pressed={selectedId === session.sessionId}
+      {filtered?.map(({ session, tokenLabel }) => <button type="button" key={session.sessionId} onClick={() => onSelect(session.sessionId)} aria-pressed={selectedId === session.sessionId}
         className="block w-full rounded border border-border p-2 text-left text-xs hover:bg-muted aria-pressed:bg-muted">
         <span className="block break-all font-medium">{session.title} · {session.provider}{session.archived ? ' · 已归档' : ''}</span>
         <span className="block break-all">返回模型：{session.reportedModels.join('、') || '历史未记录'}</span>
         <span className="block break-all text-muted-foreground">请求模型：{session.recordedModels.join('、') || session.configuredModel || '未记录'}</span>
-        <span className="block font-mono">Token：{session.totals ? session.totals.total.toLocaleString() : '未记录'}</span>
+        <span className="block font-mono">Token：{tokenLabel}</span>
       </button>)}
       {filtered?.length === 0 && <p className="text-xs">没有匹配的会话。</p>}
     </div>

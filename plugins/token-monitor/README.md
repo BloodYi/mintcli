@@ -63,3 +63,9 @@ Upstream v0.94.0 also changes Electron quota/account management, desktop setting
 Adapter 1.13.0 pins official v0.95.0 (commit `4a36ad4f`). The generated parser changes because the client catalog adds Junie and OpenCodeReview. The other 26 bundle inputs are unchanged. mintcli history still uses its own session index and native AGY bridge. The history browser now prepares each row's searchable text once per session snapshot and reuses the filtered list across inspector renders when the search and tool selection stay the same.
 
 Upstream adds Grok, WorkBuddy and CatPaw context meters using their local session metadata. Those readers, Junie and OpenCodeReview scanning, synced-device aggregation, and Electron appearance, settings and Edge Dock changes belong to the upstream desktop stack. The web adapter continues to display indexed history, provider-specific usage and exact reply-model evidence from its supported sources.
+
+### 0.95.1 `b5483a45` / mintcli adapter 1.14.0
+
+The web history poll retains its existing index and search results when the ordered rows, displayed usage and model evidence are unchanged. The next complete result still updates the list when a conversation, archive flag, token total or model changes.
+
+The parser was rebuilt from the official tag. All 27 transitive inputs, the generated bundle and the MIT license are byte-identical to 0.95.0. The upstream Electron IPC stats delta, heap collection, collector watches, Tokscale scans, WSL discovery, quota cards and Hub configuration stay in their desktop and sync runtimes.

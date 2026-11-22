@@ -47,7 +47,7 @@ export type ToolDisplayConfig = {
  */
 const DESCRIPTIVE_INPUT_KEYS = [
   'command', 'cmd', 'file_path', 'path', 'filePath', 'pattern', 'query', 'url',
-  'prompt', 'description', 'name', 'selector', 'text', 'skill', 'id',
+  'prompt', 'description', 'summary', 'name', 'selector', 'text', 'skill', 'id',
 ] as const;
 
 /** Builds a one-line summary of an unmapped tool's input. */

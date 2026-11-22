@@ -10,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon, Zap } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, SendHorizonalIcon, PencilIcon, Zap } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
@@ -79,7 +79,6 @@ type ChatComposerProps = {
   hasInput: boolean;
   onClearInput: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>) => void;
-  onSendNow?: (event: MouseEvent<HTMLButtonElement>) => void;
   isDragActive: boolean;
   queuedDraft: QueuedDraft | null;
   backgroundSendPrompt: BackgroundSendPrompt | null;
@@ -164,7 +163,6 @@ export default function ChatComposer({
   hasInput,
   onClearInput,
   onSubmit,
-  onSendNow,
   isDragActive,
   queuedDraft,
   backgroundSendPrompt,
@@ -273,19 +271,12 @@ export default function ChatComposer({
   const hasPendingPermissions = pendingPermissionRequests.length > 0;
   const hasActivityIndicator = Boolean(activity && !hasPendingPermissions);
 
-  const hasQueuedDraft = Boolean(queuedDraft);
-  const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
-  const submitHint = canQueueDraft
-    ? hasQueuedDraft
-      ? t('input.hintText.appendQueued', { defaultValue: 'Enter to add to the queued message' })
-      : t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' })
-    : sendByCtrlEnter
-      ? t('input.hintText.ctrlEnter')
-      : t('input.hintText.enter');
-  const submitAriaLabel = canQueueDraft
-    ? hasQueuedDraft
-      ? t('input.queue.append', { defaultValue: 'Add to queued message' })
-      : t('input.queue.sendNext', { defaultValue: 'Queue next message' })
+  const canSendWhileLoading = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
+  const submitHint = sendByCtrlEnter
+    ? t('input.hintText.ctrlEnter')
+    : t('input.hintText.enter');
+  const submitAriaLabel = canSendWhileLoading
+    ? t('input.send')
     : isLoading
       ? t('input.stop')
       : t('input.send');
@@ -556,21 +547,9 @@ export default function ChatComposer({
               providerLabel={providerLabel}
             />
 
-            {canQueueDraft && onSendNow && (
-              <PromptInputButton
-                type="button"
-                onClick={onSendNow}
-                aria-label={t('input.sendNow', { defaultValue: 'Send now' })}
-                title={t('input.sendNowHint', { defaultValue: 'Interrupt the current turn and continue with this message' })}
-                className="gap-1 px-2"
-              >
-                <Zap className="h-4 w-4" />
-                <span>{t('input.sendNow', { defaultValue: 'Send now' })}</span>
-              </PromptInputButton>
-            )}
             <PromptInputSubmit
               onClick={
-                canQueueDraft
+                canSendWhileLoading
                   ? (e: MouseEvent<HTMLButtonElement>) => {
                       e.preventDefault();
                       onSubmit(e);
@@ -599,15 +578,15 @@ export default function ChatComposer({
             >
               {isTranscribing ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
-              ) : canQueueDraft ? (
-                <ArrowUpIcon className="h-4 w-4" />
+              ) : canSendWhileLoading ? (
+                <SendHorizonalIcon className="h-4 w-4" />
               ) : undefined}
             </PromptInputSubmit>
           </div>
 
           <div
             className={`order-last hidden basis-full px-2 text-center text-xs leading-4 text-muted-foreground/50 transition-opacity duration-200 lg:block ${
-              input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
+              input.trim() && !canSendWhileLoading ? 'opacity-0' : 'opacity-100'
             }`}
           >
             {submitHint}

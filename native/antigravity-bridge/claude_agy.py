@@ -109,9 +109,20 @@ async def stream_claude_agy(
             }
             if system_append:
                 payload["systemAppend"] = system_append
-            proc = await asyncio.create_subprocess_exec(
+            argv = [
                 os.getenv("MINTCLI_NODE_BIN", "/opt/mintcli-node/bin/node"),
                 str(_bridge / "claude-agy.mjs"),
+            ]
+            scope = None
+            if os.getenv("MINTCLI_CLAUDE_WORKER_SCOPE") == "1":
+                scope = "mintcli-claude-agy-" + turn_id + ".scope"
+                argv = [
+                    "/usr/bin/systemd-run", "--quiet", "--scope", "--unit=" + scope,
+                    "--slice=mintcli.slice", "--property=MemoryMax=7G",
+                    "--property=MemorySwapMax=1G", "--property=OOMPolicy=kill", "--", *argv,
+                ]
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, start_new_session=True,
                 env=worker_env, limit=32 * 1024 * 1024,
@@ -175,7 +186,10 @@ async def stream_claude_agy(
                 if (saw_error or not terminal) and err_txt:
                     logger.warning("claude-agy failed (rc=%s): %s", proc.returncode, err_txt)
                 if not terminal:
-                    yield {"event": "error", "error": "Claude → agy 进程提前退出。"}
+                    error = "Claude → agy 进程提前退出。"
+                    if proc.returncode in (-9, 137):
+                        error = "本轮进程被系统终止，可能达到内存上限。请缩小任务或分批运行测试后重试。"
+                    yield {"event": "error", "error": error}
                 if any(agy_trace.values()):
                     yield {
                         "event": "agy_trace",
@@ -184,6 +198,16 @@ async def stream_claude_agy(
                     }
             finally:
                 await reap_cli_process(proc)
+                if scope:
+                    # Also terminate descendants that started a separate process group.
+                    try:
+                        stop = await asyncio.create_subprocess_exec(
+                            "/usr/bin/systemctl", "--no-block", "stop", scope,
+                            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await asyncio.wait_for(stop.wait(), timeout=3)
+                    except (OSError, asyncio.TimeoutError):
+                        logger.warning("Could not stop worker scope %s", scope)
                 if not stderr_task.done():
                     stderr_task.cancel()
                 try:

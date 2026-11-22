@@ -11,6 +11,8 @@ import { pathToFileURL } from 'node:url';
 const emit = event => process.stdout.write(JSON.stringify(event) + '\n');
 const tools = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'NotebookEdit', 'Bash'];
 const limit = 24 * 1024 * 1024;
+const GEMINI_NEON_CONTEXT_WINDOW = '512000';
+const GEMINI_NEON_MODEL_RE = /^gemini-4-neon(?:-(?:low|medium|high|xhigh))?$/;
 const TERMINAL_STATUSES = new Set([400, 401, 403, 404, 422]);
 const TERMINAL_STREAM_RE = /"type"\s*:\s*"(?:permission_error|authentication_error|invalid_request_error)"/;
 const RETRYABLE_STREAM_RE = /"type"\s*:\s*"(?:rate_limit_error|overloaded_error|api_error)"/;
@@ -19,7 +21,7 @@ const ACP_SESSION_RE = /(?:Created conversation|Starting conversation update str
 const ACP_HTTP_RE = /URL:\s+(https?:\/\/\S+)\s+Trace:\s+([A-Za-z0-9._:-]{1,200})\s+ResponseID:\s+([A-Za-z0-9._:-]{1,200})/g;
 const ACP_RESPONSE_ID_RE = /\[streamGenerateContent\] ResponseID:\s+([A-Za-z0-9._:-]{1,200})/g;
 
-function scanAgyAcpLogs(tmpDir, trace) {
+function scanAgyAcpLogs(tmpDir, trace, scannedLogs) {
   if (!tmpDir) return;
   let entries;
   try {
@@ -32,7 +34,11 @@ function scanAgyAcpLogs(tmpDir, trace) {
     const logPath = path.join(tmpDir, entry.name, 'agy-acp.log');
     let text;
     try {
+      const stat = fs.statSync(logPath, { bigint: true });
+      const version = [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join('/');
+      if (scannedLogs.get(logPath) === version) continue;
       text = fs.readFileSync(logPath, 'utf8');
+      scannedLogs.set(logPath, version);
     } catch {
       continue;
     }
@@ -72,6 +78,52 @@ function formatToolLabel(name, input) {
     detail = truncateInline(input.description || input.command);
   }
   return detail ? `${toolName}: ${detail}` : toolName;
+}
+
+const MAX_TOOL_RESULT_CHARS = 32768;
+
+function formatToolResultContent(content) {
+  let text = '';
+  if (typeof content === 'string') {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .map(part => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part === 'object') {
+          if (typeof part.text === 'string') return part.text;
+          if (typeof part.content === 'string') return part.content;
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  } else if (content && typeof content === 'object') {
+    try {
+      text = JSON.stringify(content, null, 2);
+    } catch {
+      text = String(content);
+    }
+  } else if (content != null) {
+    text = String(content);
+  }
+  if (text.length > MAX_TOOL_RESULT_CHARS) {
+    return text.slice(0, MAX_TOOL_RESULT_CHARS) + '\n…[输出过长已截断]';
+  }
+  return text;
+}
+
+function sanitizeToolUseResult(value) {
+  if (value === undefined || value === null) return undefined;
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized && serialized.length <= MAX_TOOL_RESULT_CHARS) {
+      return value;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 function normalizeUsage(raw) {
@@ -135,24 +187,23 @@ async function run() {
     traceIds: new Set(),
     upstreamUrls: new Set(),
   };
-  let lastTraceSignature = '';
+  const scannedLogs = new Map();
+  let lastTraceCount = 0;
 
   const flushAgyTrace = (force = false) => {
-    scanAgyAcpLogs(process.env.TMPDIR, agyTrace);
-    if (!agyTrace.sessions.size && !agyTrace.responseIds.size && !agyTrace.traceIds.size && !agyTrace.upstreamUrls.size) {
-      return;
-    }
-    const payload = {
+    scanAgyAcpLogs(process.env.TMPDIR, agyTrace, scannedLogs);
+    // All four sets only grow. Equal totals mean the snapshot is unchanged.
+    const count = agyTrace.sessions.size + agyTrace.responseIds.size +
+      agyTrace.traceIds.size + agyTrace.upstreamUrls.size;
+    if (!count || (!force && count === lastTraceCount)) return;
+    lastTraceCount = count;
+    emit({
       event: 'agy_trace',
       session_ids: [...agyTrace.sessions],
       response_ids: [...agyTrace.responseIds],
       trace_ids: [...agyTrace.traceIds],
       upstream_urls: [...agyTrace.upstreamUrls],
-    };
-    const signature = JSON.stringify(payload);
-    if (!force && signature === lastTraceSignature) return;
-    lastTraceSignature = signature;
-    emit(payload);
+    });
   };
 
   const server = createServer(async (req, res) => {
@@ -241,6 +292,9 @@ async function run() {
   await once(server, 'listening');
   const env = {
     PATH: process.env.PATH,
+    // Full-project test runs can start several multi-gigabyte workers.
+    VITEST_MAX_FORKS: '1',
+    VITEST_MAX_THREADS: '1',
     HOME: input.claudeHome,
     CLAUDE_CONFIG_DIR: input.claudeHome,
     CLAUDE_CODE_ARTIFACT: '1',
@@ -249,12 +303,19 @@ async function run() {
     ANTHROPIC_API_KEY: secret,
     ANTHROPIC_BASE_URL: 'http://127.0.0.1:' + server.address().port,
   };
+  if (GEMINI_NEON_MODEL_RE.test(input.model)) {
+    // Antigravity offers a 512K window for Neon. Declare it to Claude Code
+    // so the fallback window for unknown model IDs doesn't compact early.
+    env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = GEMINI_NEON_CONTEXT_WINDOW;
+  }
   let finished = false;
   let hasPartialText = false;
+  let hasPartialThinking = false;
   let emittedText = '';
   let needsTextSeparator = false;
   let emittedThinking = false;
   let needsThinkingSeparator = false;
+  let toolSeq = 0;
 
   const emitText = text => {
     if (!text) return;
@@ -305,12 +366,14 @@ async function run() {
       if (item.type === 'stream_event') {
         if (item.event?.type === 'content_block_start' && item.event.content_block?.type === 'tool_use') {
           if (emittedText) needsTextSeparator = true;
+          if (emittedThinking) needsThinkingSeparator = true;
         } else if (item.event?.type === 'content_block_delta') {
           const delta = item.event.delta;
           if (delta?.type === 'text_delta' && delta.text) {
             hasPartialText = true;
             emitText(delta.text);
           } else if (delta?.type === 'thinking_delta' && delta.thinking) {
+            hasPartialThinking = true;
             emitThinking(delta.thinking);
           }
         }
@@ -318,14 +381,42 @@ async function run() {
         for (const block of item.message?.content || []) {
           if (block.type === 'tool_use') {
             if (emittedText) needsTextSeparator = true;
-            emit({ event: 'tool', tool: formatToolLabel(block.name, block.input) });
+            if (emittedThinking) needsThinkingSeparator = true;
+            const toolId = String(block.id || `tool_${++toolSeq}`);
+            const toolName = String(block.name || 'Tool');
+            const toolInput = block.input && typeof block.input === 'object' ? block.input : (block.input ?? {});
+            emit({
+              event: 'tool',
+              tool: formatToolLabel(toolName, toolInput),
+              tool_id: toolId,
+              tool_name: toolName,
+              tool_input: toolInput,
+              status: 'running',
+            });
           } else if (block.type === 'text' && block.text && !hasPartialText) {
             emitText(block.text);
+          } else if (block.type === 'thinking' && block.thinking && !hasPartialThinking) {
+            emitThinking(block.thinking);
           }
         }
         if (emittedText) needsTextSeparator = true;
         if (emittedThinking) needsThinkingSeparator = true;
         hasPartialText = false;
+        hasPartialThinking = false;
+      } else if (item.type === 'user') {
+        const blocks = Array.isArray(item.message?.content) ? item.message.content : [];
+        const structuredResult = sanitizeToolUseResult(item.tool_use_result ?? item.toolUseResult);
+        for (const block of blocks) {
+          if (block?.type === 'tool_result') {
+            emit({
+              event: 'tool_result',
+              tool_id: String(block.tool_use_id || block.toolId || ''),
+              content: formatToolResultContent(block.content),
+              is_error: Boolean(block.is_error),
+              ...(structuredResult !== undefined ? { tool_use_result: structuredResult } : {}),
+            });
+          }
+        }
       } else if (item.type === 'result') {
         finished = true;
         flushAgyTrace(true);

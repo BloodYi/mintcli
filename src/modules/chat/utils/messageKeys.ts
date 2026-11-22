@@ -13,6 +13,7 @@ export const getIntrinsicMessageKey = (message: ChatMessage): string | null => {
   const candidates = [
     message.id,
     message.messageId,
+    message.modelSourceId,
     message.toolId,
     message.toolCallId,
     message.blobId,

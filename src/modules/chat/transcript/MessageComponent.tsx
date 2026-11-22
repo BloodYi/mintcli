@@ -2,7 +2,7 @@ import { ReplyModelDetails } from '@/modules/token-monitor';
 import { useTranscriptSessionId } from '@/modules/chat/context/TranscriptSessionContext';
 import { memo, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { GitBranchIcon, PencilIcon } from 'lucide-react';
+import { GitBranchIcon, PencilIcon, Undo2 } from 'lucide-react';
 
 import type { ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, LLMProvider,DiffLine,Project } from '@/shared/types';
 import { formatUsageLimitText, stripProposedPlanEnvelope } from '@/modules/chat/utils/chatFormatting';
@@ -41,6 +41,11 @@ type MessageComponentProps = {
    * Absent when the provider cannot copy a transcript prefix.
    */
   onForkFromMessage?: (message: ChatMessage) => void;
+  /**
+   * Recalls this user message (deleting it and any subsequent turns) and
+   * returns its text to the composer after user confirmation.
+   */
+  onRecallMessage?: (message: ChatMessage) => void;
 };
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
@@ -49,7 +54,7 @@ const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
  * Rendered by chat's ChatMessagesPane and ToolGroupContainer to draw one
  * transcript entry — user turn, assistant turn, or a tool call and its result.
  */
-const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onEditMessage, onForkFromMessage, onRecallMessage }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const transcriptSessionId = useTranscriptSessionId();
   const isGrouped = prevMessage && prevMessage.type === message.type &&
@@ -149,12 +154,40 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   {shouldShowUserCopyControl && (
                     <MessageCopyControl content={userCopyContent} messageType="user" />
                   )}
+                  {!isExporting && onRecallMessage && (
+                    <button
+                      type="button"
+                      onClick={() => onRecallMessage(message)}
+                      title={t('message.recall', { defaultValue: 'Recall' })}
+                      aria-label={t('message.recall', { defaultValue: 'Recall' })}
+                      className="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    >
+                      <Undo2 className="h-3.5 w-3.5" />
+                      <span className="text-[11px] font-medium">
+                        {t('message.recall', { defaultValue: 'Recall' })}
+                      </span>
+                    </button>
+                  )}
                   <span>{formattedTime}</span>
                 </div>
               </div>
             ) : (
               /* Attachment-only turn: no text bubble, but the timestamp still shows */
               <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
+                {!isExporting && onRecallMessage && (
+                  <button
+                    type="button"
+                    onClick={() => onRecallMessage(message)}
+                    title={t('message.recall', { defaultValue: 'Recall' })}
+                    aria-label={t('message.recall', { defaultValue: 'Recall' })}
+                    className="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <Undo2 className="h-3.5 w-3.5" />
+                    <span className="text-[11px] font-medium">
+                      {t('message.recall', { defaultValue: 'Recall' })}
+                    </span>
+                  </button>
+                )}
                 <span>{formattedTime}</span>
               </div>
             )}
@@ -232,7 +265,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                           ? t('messageTypes.codex')
                           : provider === 'opencode'
                               ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
-                              : t('messageTypes.claude'))}
+                              : provider === 'antigravity'
+                                  ? t('messageTypes.antigravity', { defaultValue: 'Antigravity' })
+                                  : t('messageTypes.claude'))}
               </div>
             </div>
           )}
@@ -328,12 +363,17 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               </>
             ) : message.isThinking ? (
               /* Thinking messages — Reasoning component (ai-elements pattern) */
-              <Reasoning defaultOpen={isExporting}>
+              <Reasoning
+                isStreaming={Boolean(message.isStreaming)}
+                defaultOpen={isExporting ? true : undefined}
+              >
                 <ReasoningTrigger />
                 <ReasoningContent>
-                  <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
-                    {message.content}
-                  </Markdown>
+                  <StreamingMarkdown
+                    content={String(message.content || '')}
+                    isStreaming={Boolean(message.isStreaming)}
+                    className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert"
+                  />
                   {!isExporting && (
                     <div className="mt-3 flex items-center text-[11px]">
                       <MessageCopyControl content={String(message.content || '')} messageType="assistant" />
@@ -428,7 +468,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 {!isGrouped && <span>{formattedTime}</span>}
               </div>
             )}
-            {!isExporting && message.type === 'assistant' && !message.isThinking && !message.isToolUse && !message.isLocalCommandStdout && !message.isCompactSummary && <ReplyModelDetails
+            {!isExporting && !message.isStreaming && message.type === 'assistant' && !message.isThinking && !message.isToolUse && !message.isLocalCommandStdout && !message.isCompactSummary && <ReplyModelDetails
               sessionId={transcriptSessionId} messageId={message.modelSourceId} timestamp={message.timestamp} model={message.model} provider={provider} />}
           </div>
         </div>

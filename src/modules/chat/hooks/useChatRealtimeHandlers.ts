@@ -395,9 +395,9 @@ export function useChatRealtimeHandlers({
             if (sid === activeViewSessionId) {
               setTokenBudget(msg.tokenBudget as Record<string, unknown>);
             }
-          } else if (msg.text && sid) {
+          } else if (sid) {
             onSessionProcessing?.(sid, {
-              statusText: msg.text as string,
+              statusText: typeof msg.text === 'string' && msg.text.trim() ? msg.text : null,
               canInterrupt: msg.canInterrupt !== false,
             });
           }

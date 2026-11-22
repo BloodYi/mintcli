@@ -117,3 +117,33 @@ it('API quota does not offer an official account reset',async()=>{
   render(<AccountQuota id="api:fixture"/>);
   expect(screen.queryByRole('button',{name:/使用重置卡/})).toBeNull();
 });
+
+it('separates embedded mobile Codex reset controls into their own wrapping row without crowding the header', async () => {
+  vi.mocked(api.agentConnections.quota).mockResolvedValue(Response.json({
+    connectionId: 'codex:team-acct',
+    planType: 'team',
+    checkedAt: Date.parse('2030-02-01T01:11:58Z'),
+    resetCredits: { availableCount: 3, credits: [{ id: 'c1', title: 'Reset' }] },
+    windows: [
+      { bucket: 'codex', minutes: 300, remainingPercent: 67, resetsAt: Date.parse('2030-02-01T01:53:00Z') / 1000 },
+      { bucket: 'codex', minutes: 10080, remainingPercent: 67, resetsAt: Date.parse('2030-02-06T15:27:00Z') / 1000 },
+    ],
+  }));
+
+  render(<AccountQuota id="codex:team-acct" embedded showUtilities={false} />);
+
+  const resetBtn = await screen.findByRole('button', { name: '使用重置卡（3）' });
+  const officialLink = screen.getByRole('link', { name: '官方用量与重置 ↗' });
+  const toggleBtn = screen.getByRole('button', { name: '收起账号额度' });
+  const refreshBtn = screen.getByRole('button', { name: '刷新额度' });
+  const actionsRow = screen.getByTestId('embedded-quota-actions');
+
+  expect(actionsRow.contains(resetBtn)).toBe(true);
+  expect(actionsRow.contains(officialLink)).toBe(true);
+  expect(actionsRow.contains(toggleBtn)).toBe(false);
+  expect(actionsRow.contains(refreshBtn)).toBe(false);
+  expect(actionsRow.className).toContain('flex-wrap');
+  expect(toggleBtn.className).toContain('overflow-hidden');
+  expect(within(toggleBtn).getByText('team')).toBeTruthy();
+  expect(within(toggleBtn).getByText('剩余额度')).toBeTruthy();
+});

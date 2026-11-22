@@ -606,6 +606,8 @@ export type NormalizedMessage = {
   /** Stored memory this reply drew on, when the provider reports it. */
   memoryCitations?: MemoryCitation[];
   isFinal?: boolean;
+  /** True while this row is actively receiving streamed tokens/chunks. */
+  isStreaming?: boolean;
   // Cursor-specific ordering
   sequence?: number;
   rowid?: number;
@@ -1374,6 +1376,14 @@ export type ProviderAuthStatusMap = Record<LLMProvider, ProviderAuthStatus>;
 
 //----------------- PROVIDER CLI VERSION ------------
 
+export type ProviderAcpStatus = {
+  available: boolean;
+  protocolVersion: number | null;
+  serverName: string | null;
+  serverVersion: string | null;
+  supportsSystemPromptAppend: boolean;
+};
+
 /** One provider CLI's version state from `GET /api/providers/:provider/cli`: the installed version, the newest official release (null when the release service did not answer), the command the update action runs, or why there is none ('bundled': it ships with mintcli; 'platform': the hosting platform manages it), whether an update run is going on, and the most recent finished run since the server started. A page that sees `updateInProgress` polls until it turns false and then shows `lastUpdate` as that run's result. Loaded by useProviderCliVersion and rendered by the settings account view. */
 export type ProviderCliStatus = {
   provider: LLMProvider;
@@ -1385,6 +1395,7 @@ export type ProviderCliStatus = {
   updateUnavailableReason: 'bundled' | 'platform' | null;
   updateInProgress: boolean;
   lastUpdate: ProviderCliUpdateResult | null;
+  acp?: ProviderAcpStatus | null;
 };
 
 /** What one run of a CLI's own updater did, from `POST /api/providers/:provider/cli/update`: the command, its exit code (null when it could not start or timed out), the tail of its output, the version before and after, and why it failed (null when neither the exit code nor the output reports a failure). Returned by useProviderCliVersion and rendered by the settings account view. */

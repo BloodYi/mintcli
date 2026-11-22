@@ -485,6 +485,40 @@ test('SDK-managed Claude is detected and checked for updates without running a n
   });
 });
 
+test('Antigravity status reports official ACP version and compares against official release manifest', async () => {
+  const probeCalls: boolean[] = [];
+  const registry = createFakeRegistry(async () => jsonResponse({ version: '1.6.0' }));
+  const service = createService({
+    fetch: registry.fetch,
+    managedUpdates: true,
+    probeAntigravityAcp: async (refresh) => {
+      probeCalls.push(refresh);
+      return {
+        available: true,
+        protocolVersion: 1,
+        serverName: 'Antigravity ACP Server',
+        serverVersion: '1.5.14',
+        supportsSystemPromptAppend: true,
+      };
+    },
+  });
+
+  const status = await service.getCliStatus('antigravity', true);
+  assert.equal(status.provider, 'antigravity');
+  assert.equal(status.installed, true);
+  assert.equal(status.installedVersion, '1.5.14');
+  assert.equal(status.latestVersion, '1.6.0');
+  assert.equal(status.updateAvailable, true);
+  assert.deepEqual(status.acp, {
+    available: true,
+    protocolVersion: 1,
+    serverName: 'Antigravity ACP Server',
+    serverVersion: '1.5.14',
+    supportsSystemPromptAppend: true,
+  });
+  assert.deepEqual(probeCalls, [true]);
+});
+
 // ----------------- the update action ------------
 
 test('updateCli runs the CLI\'s own updater and reports the version before and after', async () => {

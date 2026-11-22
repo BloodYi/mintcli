@@ -587,6 +587,193 @@ export const sessionsService = {
     await sessions.rewindSession?.(sessionId, keepThroughId);
   },
 
+  /**
+   * Immediately recalls a user message (and every turn after it) from any
+   * point in a conversation across all providers, returning the recalled text
+   * so the frontend can restore it into the composer for editing and resending.
+   */
+  async recallSessionMessage(
+    sessionId: string,
+    input: {
+      messageId?: string;
+      anchorId?: string;
+      userTurnFromEnd?: number;
+      content?: string;
+    },
+  ): Promise<{
+    sessionId: string;
+    recalledContent: string;
+    removedCount: number;
+    remainingCount: number;
+    isLatestUserMessage: boolean;
+  }> {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    // Abort an active turn first so recall can cleanly rewind even if the user
+    // decides to undo right after sending.
+    const activeRun = chatRunRegistry.getRun(sessionId);
+    if (activeRun && activeRun.status === 'running') {
+      try {
+        await providerRegistry.resolveProvider(activeRun.provider).runtime.abort(sessionId);
+      } catch (error) {
+        console.warn(`[SessionsService] Failed to abort active run before recall for ${sessionId}:`, error);
+      }
+      chatRunRegistry.completeRun(sessionId, { exitCode: 0, aborted: true });
+    }
+
+    const release = chatRunRegistry.tryLockSession(sessionId);
+    if (!release) {
+      throw new AppError('当前对话正在处理中，请稍后再试。', {
+        code: 'SESSION_BUSY',
+        statusCode: 409,
+      });
+    }
+
+    let mutated = false;
+    try {
+      const history = await sessionsService.fetchHistory(sessionId, { limit: null, offset: 0 });
+      const allMessages = history.messages;
+      const isUserText = (message: NormalizedMessage) =>
+        message.kind === 'text' && message.role === 'user';
+
+      const userIndices: number[] = [];
+      for (let i = 0; i < allMessages.length; i += 1) {
+        if (isUserText(allMessages[i])) {
+          userIndices.push(i);
+        }
+      }
+
+      let cutIndex = -1;
+      const anchorId = input.anchorId?.trim();
+      const messageId = input.messageId?.trim();
+
+      if (anchorId) {
+        cutIndex = allMessages.findIndex(
+          (message) => isUserText(message) && message.transcriptAnchorId === anchorId,
+        );
+      }
+      if (cutIndex < 0 && messageId) {
+        cutIndex = allMessages.findIndex(
+          (message) => isUserText(message) && message.id === messageId,
+        );
+      }
+      if (cutIndex < 0 && typeof input.userTurnFromEnd === 'number' && Number.isInteger(input.userTurnFromEnd) && input.userTurnFromEnd >= 0) {
+        const turnPos = userIndices.length - 1 - input.userTurnFromEnd;
+        if (turnPos >= 0 && turnPos < userIndices.length) {
+          cutIndex = userIndices[turnPos];
+        }
+      }
+
+      if (cutIndex < 0) {
+        throw new AppError('未找到要撤回的消息，可能已被更新，请刷新后重试。', {
+          code: 'RECALL_TARGET_NOT_FOUND',
+          statusCode: 404,
+        });
+      }
+
+      const recalledMessage = allMessages[cutIndex];
+      const keptMessages = allMessages.slice(0, cutIndex);
+      const userPos = userIndices.indexOf(cutIndex);
+      const userTurnFromEnd = userPos >= 0 ? userIndices.length - 1 - userPos : 0;
+      const isLatestUserMessage = userTurnFromEnd === 0;
+
+      const provider = session.provider as LLMProvider;
+      const providerAdapter = providerRegistry.resolveProvider(provider);
+      const existingHandoff = sessionsDb.getSessionHandoff(sessionId);
+
+      let rewoundNatively = false;
+
+      if (!existingHandoff && providerAdapter.sessions.recallMessage) {
+        rewoundNatively = await providerAdapter.sessions.recallMessage(sessionId, {
+          messageId: recalledMessage.id,
+          userTurnFromEnd,
+        });
+      }
+
+      if (!rewoundNatively && !existingHandoff && providerAdapter.sessions.resolveEditAnchor && recalledMessage.transcriptAnchorId) {
+        try {
+          const anchor = await providerAdapter.sessions.resolveEditAnchor(
+            sessionId,
+            recalledMessage.transcriptAnchorId,
+          );
+          if (anchor.found) {
+            if (providerAdapter.sessions.rewindSession) {
+              await providerAdapter.sessions.rewindSession(sessionId, anchor.resumeThroughId);
+              rewoundNatively = true;
+            } else if (providerAdapter.fork) {
+              if (anchor.resumeThroughId === null) {
+                if (session.provider_session_id) {
+                  sessionsDb.markProviderSessionSuperseded({
+                    providerSessionId: session.provider_session_id,
+                    provider,
+                    sessionId,
+                    jsonlPath: session.jsonl_path ?? null,
+                  });
+                }
+                sessionsDb.detachProviderSession(sessionId);
+                rewoundNatively = true;
+              } else if (session.provider_session_id && session.jsonl_path) {
+                const forked = await providerAdapter.fork.forkSession({
+                  providerSessionId: session.provider_session_id,
+                  jsonlPath: session.jsonl_path,
+                  projectPath: session.project_path ?? '',
+                  upToAnchorId: anchor.resumeThroughId,
+                });
+                sessionsDb.markProviderSessionSuperseded({
+                  providerSessionId: session.provider_session_id,
+                  provider,
+                  sessionId,
+                  jsonlPath: session.jsonl_path,
+                });
+                sessionsDb.repointSessionToProviderSession(sessionId, {
+                  providerSessionId: forked.providerSessionId,
+                  jsonlPath: forked.jsonlPath,
+                });
+                rewoundNatively = true;
+              }
+            }
+          }
+        } catch (error) {
+          console.warn(
+            `[SessionsService] Native recall fallback to handoff for ${provider}/${sessionId}:`,
+            error,
+          );
+        }
+      }
+
+      if (!rewoundNatively) {
+        const sanitizedKept = keptMessages.map((message) => {
+          const { transcriptAnchorId: _oldAnchor, seq: _liveSequence, ...snapshot } = message;
+          return snapshot;
+        });
+        const promptPrefix = sanitizedKept.length > 0
+          ? await buildHandoffPrompt(sessionId, sanitizedKept)
+          : '';
+        sessionsDb.rewindSessionWithHandoff(sessionId, sanitizedKept, promptPrefix);
+      }
+
+      mutated = true;
+      sessionHistoryCache.invalidate(sessionId);
+      await broadcastSessionUpserted(sessionId);
+
+      return {
+        sessionId,
+        recalledContent: recalledMessage.content || '',
+        removedCount: allMessages.length - cutIndex,
+        remainingCount: keptMessages.length,
+        isLatestUserMessage,
+      };
+    } finally {
+      release(mutated);
+    }
+  },
+
   async fetchHistory(
     sessionId: string,
     options: Pick<FetchHistoryOptions, 'limit' | 'offset'> = {},

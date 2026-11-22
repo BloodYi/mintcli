@@ -66,6 +66,7 @@ type ActiveSession = {
   status: 'active' | 'aborted';
   writer: ClaudeRuntimeWriter | null;
   releaseInput: (() => void) | null;
+  injectMessage: ((command: string, options: AnyRecord) => Promise<boolean>) | null;
 };
 
 type ToolApprovalDecision = AnyRecord | null;
@@ -88,6 +89,10 @@ type TokenBudget = {
 };
 
 const activeSessions = new Map<string, ActiveSession>();
+// Lightweight injectors registered during the brief async setup window before
+// `createQuery` adds the session to `activeSessions`, so a rapid follow-up
+// still lands in the same live stdin stream rather than missing injection.
+const pendingStartupInjectors = new Map<string, (command: string, options: AnyRecord) => Promise<boolean>>();
 // Outstanding background tasks per live session, keyed like activeSessions. An
 // entry lives exactly as long as the map entry it shadows: cleared when the
 // session is removed, and reset when a newer run takes the key over.
@@ -367,6 +372,14 @@ function mapCliOptionsToSDK(options: AnyRecord = {}) {
 
   sdkOptions.settingSources = ['project', 'user', 'local'];
 
+  // Ask the CLI to replay submitted user messages with their UUIDs so the
+  // runtime can tell when a mid-run injected prompt has been absorbed by the
+  // current turn vs queued for a subsequent turn.
+  sdkOptions.extraArgs = {
+    ...(sdkOptions.extraArgs || {}),
+    'replay-user-messages': null,
+  };
+
   // The SDK resumes with the provider-native session id, never the app id.
   // `resumeFromScratch` is set when the very first prompt of a conversation was
   // edited: there is nothing before it to resume through, so the turn has to
@@ -398,6 +411,7 @@ function addSession(
   queryInstance: ClaudeQuery,
   writer: ClaudeRuntimeWriter | null = null,
   releaseInput: (() => void) | null = null,
+  injectMessage: ((command: string, options: AnyRecord) => Promise<boolean>) | null = null,
 ) {
   const existing = activeSessions.get(sessionId);
   // A different live instance under the same key means an earlier run was
@@ -428,8 +442,10 @@ function addSession(
     startTime: carried?.startTime || Date.now(),
     status: 'active',
     writer,
-    // Re-registered mid-run once the provider session id lands; keep the closer.
-    releaseInput: releaseInput || carried?.releaseInput || null
+    // Re-registered mid-run once the provider session id lands; keep the closer
+    // and live-injection handler.
+    releaseInput: releaseInput || carried?.releaseInput || null,
+    injectMessage: injectMessage || carried?.injectMessage || null,
   });
   // The history reader reports a background agent as running or stopped by
   // whether this entry exists, and the cached history does not see this map.
@@ -911,6 +927,7 @@ async function buildPromptMessages(command: string, images: unknown, files: unkn
 
   return [{
     type: 'user',
+    uuid: createRequestId(),
     message: {
       role: 'user',
       content
@@ -921,29 +938,64 @@ async function buildPromptMessages(command: string, images: unknown, files: unkn
 }
 
 /**
- * Wraps prompt messages in an async iterable that yields them and then parks.
+ * Wraps prompt messages in a pushable async iterable that yields them and then
+ * parks until more messages are pushed or `release()` is called.
  *
  * The SDK closes the CLI's stdin as soon as its input iterable is exhausted (and
- * immediately on `result` for string prompts). The CLI reads that EOF as the end
- * of the run and kills anything still going in the background, so the iterable
- * has to stay pending until we actually want the process gone.
+ * immediately on `result` for string prompts). Keeping the iterable open both
+ * preserves background tasks past a turn and lets new user messages be pushed
+ * straight to the running CLI without interrupting the active turn.
  *
- * @param {Array<Object>} messages - SDKUserMessage records to send
- * @returns {{ stream: AsyncIterable, release: () => void }} Stream plus its closer
+ * @param {Array<Object>} messages - Initial SDKUserMessage records to send
+ * @returns {{ stream: AsyncIterable, push: (messages: unknown[]) => boolean, release: () => void }}
  */
 function createHeldPromptStream(messages: unknown[]) {
-  let release: () => void = () => {};
-  const held = new Promise<void>((resolve) => { release = resolve; });
+  const queue: unknown[] = [...messages];
+  let closed = false;
+  let notify: (() => void) | null = null;
+
+  const wake = () => {
+    if (notify) {
+      const resolve = notify;
+      notify = null;
+      resolve();
+    }
+  };
+
+  const push = (nextMessages: unknown[]): boolean => {
+    if (closed) {
+      return false;
+    }
+    queue.push(...nextMessages);
+    wake();
+    return true;
+  };
+
+  const release = () => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    wake();
+  };
 
   const stream = (async function* () {
-    for (const message of messages) {
-      yield message;
+    while (true) {
+      while (!closed && queue.length > 0) {
+        yield queue.shift();
+      }
+      if (closed) {
+        return;
+      }
+      // Keeps stdin open — the CLI stays alive until release() is called or a
+      // follow-up user message is pushed.
+      await new Promise<void>((resolve) => {
+        notify = resolve;
+      });
     }
-    // Keeps stdin open — the CLI stays alive until release() is called.
-    await held;
   })();
 
-  return { stream, release };
+  return { stream, push, release };
 }
 
 /**
@@ -1039,10 +1091,16 @@ async function queryClaudeSDK(
   // Closes the held stdin stream so the CLI can wind down. Replaced once the
   // stream exists; the finally block calls it no matter how the run ends.
   let releasePromptStream: () => void = () => {};
+  let inputReleased = false;
   let idleReleaseTimer: ReturnType<typeof setTimeout> | null = null;
   // The client is told the turn is over as soon as `result` lands, even though
   // the process lingers, so the UI never waits out the idle hold.
   let turnCompleteSent = false;
+  // UUIDs of user messages pushed into stdin mid-run that the CLI has not yet
+  // replayed/consumed. While non-empty, an arriving `result` belongs to the
+  // earlier turn (e.g. injected mid-text) and must not close stdin or emit the
+  // terminal `complete` before the CLI runs the injected follow-up.
+  const pendingInjectedUuids = new Set<string>();
   // Set when a turn starts background work, cleared when the next `result`
   // arrives — only turns with work still outstanding hold their process open.
   let backgroundWorkPending = false;
@@ -1089,6 +1147,19 @@ async function queryClaudeSDK(
   // Hoisted above the try so the catch's cleanup can tell whether this run
   // still owns the activeSessions entry (or was superseded by a newer run).
   let queryInstance: ClaudeQuery | null = null;
+  const preStartInjections: Array<{ command: string; options: AnyRecord }> = [];
+  let startupInjector: ((nextCommand: string, nextOptions: AnyRecord) => Promise<boolean>) | null = null;
+  if (sessionKey()) {
+    startupInjector = async (nextCommand: string, nextOptions: AnyRecord = {}) => {
+      const currentKey = sessionKey();
+      if (turnCompleteSent || inputReleased || (currentKey && abortedSessionIds.has(currentKey))) {
+        return false;
+      }
+      preStartInjections.push({ command: nextCommand, options: nextOptions });
+      return true;
+    };
+    pendingStartupInjectors.set(sessionKey()!, startupInjector);
+  }
 
   try {
     const resolvedModel = await context.resolveResumeModel(sessionId, options.model);
@@ -1228,7 +1299,11 @@ async function queryClaudeSDK(
     // stream to drive the hold logic below without a CLI process).
     const createQuery = context.createQuery ?? query;
     let heldPrompt = createHeldPromptStream(promptMessages);
-    releasePromptStream = heldPrompt.release;
+    const bindReleasePromptStream = (target: typeof heldPrompt) => () => {
+      inputReleased = true;
+      target.release();
+    };
+    releasePromptStream = bindReleasePromptStream(heldPrompt);
     try {
       queryInstance = createQuery({
         prompt: heldPrompt.stream as AsyncIterable<SDKUserMessage>,
@@ -1242,16 +1317,78 @@ async function queryClaudeSDK(
       // Discard the abandoned stream and build a fresh one for the retry.
       heldPrompt.release();
       heldPrompt = createHeldPromptStream(promptMessages);
-      releasePromptStream = heldPrompt.release;
+      releasePromptStream = bindReleasePromptStream(heldPrompt);
       queryInstance = createQuery({
         prompt: heldPrompt.stream as AsyncIterable<SDKUserMessage>,
         options: sdkOptions
       });
     }
 
-    // Track the query instance for abort capability
+    const injectMessage = async (nextCommand: string, nextOptions: AnyRecord = {}): Promise<boolean> => {
+      const initialKey = sessionKey();
+      if (
+        turnCompleteSent
+        || inputReleased
+        || (initialKey && abortedSessionIds.has(initialKey))
+        || (queryInstance && supersededInstances.has(queryInstance))
+      ) {
+        return false;
+      }
+
+      const injectedMessages = await buildPromptMessages(
+        nextCommand,
+        nextOptions.images,
+        nextOptions.files,
+        nextOptions.cwd ?? options.cwd,
+      );
+      if (injectedMessages.length === 0) {
+        return false;
+      }
+
+      // Re-check after async attachment preparation: the run may have ended,
+      // aborted, or closed stdin while reading image attachments from disk.
+      const currentKey = sessionKey();
+      if (
+        turnCompleteSent
+        || inputReleased
+        || (currentKey && abortedSessionIds.has(currentKey))
+        || (queryInstance && supersededInstances.has(queryInstance))
+      ) {
+        return false;
+      }
+
+      const uuids = injectedMessages
+        .map((entry) => (entry as AnyRecord)?.uuid)
+        .filter((uuid): uuid is string => typeof uuid === 'string' && uuid.length > 0);
+      for (const uuid of uuids) {
+        pendingInjectedUuids.add(uuid);
+      }
+
+      if (!heldPrompt.push(injectedMessages)) {
+        for (const uuid of uuids) {
+          pendingInjectedUuids.delete(uuid);
+        }
+        return false;
+      }
+
+      if (idleReleaseTimer) {
+        clearTimeout(idleReleaseTimer);
+        idleReleaseTimer = null;
+      }
+      return true;
+    };
+
+    // Track the query instance for abort and live-injection capability
     if (sessionKey()) {
-      addSession(sessionKey()!, queryInstance, ws, releasePromptStream);
+      addSession(sessionKey()!, queryInstance, ws, releasePromptStream, injectMessage);
+      if (startupInjector && pendingStartupInjectors.get(sessionKey()!) === startupInjector) {
+        pendingStartupInjectors.delete(sessionKey()!);
+      }
+    }
+    if (preStartInjections.length > 0) {
+      for (const buffered of preStartInjections.splice(0)) {
+        await injectMessage(buffered.command, buffered.options);
+      }
     }
 
     // Process streaming messages
@@ -1262,7 +1399,7 @@ async function queryClaudeSDK(
       if (message.session_id && !capturedSessionId) {
 
         capturedSessionId = message.session_id;
-        addSession(sessionKey()!, queryInstance, ws, releasePromptStream);
+        addSession(sessionKey()!, queryInstance, ws, releasePromptStream, injectMessage);
 
         // Set session ID on writer
         if (ws.setSessionId && typeof ws.setSessionId === 'function') {
@@ -1276,6 +1413,17 @@ async function queryClaudeSDK(
         }
       } else {
         // session_id already captured
+      }
+
+      // `--replay-user-messages` echoes prompts written to stdin back on stdout
+      // so we can tell when an injected follow-up was absorbed mid-turn versus
+      // queued for a subsequent turn. The UI already renders its optimistic
+      // user bubble and reconciles persisted rows on completion.
+      if (message.type === 'user' && message.isReplay === true) {
+        if (typeof message.uuid === 'string') {
+          pendingInjectedUuids.delete(message.uuid);
+        }
+        continue;
       }
 
       // Transform and normalize message via adapter
@@ -1367,6 +1515,13 @@ async function queryClaudeSDK(
         // The turn is done as far as the client is concerned.
         const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
         const stillOutstanding = backgroundWork.hasOutstanding(sessionKey()!);
+        // A follow-up injected mid-text has not been replayed yet when the
+        // current turn's `result` lands. Keep stdin open and defer the
+        // terminal `complete` until the CLI processes the injected turn.
+        if (!abortPending && pendingInjectedUuids.size > 0) {
+          assistantBudgetSent = false;
+          continue;
+        }
         if (!turnCompleteSent && !abortPending) {
           turnCompleteSent = true;
           ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
@@ -1495,6 +1650,9 @@ async function queryClaudeSDK(
       error
     });
   } finally {
+    if (sessionKey() && startupInjector && pendingStartupInjectors.get(sessionKey()!) === startupInjector) {
+      pendingStartupInjectors.delete(sessionKey()!);
+    }
     // Always close stdin — otherwise an aborted or failed run leaves the CLI
     // process (and its MCP servers) alive until the server exits.
     if (idleReleaseTimer) {
@@ -1646,9 +1804,30 @@ function reconnectSessionWriter(sessionId: string, newRawWs: unknown) {
   return true;
 }
 
+/**
+ * Injects a follow-up user message into an actively running Claude SDK session
+ * without interrupting or aborting the current turn.
+ */
+async function injectClaudeSDKMessage(
+  sessionId: string,
+  command: string,
+  options: AnyRecord = {},
+): Promise<boolean> {
+  const session = getSession(sessionId);
+  if (session && session.status === 'active' && session.injectMessage) {
+    return session.injectMessage(command, options);
+  }
+  const pendingInjector = pendingStartupInjectors.get(sessionId);
+  if (pendingInjector) {
+    return pendingInjector(command, options);
+  }
+  return false;
+}
+
 export const claudeRuntime = {
   run: queryClaudeSDK,
   abort: abortClaudeSDKSession,
+  injectMessage: injectClaudeSDKMessage,
   permissions: {
     resolve: resolveToolApproval,
     listPending: getPendingApprovalsForSession,
@@ -1661,6 +1840,7 @@ export const claudeRuntime = {
 export {
   queryClaudeSDK,
   abortClaudeSDKSession,
+  injectClaudeSDKMessage,
   listClaudeSDKBackgroundWork,
   stopClaudeSDKTask,
   isClaudeSDKSessionActive,

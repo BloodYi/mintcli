@@ -35,6 +35,7 @@ from agy_metadata import (
     read_session_models,
     read_session_thinking,
 )
+from acp_client import probe_agy_acp_info, stream_agy_acp
 from agy_client_profile import DesktopProfileProxy
 from claude_agy import stream_claude_agy
 from process_lifecycle import reap_cli_process
@@ -103,7 +104,8 @@ except Exception:
     pass
 
 DOWNLOAD_LINK_INSTRUCTION = (
-    "当用户需要获取或下载文件时，如果你生成或修改了文件，请在回答中提供文件下载链接，格式为 [📥 点击下载 文件名](/api/download?path=文件相对或绝对路径)，客户端即可直接下载到本地电脑。"
+    "当用户需要查看或获取图片、视频时，请直接使用 Markdown 语法 ![说明](文件相对或绝对路径) 嵌入到回复中，聊天界面会直接显示图片和播放视频；"
+    "当用户需要获取或下载其他文件时，如果你生成或修改了文件，请在回答中提供文件下载链接，格式为 [📥 点击下载 文件名](/api/download?path=文件相对或绝对路径)，客户端即可直接下载到本地电脑。"
 )
 
 DEFAULT_SYSTEM = (
@@ -340,11 +342,63 @@ def save_conversation(user_id: str, conversation_id: str, title: str | None = No
             "title": title or existing.get("title") or "Conversation",
             "updated_at": time.time(),
             "pinned": bool(existing.get("pinned", False)),
+            **({"needs_replay": True} if existing.get("needs_replay") else {}),
         }
         udata["active_id"] = cid
     _write_conversations(data)
     default_entry = data.get("default", {}).get("conversations", {}).get(cid, {})
     return {"conversation_id": cid, **default_entry}
+
+
+def _conversation_needs_replay(conversation_id: str | None) -> bool:
+    cid = _sanitize_token(conversation_id)
+    if not cid:
+        return False
+    data = _read_conversations()
+    for udata in data.values():
+        if isinstance(udata, dict):
+            entry = (udata.get("conversations") or {}).get(cid)
+            if isinstance(entry, dict) and entry.get("needs_replay"):
+                return True
+    return False
+
+
+def set_conversation_needs_replay(conversation_id: str, needs_replay: bool) -> None:
+    cid = _sanitize_token(conversation_id)
+    if not cid:
+        return
+    data = _read_conversations()
+    changed = False
+    for udata in data.values():
+        if not isinstance(udata, dict):
+            continue
+        convs = udata.get("conversations")
+        if not isinstance(convs, dict) or cid not in convs:
+            continue
+        entry = dict(convs[cid])
+        if needs_replay:
+            if not entry.get("needs_replay"):
+                entry["needs_replay"] = True
+                convs[cid] = entry
+                changed = True
+        elif "needs_replay" in entry:
+            entry.pop("needs_replay", None)
+            convs[cid] = entry
+            changed = True
+    if needs_replay and not changed:
+        udata = _ensure_user(data, "default")
+        convs = udata["conversations"]
+        entry = dict(convs.get(cid) or {"title": "Conversation", "updated_at": time.time(), "pinned": False})
+        entry["needs_replay"] = True
+        convs[cid] = entry
+        changed = True
+    if changed:
+        _write_conversations(data)
+
+
+async def set_conversation_needs_replay_async(conversation_id: str, needs_replay: bool) -> None:
+    async with _conversations_lock:
+        await asyncio.to_thread(set_conversation_needs_replay, conversation_id, needs_replay)
 
 
 async def save_conversation_async(user_id: str, conversation_id: str, title: str | None = None) -> dict:
@@ -1333,15 +1387,22 @@ def _parse_ndjson_line(line_str: str) -> list[dict]:
             tool_info = payload.get("tool_info")
             tool_name = payload.get("tool_name") or payload.get("tool") or payload.get("name")
             args = payload.get("args") or payload.get("input")
+            tool_id = payload.get("tool_id") or payload.get("toolId") or payload.get("id")
             if isinstance(tool_info, dict):
                 tool_name = tool_name or tool_info.get("name")
                 args = args or tool_info.get("parameters") or tool_info.get("input")
-            return {
+                tool_id = tool_id or tool_info.get("id")
+            out = {
                 "event": "tool",
                 "tool": tool_name,
+                "tool_name": tool_name,
                 "args": args,
+                "tool_input": args,
                 "status": payload.get("status") or payload.get("state") or "executing",
             }
+            if tool_id:
+                out["tool_id"] = str(tool_id)
+            return out
 
         ev_type = obj.get("event") or obj.get("type")
 
@@ -1486,12 +1547,40 @@ async def _stream_agy(
     persist_conversation: bool = True,
     timeout: int | None = None,
     api_connection: ApiConnection | None = None,
+    fallback_prompt: str | None = None,
+    system_append: str | None = None,
 ):
     """Run agy and yield structured events (dict) as NDJSON or text chunks arrive."""
     turn_timeout = AGY_TIMEOUT if timeout is None else timeout
     target_cwd = _within_allowed(cwd) if cwd else None
     if not target_cwd:
         target_cwd = str(SCRATCH)
+
+    if api_connection is None:
+        run_env = _agy_environment()
+        agy_home = run_env.get("HOME") or HOME
+        updater = globals().get("project_updater")
+        update_lease = updater.acquire_turn() if updater else None
+        async for event in stream_agy_acp(
+            agy_bin=AGY_BIN,
+            prompt=prompt,
+            fallback_prompt=fallback_prompt,
+            model=model,
+            target_cwd=target_cwd,
+            run_env=run_env,
+            scratch_dir=SCRATCH,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            persist_conversation=persist_conversation and AGY_PERSIST_CONVERSATIONS,
+            save_conversation_cb=save_conversation_async if (persist_conversation and AGY_PERSIST_CONVERSATIONS) else None,
+            route_info_factory=_new_route_info,
+            route_enricher=lambda info, trace: _apply_claude_agy_trace(info, agy_home, trace),
+            system_append=system_append,
+            update_lease=update_lease,
+            timeout=turn_timeout,
+        ):
+            yield event
+        return
 
     argv = _build_argv(
         # The CLI validates its own model id. The relay independently pins the user's
@@ -1749,6 +1838,25 @@ async def _stream_agy(
         raise stream_error
 
 
+_ACP_INFO_TTL_SECONDS = 60.0
+_acp_info_cache: tuple[float, dict[str, Any]] | None = None
+
+
+@app.get("/api/acp-info")
+async def acp_info(refresh: bool = False) -> dict:
+    global _acp_info_cache
+    now = time.monotonic()
+    if not refresh and _acp_info_cache and (now - _acp_info_cache[0]) < _ACP_INFO_TTL_SECONDS:
+        info = _acp_info_cache[1]
+    else:
+        info = await probe_agy_acp_info(AGY_BIN, run_env=_agy_environment(), cwd=str(SCRATCH))
+        if info.get("available"):
+            _acp_info_cache = (now, info)
+        else:
+            _acp_info_cache = None
+    return {"ok": bool(info.get("available")), "acp": info}
+
+
 @app.get("/healthz")
 async def healthz() -> dict:
     return {
@@ -1864,6 +1972,15 @@ def read_message_history(cid: str) -> list[dict]:
                     _apply_claude_agy_trace(existing, candidate_home, {})
                     if existing.get("returned_models") or existing.get("returned_model_fulls"):
                         break
+    # A bridge restart drops in-memory turns while their last snapshots remain on disk.
+    if messages and not web_turns.for_conversation(cid):
+        last = messages[-1]
+        if last.get("role") == "assistant" and last.get("status") == "streaming" and last.get("turnId"):
+            last["status"] = "error"
+            last["thoughtOpen"] = False
+            detail = "本轮生成已中断。此前写入项目的文件可在原目录检查。"
+            partial = str(last.get("content") or "").strip()
+            last["content"] = f"{partial}\n\n{detail}" if partial else detail
     return ensure_message_ids(cid, messages)
 
 
@@ -2030,6 +2147,78 @@ async def save_conversation_messages_ep(cid: str, req: SaveMessagesRequest) -> d
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "saved", "conversation_id": clean_cid, "count": len(snapshot),
             "revision": message_revision(stored)}
+
+
+class RecallMessagesRequest(BaseModel):
+    message_id: str | None = None
+    user_turn_from_end: int | None = None
+    keep_count: int | None = None
+
+
+@app.post("/api/conversations/{cid}/recall")
+async def recall_conversation_messages_ep(cid: str, req: RecallMessagesRequest) -> dict:
+    clean_cid = _sanitize_token(cid)
+    if not clean_cid:
+        raise HTTPException(status_code=400, detail="Invalid conversation ID")
+
+    active_turn = web_turns.for_conversation(clean_cid)
+    if active_turn and active_turn.status == "running":
+        await web_turns.stop(active_turn.id)
+
+    try:
+        current = read_message_history(clean_cid)
+        cut_index: int | None = None
+
+        if req.message_id:
+            target_id = req.message_id.strip()
+            for idx, item in enumerate(current):
+                if item.get("id") == target_id:
+                    cut_index = idx
+                    break
+            if cut_index is None and target_id.startswith(f"{clean_cid}:"):
+                suffix = target_id[len(clean_cid) + 1:]
+                if suffix.isdigit():
+                    parsed_idx = int(suffix)
+                    if 0 <= parsed_idx < len(current):
+                        cut_index = parsed_idx
+
+        if cut_index is None and req.user_turn_from_end is not None and req.user_turn_from_end >= 0:
+            user_indices = [idx for idx, item in enumerate(current) if item.get("role") == "user"]
+            if req.user_turn_from_end < len(user_indices):
+                cut_index = user_indices[len(user_indices) - 1 - req.user_turn_from_end]
+
+        if cut_index is None and req.keep_count is not None:
+            if 0 <= req.keep_count < len(current):
+                cut_index = req.keep_count
+
+        if cut_index is None or cut_index < 0 or cut_index >= len(current):
+            raise HTTPException(status_code=404, detail="未找到要撤回的消息。")
+
+        recalled_message = current[cut_index]
+        kept = current[:cut_index]
+        stored = web_turns.serializable(kept)
+        ensure_message_ids(clean_cid, stored)
+
+        msg_file = MESSAGES_DIR / f"{clean_cid}.json"
+        tmp_file = msg_file.with_suffix(".tmp")
+        tmp_file.write_text(json.dumps(stored, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_file.replace(msg_file)
+
+        await set_conversation_needs_replay_async(clean_cid, True)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Failed to recall messages for %s: %s", clean_cid, exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "status": "recalled",
+        "conversation_id": clean_cid,
+        "recalled_message": recalled_message,
+        "count": len(stored),
+        "removed_count": len(current) - len(stored),
+        "revision": message_revision(stored),
+    }
 
 
 async def _fetch_profile_models(run_env: dict[str, str], profile: str) -> list[dict]:
@@ -2645,12 +2834,51 @@ def _render_claude_agy_prompt(history_messages: list[Message], current_messages:
     return "\n".join(lines)
 
 
+_ORCHESTRATOR_MODEL_ID_RE = re.compile(
+    r"^gemini-[a-z0-9.]*-?orchestrator(?:-[a-z0-9.]+)?$",
+    re.IGNORECASE,
+)
+_ORCHESTRATOR_LABEL_RE = re.compile(r"^Orchestrator\b", re.IGNORECASE)
+
+# Appended via official `agy acp` `_meta.antigravity.systemPrompt.append` when
+# Claude -> agy mode is active with an Orchestrator model. Enhances engineering
+# workflow without spoofing identity or disabling agy's native toolset /
+# Gemini 4 Hydrogen handoff.
+CLAUDE_CODE_ORCHESTRATOR_PROMPT = (
+    "Engineering workflow guidance (Claude Code style):\n"
+    "- Read and inspect relevant files before editing; never guess file contents, paths, or symbols.\n"
+    "- Prefer dedicated file, search, and edit tools over raw shell commands when available, and run independent read-only inspections in parallel.\n"
+    "- When you have enough information to act, act directly without redundant preamble or narrating unused alternatives.\n"
+    "- Keep changes focused on the user's goal, verify edits with relevant typecheck/tests/build commands, and report outcomes faithfully (exact test results, any failures, or any skipped steps) without hedging.\n"
+    "- Before destructive, hard-to-reverse, or outward-facing actions (such as deleting files, pushing, or publishing), inspect the target and confirm unless explicitly instructed.\n"
+    "- Keep responses concise, structured in GitHub-flavored Markdown, and reference files with clickable paths."
+)
+
+
+def _is_orchestrator_model(model: str | None, model_label: str | None = None) -> bool:
+    model_id = (model or "").strip()
+    if "/" in model_id:
+        model_id = model_id.rsplit("/", 1)[-1]
+    if _ORCHESTRATOR_MODEL_ID_RE.match(model_id):
+        return True
+    label = (model_label or _models_label_map.get(model_id) or "").strip()
+    return bool(_ORCHESTRATOR_LABEL_RE.match(label))
+
+
 def _claude_agy_system_append(system: str | None) -> str:
     parts: list[str] = []
     if system and system.strip():
         parts.append(system.strip())
     if not any(DOWNLOAD_LINK_INSTRUCTION in part for part in parts):
         parts.append(DOWNLOAD_LINK_INSTRUCTION)
+    return "\n\n".join(parts)
+
+
+def _claude_agy_orchestrator_system_append(system: str | None) -> str:
+    parts: list[str] = [CLAUDE_CODE_ORCHESTRATOR_PROMPT]
+    base = _claude_agy_system_append(system)
+    if base:
+        parts.append(base)
     return "\n\n".join(parts)
 
 
@@ -2662,6 +2890,8 @@ def _prompt_with_saved_history(req: ChatRequest, history: list[dict], *, claude_
 
 
 def _resolve_conversation_route(cid: str | None, saved: list[dict]) -> tuple[bool, str | None]:
+    if cid and _conversation_needs_replay(cid):
+        return True, None
     previous_route = next(
         (
             row["routeInfo"]
@@ -2679,18 +2909,32 @@ def _resolve_conversation_route(cid: str | None, saved: list[dict]) -> tuple[boo
     return replay_native, native_id
 
 
+def _pick_default_claude_agy_model(items: list[dict]) -> str | None:
+    first_valid: str | None = None
+    for item in items:
+        model_id = item.get("id") if isinstance(item, dict) else None
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        clean_id = model_id.strip()
+        if first_valid is None:
+            first_valid = clean_id
+        if not _is_orchestrator_model(clean_id, item.get("name")):
+            return clean_id
+    return first_valid
+
+
 async def _default_claude_agy_model() -> str:
     if _models_cache and _models_cache[1]:
-        first_id = _models_cache[1][0].get("id")
-        if isinstance(first_id, str) and first_id.strip():
-            return first_id.strip()
+        picked = _pick_default_claude_agy_model(_models_cache[1])
+        if picked:
+            return picked
     try:
         discovered = await models()
         items = discovered.get("models") if isinstance(discovered, dict) else None
         if isinstance(items, list) and items:
-            first_id = items[0].get("id")
-            if isinstance(first_id, str) and first_id.strip():
-                return first_id.strip()
+            picked = _pick_default_claude_agy_model(items)
+            if picked:
+                return picked
     except Exception:
         logger.debug("Falling back to static model map for Claude → agy default model", exc_info=True)
     return next(iter(_models_label_map), "gemini-3.8-flash-low")
@@ -2715,15 +2959,73 @@ async def chat(req: ChatRequest):
         try:
             if req.use_claude_agy:
                 target_cwd = _within_allowed(req.cwd) or str(SCRATCH)
-                stable_id = cid or "mintcli-claude-" + uuid.uuid4().hex
                 requested_model = (req.model or "").strip()
                 model = requested_model if requested_model and requested_model != "default" else await _default_claude_agy_model()
                 run_env = _agy_environment()
                 agy_home = run_env.get("HOME") or HOME
+                updater = globals().get("project_updater")
+                if _is_orchestrator_model(model, req.model_label):
+                    # Orchestrator models pair a planner (Neon/Carbon/Argon) with Gemini 4 Hydrogen
+                    # using agy's own native tools. Run directly via official `agy acp` so the
+                    # native handoff and full model capability remain intact, while appending
+                    # Claude Code engineering workflow guidance via official ACP systemPrompt.append.
+                    stable_id = cid if replay_native or native_id != cid else None
+                    native_id_for_turn = None if replay_native else native_id
+                    if replay_native:
+                        acp_prompt = _prompt_with_saved_history(req, saved, claude_agy=True)
+                        fallback_prompt = None
+                    elif native_id_for_turn:
+                        acp_prompt = _format_message_content(req.messages[-1]) if req.messages else ""
+                        if req.thinking and acp_prompt:
+                            acp_prompt = f"{THINKING_PROMPT_PREFIX}\n\n{acp_prompt}"
+                        fallback_prompt = _prompt_with_saved_history(req, saved, claude_agy=True) if saved else None
+                    else:
+                        acp_prompt = _render_claude_agy_prompt([], req.messages)
+                        if req.thinking and acp_prompt:
+                            acp_prompt = f"{THINKING_PROMPT_PREFIX}\n\n{acp_prompt}"
+                        fallback_prompt = None
+                    lease = updater.acquire_turn() if updater else None
+
+                    def _orchestrator_route_factory(request_id: str | None, requested: str | None) -> dict:
+                        info = _new_route_info(request_id, requested)
+                        info["transport"] = "acp"
+                        info["prompt_mode"] = "claude_code_enhanced"
+                        return info
+
+                    async for event in stream_agy_acp(
+                        agy_bin=AGY_BIN,
+                        prompt=acp_prompt,
+                        fallback_prompt=fallback_prompt,
+                        model=model,
+                        target_cwd=target_cwd,
+                        run_env=run_env,
+                        scratch_dir=SCRATCH,
+                        conversation_id=native_id_for_turn,
+                        user_id=user_id,
+                        persist_conversation=stable_id is None and AGY_PERSIST_CONVERSATIONS,
+                        save_conversation_cb=save_conversation_async if AGY_PERSIST_CONVERSATIONS else None,
+                        route_info_factory=_orchestrator_route_factory,
+                        route_enricher=lambda info, trace: _apply_claude_agy_trace(info, agy_home, trace),
+                        system_append=_claude_agy_orchestrator_system_append(req.system),
+                        update_lease=lease,
+                        timeout=0,
+                    ):
+                        if stable_id:
+                            if event.get("event") == "init" and event.get("conversation_id"):
+                                native_id_for_turn = event["conversation_id"]
+                                if replay_native:
+                                    await set_conversation_needs_replay_async(stable_id, False)
+                            if event.get("conversation_id"):
+                                event["conversation_id"] = stable_id
+                            if event.get("route_info") and native_id_for_turn and native_id_for_turn != stable_id:
+                                event["route_info"]["native_conversation_id"] = native_id_for_turn
+                        yield event
+                    return
+
+                stable_id = cid or "mintcli-claude-" + uuid.uuid4().hex
                 route = _new_route_info(uuid.uuid4().hex, model)
                 route["transport"] = "claude_agy"
                 route["cli_config_model"] = model
-                updater = globals().get("project_updater")
                 lease = updater.acquire_turn() if updater else None
                 last_route_payload = json.dumps(route, sort_keys=True, ensure_ascii=False)
                 saw_trace = False
@@ -2758,16 +3060,24 @@ async def chat(req: ChatRequest):
 
             stable_id = cid if replay_native or native_id != cid else None
             native_id_for_turn = None if replay_native else native_id
+            fallback_prompt = (
+                _prompt_with_saved_history(req, saved, claude_agy=False)
+                if (not req.api_connection and native_id_for_turn and saved and not replay_native)
+                else None
+            )
             async for event in _stream_agy(
                 prompt=_prompt_with_saved_history(req, saved, claude_agy=False) if replay_native else prompt,
                 model=req.model, cwd=req.cwd,
                 conversation_id=None if replay_native else native_id,
                 continue_last=continue_last and not stable_id, user_id=user_id, timeout=0,
                 persist_conversation=stable_id is None, api_connection=req.api_connection,
+                fallback_prompt=fallback_prompt,
             ):
                 if stable_id:
                     if event.get("event") == "init" and event.get("conversation_id"):
                         native_id_for_turn = event["conversation_id"]
+                        if replay_native:
+                            await set_conversation_needs_replay_async(stable_id, False)
                     if event.get("conversation_id"):
                         event["conversation_id"] = stable_id
                     if event.get("route_info") and native_id_for_turn and native_id_for_turn != stable_id:

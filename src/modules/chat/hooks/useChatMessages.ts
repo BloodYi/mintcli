@@ -441,6 +441,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
             type: 'assistant',
             content: text,
             timestamp: msg.timestamp,
+            ...(msg.isStreaming ? { isStreaming: true } : {}),
             memoryCitations: msg.memoryCitations,
             ...sharedMetadata,
           });
@@ -504,6 +505,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
             content: msg.content,
             timestamp: msg.timestamp,
             isThinking: true,
+            ...(msg.isStreaming ? { isStreaming: true } : {}),
             ...sharedMetadata,
           });
         }

@@ -1001,6 +1001,37 @@ router.post(
   }),
 );
 
+router.post(
+  '/sessions/:sessionId/recall',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+    const messageId = typeof body.messageId === 'string' && body.messageId.trim()
+      ? body.messageId.trim()
+      : undefined;
+    const anchorId = typeof body.anchorId === 'string' && body.anchorId.trim()
+      ? body.anchorId.trim()
+      : undefined;
+    const userTurnFromEnd = typeof body.userTurnFromEnd === 'number' && Number.isInteger(body.userTurnFromEnd) && body.userTurnFromEnd >= 0
+      ? body.userTurnFromEnd
+      : undefined;
+    const content = typeof body.content === 'string' ? body.content : undefined;
+    if (!messageId && !anchorId && userTurnFromEnd === undefined) {
+      throw new AppError('messageId, anchorId, or userTurnFromEnd is required.', {
+        code: 'RECALL_TARGET_REQUIRED',
+        statusCode: 400,
+      });
+    }
+    const result = await sessionsService.recallSessionMessage(sessionId, {
+      messageId,
+      anchorId,
+      userTurnFromEnd,
+      content,
+    });
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
 router.put(
   '/sessions/:sessionId',
   asyncHandler(async (req: Request, res: Response) => {

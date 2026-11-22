@@ -83,7 +83,9 @@ class WebTurn:
                           'id': uuid.uuid4().hex, 'created_at': time.time(),
                           'model': model_label, 'requestedModel': model or 'default',
                           'turnId': turn_id, 'status': 'streaming', 'rawText': '', 'finalResponse': '',
-                          'eventThinking': '', 'thinkingOrder': [], 'errorText': ''}
+                          'eventThinking': '', 'thinkingOrder': [], 'errorText': '', 'steps': []}
+        self._step_seq = 0
+        self._step_raw: dict[str, str] = {}
         self.messages.append(self.assistant)
         self.status, self.sequence, self.history = 'running', 0, deque(maxlen=256)
         self.changed, self.saved_at, self.task, self.updated_at = asyncio.Event(), 0, None, time.time()
@@ -128,8 +130,74 @@ class WebTurn:
         message['thinking'] = '\n\n'.join(value for value in ('' if separate == '...' else separate, inline) if value)
         message['content'] = (complete['content'] or streamed['content']) + message['errorText']
 
+    @staticmethod
+    def _iso_now():
+        now = time.time()
+        return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(now)) + f'.{int(now * 1000) % 1000:03d}Z'
+
+    @staticmethod
+    def _normalize_tool_status(raw_status):
+        value = str(raw_status or 'running').strip().lower()
+        if value in ('error', 'failed'):
+            return 'error'
+        if value in ('completed', 'done', 'success', 'succeeded'):
+            return 'completed'
+        return 'running'
+
+    def _next_step_id(self, prefix: str) -> str:
+        self._step_seq += 1
+        return f"{self.assistant['id']}:{prefix}:{self._step_seq}"
+
+    def _sync_inline_step(self, step: dict, streaming: bool):
+        raw_text = self._step_raw.get(step['id'], '')
+        parsed = _extract(raw_text, streaming)
+        step['content'] = parsed['content']
+        inline_thought = parsed['thinking']
+        if inline_thought:
+            steps = self.assistant.setdefault('steps', [])
+            think_id = step['id'] + ':think'
+            existing = next((s for s in steps if s.get('id') == think_id), None)
+            if existing is not None:
+                existing['content'] = inline_thought
+            else:
+                idx = steps.index(step)
+                steps.insert(idx, {
+                    'id': think_id,
+                    'type': 'thinking',
+                    'content': inline_thought,
+                    'timestamp': step.get('timestamp') or self._iso_now(),
+                })
+
+    def finalize_steps(self):
+        steps = self.assistant.setdefault('steps', [])
+        for step in list(steps):
+            if step.get('type') == 'text' and step.get('id') in self._step_raw:
+                self._sync_inline_step(step, False)
+        terminal_tool_status = 'completed' if self.status == 'complete' else 'error'
+        cleaned = []
+        for step in steps:
+            stype = step.get('type')
+            if stype == 'tool_use':
+                if step.get('status') == 'running':
+                    step['status'] = terminal_tool_status
+                cleaned.append(step)
+            elif stype in ('text', 'thinking'):
+                if str(step.get('content') or '').strip():
+                    cleaned.append(step)
+            else:
+                cleaned.append(step)
+        if self.assistant.get('content') and not any(s.get('type') == 'text' and str(s.get('content') or '').strip() for s in cleaned):
+            cleaned.append({
+                'id': self._next_step_id('text'),
+                'type': 'text',
+                'content': self.assistant['content'],
+                'timestamp': self._iso_now(),
+            })
+        self.assistant['steps'] = cleaned
+
     def absorb(self, event):
         message, kind = self.assistant, event.get('event')
+        meta: dict = {}
         if kind == 'init' and event.get('conversation_id'):
             cid = event['conversation_id']
             if not re.fullmatch(r'[A-Za-z0-9_.-]{1,200}', cid):
@@ -139,27 +207,107 @@ class WebTurn:
         if event.get('route_info'):
             message['routeInfo'] = copy.deepcopy(event['route_info'])
         if kind == 'delta':
-            message['rawText'] += str(event.get('delta') or event.get('text') or '')
+            chunk = str(event.get('delta') or event.get('text') or '')
+            message['rawText'] += chunk
             message['status'] = 'streaming'
+            if chunk:
+                steps = message.setdefault('steps', [])
+                if steps and steps[-1].get('type') == 'text':
+                    step = steps[-1]
+                else:
+                    step = {'id': self._next_step_id('text'), 'type': 'text', 'content': '', 'timestamp': self._iso_now()}
+                    steps.append(step)
+                self._step_raw[step['id']] = self._step_raw.get(step['id'], '') + chunk
+                self._sync_inline_step(step, self.status == 'running')
+                meta['step_id'] = step['id']
         elif kind == 'thinking':
             chunk = str(event.get('thinking', event.get('delta', '')))
             step = event.get('step_index')
             order = message['thinkingOrder']
+            steps = message.setdefault('steps', [])
             if isinstance(step, int) and not isinstance(step, bool) and step >= 0:
                 part = next((value for value in order if value.get('step_index') == step), None)
                 if part is None:
                     part = {'step_index': step, 'text': ''}; order.append(part)
                 part['text'] = chunk if event.get('mode') == 'snapshot' else part['text'] + chunk
+                target = next((s for s in steps if s.get('type') == 'thinking' and s.get('stepIndex') == step), None)
+                if target is None:
+                    target = {'id': self._next_step_id('thinking'), 'type': 'thinking', 'stepIndex': step, 'content': '', 'timestamp': self._iso_now()}
+                    steps.append(target)
+                target['content'] = chunk if event.get('mode') == 'snapshot' else target['content'] + chunk
+                meta['step_id'] = target['id']
             elif chunk:
                 if order and 'step_index' not in order[-1]:
                     order[-1]['text'] += chunk
                 else:
                     order.append({'text': chunk})
+                if steps and steps[-1].get('type') == 'thinking' and 'stepIndex' not in steps[-1]:
+                    target = steps[-1]
+                    target['content'] += chunk
+                else:
+                    target = {'id': self._next_step_id('thinking'), 'type': 'thinking', 'content': chunk, 'timestamp': self._iso_now()}
+                    steps.append(target)
+                meta['step_id'] = target['id']
             message['eventThinking'] = '\n\n'.join(value['text'] for value in order if value['text'])
             if event.get('mode') != 'snapshot':
                 message['status'] = 'streaming'
+        elif kind == 'tool_result':
+            steps = message.setdefault('steps', [])
+            tool_id = str(event.get('tool_id') or event.get('toolId') or '')
+            target = None
+            if tool_id:
+                target = next((s for s in steps if s.get('type') == 'tool_use' and s.get('toolId') == tool_id), None)
+            if target is None:
+                target = next((s for s in reversed(steps) if s.get('type') == 'tool_use' and s.get('status') == 'running'), None)
+            if target is not None:
+                is_err = bool(event.get('is_error') or event.get('isError'))
+                result_obj = {'content': str(event.get('content') or ''), 'isError': is_err}
+                if event.get('tool_use_result') is not None:
+                    result_obj['toolUseResult'] = event.get('tool_use_result')
+                target['toolResult'] = result_obj
+                target['status'] = 'error' if is_err else 'completed'
+                meta['step_id'] = target['id']
+                meta['tool_id'] = target['toolId']
         elif kind == 'tool' or event.get('tool'):
-            message['tool'] = event.get('tool') or event.get('name') or 'executing'
+            tool_label = str(event.get('tool') or event.get('name') or 'executing')
+            message['tool'] = tool_label
+            steps = message.setdefault('steps', [])
+            raw_tool_id = str(event.get('tool_id') or event.get('toolId') or '')
+            tool_name = str(event.get('tool_name') or event.get('toolName') or event.get('name') or tool_label)
+            tool_input = event['tool_input'] if 'tool_input' in event and event['tool_input'] is not None else event.get('args')
+            mapped_status = self._normalize_tool_status(event.get('status'))
+            target = None
+            if raw_tool_id:
+                target = next((s for s in steps if s.get('type') == 'tool_use' and s.get('toolId') == raw_tool_id), None)
+            if target is None:
+                tool_id = raw_tool_id or self._next_step_id('tool')
+                target = {
+                    'id': f"{message['id']}:tool:{tool_id}",
+                    'type': 'tool_use',
+                    'toolId': tool_id,
+                    'toolName': tool_name,
+                    'toolLabel': tool_label,
+                    'toolInput': tool_input if tool_input is not None else {'summary': tool_label},
+                    'status': mapped_status,
+                    'timestamp': self._iso_now(),
+                }
+                steps.append(target)
+            else:
+                generic_names = ('', 'tool', 'executing')
+                if tool_name and (tool_name.strip().lower() not in generic_names or str(target.get('toolName') or '').strip().lower() in generic_names):
+                    target['toolName'] = tool_name
+                if tool_label and (tool_label.strip().lower() not in generic_names or str(target.get('toolLabel') or '').strip().lower() in generic_names):
+                    target['toolLabel'] = tool_label
+                if tool_input is not None:
+                    target['toolInput'] = tool_input
+                target['status'] = mapped_status
+            if event.get('tool_output') is not None:
+                is_err = bool(event.get('is_error') or event.get('isError')) or mapped_status == 'error'
+                target['toolResult'] = {'content': str(event.get('tool_output')), 'isError': is_err}
+                if mapped_status == 'running':
+                    target['status'] = 'error' if is_err else 'completed'
+            meta['step_id'] = target['id']
+            meta['tool_id'] = target['toolId']
         elif kind == 'result':
             if event.get('response'):
                 message['finalResponse'] = str(event['response'])
@@ -194,15 +342,22 @@ class WebTurn:
             if value not in message['errorText']:
                 message['errorText'] += '\n\n' + value
         self.text()
+        if kind == 'result' and message.get('content'):
+            steps = message.setdefault('steps', [])
+            if not any(s.get('type') == 'text' and str(s.get('content') or '').strip() for s in steps):
+                step = {'id': self._next_step_id('text'), 'type': 'text', 'content': message['content'], 'timestamp': self._iso_now()}
+                steps.append(step)
+                meta['step_id'] = step['id']
+        return meta
 
     async def run(self):
         outcome = 'error'
         try:
             self.save(True)
             async for event in self.stream:
-                self.absorb(event)
+                meta = self.absorb(event)
                 self.save(event.get('event') == 'init')
-                self.publish(event)
+                self.publish({**event, **meta} if meta else event)
             # Later deltas may follow an error; they must not erase its outcome.
             outcome = 'error' if self.assistant['errorText'] else 'complete'
         except asyncio.CancelledError:
@@ -220,6 +375,7 @@ class WebTurn:
                 self.status = outcome
                 self.assistant['status'] = self.status
                 self.text()
+                self.finalize_steps()
                 try:
                     self.save(True)
                 except Exception:
@@ -320,6 +476,7 @@ class TurnManager:
                 job.status = job.assistant['status'] = 'stopped'
                 job.assistant['errorText'] += '\n\n_Stopped: Response cancelled_'
                 job.text()
+                job.finalize_steps()
                 job.save(True)
                 job.publish(job.snapshot())
                 job.publish({'event': 'done', 'status': 'stopped'})

@@ -54,11 +54,11 @@ const CLAUDE_DENIAL_MESSAGES = [
 ];
 
 function deriveToolStatus(toolResult: any, reportedStatus?: string): ToolStatus {
-  // Codex reports a command's lifecycle directly, so a row can show as running
-  // while its output is still streaming in rather than only once it finishes.
+  // Codex and Antigravity report a call's lifecycle directly, so a row can show
+  // as running while work is in flight and settle cleanly even without a payload.
   if (reportedStatus === 'in_progress') return 'running';
   if (reportedStatus === 'failed') return 'error';
-  if (!toolResult) return 'running';
+  if (!toolResult) return reportedStatus === 'completed' ? 'completed' : 'running';
   if (toolResult.isError) {
     const content = String(toolResult.content || '').toLowerCase().trim();
     if (CLAUDE_DENIAL_MESSAGES.some((msg) => content.includes(msg))) {

@@ -276,7 +276,15 @@
   "message": {
     "editAndResend": "編輯並重新傳送",
     "forkFromHere": "從此處分支",
-    "answeredBy": "由 {{model}} 回答"
+    "answeredBy": "由 {{model}} 回答",
+    "recall": "撤回",
+    "recallConfirmTitle": "確定要撤回這則訊息嗎？",
+    "recallConfirmLatest": "將撤回這則最新訊息及其回覆，內容會放回輸入框，方便修改後重新傳送。",
+    "recallConfirmEarlier": "將刪除這則訊息以及其後的全部對話，並把這則訊息放回輸入框，方便修改後重新傳送。",
+    "recallConfirmButton": "確定撤回",
+    "recallRecalling": "正在撤回...",
+    "recallCancel": "取消",
+    "recallFailed": "撤回失敗，請稍後重試。"
   },
   "composer": {
     "fastMode": "Fast 加速模式",

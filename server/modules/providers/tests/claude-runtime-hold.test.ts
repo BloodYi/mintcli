@@ -7,6 +7,8 @@ import test from 'node:test';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
 import {
+  abortClaudeSDKSession,
+  injectClaudeSDKMessage,
   listClaudeSDKBackgroundWork,
   queryClaudeSDK,
   stopClaudeSDKTask,
@@ -29,6 +31,8 @@ type Scripted = {
   end: () => void;
   released: () => boolean;
   stopped: string[];
+  stdinMessages: Array<Record<string, unknown>>;
+  interrupted: () => number;
 };
 
 /** A stand-in for the SDK query: yields what the test emits, and reads the held prompt to notice its release. */
@@ -36,18 +40,24 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
   const queue: Array<Record<string, unknown> | null> = [];
   let wake: (() => void) | null = null;
   let released = false;
+  let interruptCount = 0;
   const stopped: string[] = [];
+  const stdinMessages: Array<Record<string, unknown>> = [];
 
   const script: Scripted = {
     emit: (message) => { queue.push(message); wake?.(); },
     end: () => { queue.push(null); wake?.(); },
     released: () => released,
     stopped,
+    stdinMessages,
+    interrupted: () => interruptCount,
   };
 
   const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt }) => {
     void (async () => {
-      for await (const _message of prompt) { /* the CLI reads its stdin */ }
+      for await (const message of prompt) {
+        stdinMessages.push(message as Record<string, unknown>);
+      }
       released = true;
     })();
 
@@ -67,7 +77,7 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     })();
 
     return Object.assign(iterator, {
-      interrupt: async () => {},
+      interrupt: async () => { interruptCount += 1; },
       stopTask: async (taskId: string) => { stopped.push(taskId); },
     });
   };
@@ -307,3 +317,74 @@ test('a turn whose tool emits no task events still holds on the static rule', as
     assert.equal(script.released(), false, 'Monitor reports no task, so the launch rule decides');
   });
 });
+
+test('injectClaudeSDKMessage pushes a mid-tool follow-up onto stdin without interrupting', async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    await waitFor(() => script.stdinMessages.length === 1);
+
+    const accepted = await injectClaudeSDKMessage(SESSION_ID, 'also check edge cases', {});
+    assert.equal(accepted, true);
+    await waitFor(() => script.stdinMessages.length === 2);
+
+    const injected = script.stdinMessages[1];
+    assert.equal(injected.type, 'user');
+    assert.equal(typeof injected.uuid, 'string');
+    assert.equal((injected.message as Record<string, unknown>).content, 'also check edge cases');
+    assert.equal(script.interrupted(), 0);
+
+    // Mid-tool absorption: CLI replays the injected message before `result`.
+    script.emit({ type: 'user', isReplay: true, uuid: injected.uuid, session_id: NATIVE_ID, message: injected.message });
+    script.emit(result());
+    await waitFor(() => sent.some((message) => message.kind === 'complete'));
+
+    assert.equal(script.released(), true);
+    assert.equal(script.interrupted(), 0);
+  });
+});
+
+test('injectClaudeSDKMessage holds stdin across turn 1 result until a mid-text follow-up is replayed and finishes', async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    await waitFor(() => script.stdinMessages.length === 1);
+
+    const accepted = await injectClaudeSDKMessage(SESSION_ID, 'follow-up mid-text', {});
+    assert.equal(accepted, true);
+    await waitFor(() => script.stdinMessages.length === 2);
+    const injected = script.stdinMessages[1];
+
+    // Turn 1's `result` lands before the CLI has replayed the injected follow-up.
+    script.emit(result());
+    await settle();
+
+    assert.equal(script.released(), false, 'stdin stays open so the CLI can run the follow-up turn');
+    assert.equal(sent.some((message) => message.kind === 'complete'), false, 'complete is deferred until follow-up finishes');
+
+    // Now the CLI replays the injected prompt and finishes turn 2.
+    script.emit({ type: 'user', isReplay: true, uuid: injected.uuid, session_id: NATIVE_ID, message: injected.message });
+    script.emit(result());
+    await waitFor(() => sent.some((message) => message.kind === 'complete'));
+
+    assert.equal(script.released(), true);
+    assert.equal(script.interrupted(), 0);
+  });
+});
+
+test('injectClaudeSDKMessage declines injection after the turn completed or was aborted', async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    script.emit(toolUse('toolu_agent', 'Agent', { prompt: 'sleep 90', subagent_type: 'general-purpose', run_in_background: true }));
+    script.emit(taskStarted('a1', 'toolu_agent', 'local_agent'));
+    script.emit(ack('toolu_agent', 'Async agent launched successfully.', { status: 'async_launched', agentId: 'a1' }));
+    script.emit(result());
+    await waitFor(() => sent.some((message) => message.kind === 'complete'));
+
+    // Held only for background work after `complete`: must not inject into the finished turn.
+    assert.equal(await injectClaudeSDKMessage(SESSION_ID, 'late follow-up', {}), false);
+
+    // Abort cleans up the held process.
+    assert.equal(await abortClaudeSDKSession(SESSION_ID), true);
+    assert.equal(await injectClaudeSDKMessage(SESSION_ID, 'after abort', {}), false);
+  });
+});
+

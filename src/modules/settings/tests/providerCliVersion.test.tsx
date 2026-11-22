@@ -438,3 +438,27 @@ describe('AccountContent CLI version row', () => {
   expect(screen.getByText('Installed: v2.1.200')).toBeTruthy();
   expect((screen.getByRole('button', { name: 'Check for updates' }) as HTMLButtonElement).disabled).toBe(false);
  });
+
+ it('renders official ACP version and protocol metadata for Antigravity', async () => {
+  responses.status = [
+    claudeStatus({
+      provider: 'antigravity',
+      installedVersion: '1.5.14',
+      latestVersion: '1.5.15',
+      updateAvailable: true,
+      updateCommand: 'node scripts/update-provider-cli.mjs antigravity',
+      acp: {
+        available: true,
+        protocolVersion: 1,
+        serverName: 'Antigravity ACP Server',
+        serverVersion: '1.5.14',
+        supportsSystemPromptAppend: true,
+      },
+    }),
+  ];
+  render(<ProviderCliVersion agent="antigravity" installedVersion="1.5.14" textClass="" subtextClass="" />);
+  const acpLine = await screen.findByTestId('provider-cli-acp');
+  expect(acpLine.textContent).toContain('Official ACP: v1.5.14');
+  expect(acpLine.textContent).toContain('Protocol v1');
+  expect(screen.getByRole('button', { name: 'Update to v1.5.15' })).toBeTruthy();
+ });
