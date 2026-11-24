@@ -38,9 +38,9 @@ it('combines tool and model search across archived history without changing the 
   expect(onSelect).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: /归档 AGY.*已归档/ }));
   expect(onSelect).toHaveBeenCalledWith('agy');
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'claude' } });
+  fireEvent.change(screen.getByRole('combobox', { name: '按工具筛选历史会话' }), { target: { value: 'claude' } });
   expect(screen.getByText('没有匹配的会话。')).toBeTruthy();
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: '' } });
+  fireEvent.change(screen.getByRole('combobox', { name: '按工具筛选历史会话' }), { target: { value: '' } });
   expect(screen.getByRole('button', { name: /Codex 会话/ }).getAttribute('aria-pressed')).toBe('true');
   expect(screen.getByRole('button', { name: /归档 AGY/ })).toBeTruthy();
 });
@@ -90,4 +90,35 @@ it('reuses an unchanged index and applies changed usage, model evidence and remo
   await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
   expect(screen.getByText('全部历史会话（0，含归档）')).toBeTruthy();
   expect(screen.getByText('没有匹配的会话。')).toBeTruthy();
+});
+
+it('sorts filtered archives by total usage, preserving recency for ties and explicit missing usage', async () => {
+  vi.useFakeTimers();
+  const row = (title: string, total: number | null, provider = 'codex') => ({
+    sessionId: title, title, provider, archived: title === 'Archived', recordedModels: [], reportedModels: ['reported'],
+    totals: total === null ? null : { total },
+  });
+  const sessions = [row('Missing', null), row('Newer', 12), row('Zero', 0), row('Older', 12),
+    row('Archived', 42), row('Other tool', 100, 'antigravity')];
+  vi.mocked(api.tokenMonitor.sessions)
+    .mockResolvedValueOnce(Response.json({ sessions }))
+    .mockResolvedValueOnce(Response.json({ sessions: [row('Missing', 80), ...sessions.slice(1)] }));
+  render(<SessionHistory selectedId="Older" onSelect={() => {}} revision={0} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  fireEvent.click(screen.getByText('全部历史会话（6，含归档）'));
+  const sort = screen.getByRole('combobox', { name: '历史会话排序' });
+  const titles = () => screen.getAllByRole('button').map(button => button.firstElementChild?.textContent?.split(' · ')[0]);
+
+  expect(titles()).toEqual(['Missing', 'Newer', 'Zero', 'Older', 'Archived', 'Other tool']);
+  expect(screen.getByText('Token：未记录')).toBeTruthy();
+  expect(screen.getByText('Token：0')).toBeTruthy();
+  fireEvent.change(screen.getByRole('combobox', { name: '按工具筛选历史会话' }), { target: { value: 'codex' } });
+  fireEvent.change(screen.getByRole('textbox', { name: '搜索历史会话' }), { target: { value: 'reported' } });
+  fireEvent.change(sort, { target: { value: 'usage' } });
+  expect(titles()).toEqual(['Archived', 'Newer', 'Older', 'Zero', 'Missing']);
+  expect(screen.getByRole('button', { name: /^Older/ }).getAttribute('aria-pressed')).toBe('true');
+  await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+  expect(titles()).toEqual(['Missing', 'Archived', 'Newer', 'Older', 'Zero']);
+  fireEvent.change(sort, { target: { value: 'recent' } });
+  expect(titles()).toEqual(['Missing', 'Newer', 'Zero', 'Older', 'Archived']);
 });

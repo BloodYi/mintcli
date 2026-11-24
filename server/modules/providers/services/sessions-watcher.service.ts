@@ -58,7 +58,7 @@ const IGNORED_FILE_SUFFIXES = ['.tmp', '.swp'];
  * Exported for the providers module's tests, which run it against chokidar on
  * a real directory tree.
  */
-export function createWatcherIgnoredMatcher(rootPath: string): (filePath: string) => boolean {
+export function createWatcherIgnoredMatcher(rootPath: string, provider: LLMProvider): (filePath: string) => boolean {
   return (filePath: string) => {
     const relativePath = path.relative(rootPath, filePath);
     // Outside the root is `..` as a whole component, or an absolute result
@@ -72,6 +72,12 @@ export function createWatcherIgnoredMatcher(rootPath: string): (filePath: string
 
     const segments = relativePath.split(path.sep);
     const baseName = segments[segments.length - 1];
+    // Compressed Codex rollouts never grow. The synchronizer owns archive
+    // discovery, and the live watcher only handles plain JSONL events.
+    if (provider === 'codex' && baseName.endsWith('.jsonl.zst')) {
+      return true;
+    }
+
     if (IGNORED_FILE_NAMES.has(baseName) || IGNORED_FILE_SUFFIXES.some((suffix) => baseName.endsWith(suffix))) {
       return true;
     }
@@ -248,7 +254,7 @@ export async function initializeSessionsWatcher(): Promise<void> {
       await fsPromises.mkdir(rootPath, { recursive: true });
 
       const watcher = chokidar.watch(rootPath, {
-        ignored: createWatcherIgnoredMatcher(rootPath),
+        ignored: createWatcherIgnoredMatcher(rootPath, provider),
         persistent: true,
         ignoreInitial: true,
         followSymlinks: false,

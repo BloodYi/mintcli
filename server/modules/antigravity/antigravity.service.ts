@@ -65,7 +65,7 @@ export function createAntigravityBridge(options: BridgeOptions = {}) {
 
   const request = async (method: string, target: string, body?: unknown, signal?: AbortSignal, contentType?: string): Promise<Response> => {
     if (!target.startsWith('/api/') || target.includes('..') || target.includes('\\')
-      || !/^\/api\/(?:accounts(?:\/(?:add|switch|[^/?]+))?|acp-info|quota|models|chat|upload|download|fs|conversations(?:\/[^/?]+(?:\/(?:messages|activate|pin|recall))?)?|turns\/[^/?]+(?:\/(?:events|stop))?)(?:\?[^#]*)?$/.test(target)) {
+      || !/^\/api\/(?:accounts(?:\/(?:add|switch|[^/?]+))?|acp-info|quota|models|chat|upload|download|fs|conversations(?:\/[^/?]+(?:\/(?:messages|activate|pin|recall))?)?|turns\/[^/?]+(?:\/(?:events|stop|messages))?)(?:\?[^#]*)?$/.test(target)) {
       throw new AppError('不支持的 Antigravity 操作。', { code: 'INVALID_ANTIGRAVITY_PATH', statusCode: 400 });
     }
     try {
@@ -107,7 +107,8 @@ export function createAntigravityBridge(options: BridgeOptions = {}) {
     startChatForAccount(id: unknown, payload: unknown, signal?: AbortSignal) {
       return serial(async () => {
         if (id) { const selected = await switchAccount({ id }, signal); if (!selected.ok) return selected; }
-        return request('POST', '/api/chat', payload, signal);
+        const body = id && payload && typeof payload === 'object' ? { ...(payload as Record<string, unknown>), account_id: id } : payload;
+        return request('POST', '/api/chat', body, signal);
       });
     },
     quotaForAccount(id: string, force: boolean) {

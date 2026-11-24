@@ -181,3 +181,116 @@ test('AntigravityProvider.runtime.run streams thinking, tools, and text inline w
     sessionsDb.createSession = originalCreateSession;
   }
 });
+
+test('AntigravityProvider.runtime.injectMessage injects mid-turn and transitions into new thinking without completing early', async () => {
+  const provider = new AntigravityProvider();
+  const originalApiForAgent = connectionService.apiForAgent;
+  const originalStartChat = antigravityBridge.startChatForAccount;
+  const originalRequest = antigravityBridge.request;
+  const originalGetSession = sessionsDb.getSessionById;
+  const originalCreateSession = sessionsDb.createSession;
+
+  const sent: NormalizedMessage[] = [];
+  const encoder = new TextEncoder();
+  let streamController!: ReadableStreamDefaultController<Uint8Array>;
+  const pushEvent = (event: AnyRecord) => {
+    streamController.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+  };
+  const liveStream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      streamController = controller;
+    },
+  });
+
+  const injectedRequests: Array<{ target: string; body: AnyRecord }> = [];
+  connectionService.apiForAgent = () => null;
+  antigravityBridge.startChatForAccount = async () =>
+    new Response(liveStream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  antigravityBridge.request = async (method, target, body) => {
+    if (method === 'POST' && target.endsWith('/messages')) {
+      injectedRequests.push({ target, body: body as AnyRecord });
+      return Response.json({ ok: true, message_id: (body as AnyRecord).message_id });
+    }
+    return Response.json({ messages: [], revision: null });
+  };
+  sessionsDb.getSessionById = () => null;
+  sessionsDb.createSession = (() => 'app-session-inject') as typeof sessionsDb.createSession;
+
+  try {
+    const runPromise = provider.runtime.run(
+      'first prompt',
+      { sessionId: 'app-session-inject', model: 'gemini-4-neon-xhigh', useClaudeAgy: true, cwd: '/tmp' },
+      { send: (msg) => sent.push(msg as NormalizedMessage), setSessionId: () => undefined },
+      {
+        resolveProviderSessionId: () => null,
+        resolveResumeModel: async () => undefined,
+        getProviderModels: async () => ({ OPTIONS: [], DEFAULT: '' }),
+        normalizeMessage: () => [],
+        isProviderInstalled: async () => true,
+      },
+    );
+
+    pushEvent({
+      cursor: 1,
+      event: 'snapshot',
+      conversation_id: 'conv-live-inject',
+      message: { id: 'asst-1', role: 'assistant', content: '', status: 'streaming', requestedModel: 'gemini-4-neon-xhigh', steps: [] },
+    });
+    pushEvent({ cursor: 2, event: 'thinking', thinking: 'Initial thinking...', step_id: 'asst-1:thinking:1' });
+    pushEvent({
+      cursor: 3,
+      event: 'tool',
+      step_id: 'asst-1:tool:call-1',
+      tool_id: 'call-1',
+      tool_name: 'Read',
+      tool: 'Read: app.py',
+      tool_input: { file_path: 'app.py' },
+      status: 'running',
+    });
+
+    const accepted = await provider.runtime.injectMessage!('app-session-inject', 'also check tests', {});
+    assert.equal(accepted, true);
+    assert.equal(injectedRequests.length, 1);
+    assert.equal(injectedRequests[0].body.content, 'also check tests');
+
+    // Bridge announces segment switch, then tool from asst-1 completes, then new thinking streams on asst-2.
+    pushEvent({
+      cursor: 4,
+      event: 'user_message_applied',
+      user_message_id: injectedRequests[0].body.message_id,
+      previous_assistant_id: 'asst-1',
+      assistant: { id: 'asst-2', role: 'assistant', content: '', status: 'streaming', requestedModel: 'gemini-4-neon-xhigh', steps: [] },
+    });
+    pushEvent({
+      cursor: 5,
+      event: 'tool_result',
+      assistant_id: 'asst-1',
+      step_id: 'asst-1:tool:call-1',
+      tool_id: 'call-1',
+      content: 'ok',
+      is_error: false,
+    });
+    pushEvent({ cursor: 6, event: 'thinking', thinking: 'New thinking after follow-up...', step_id: 'asst-2:thinking:1' });
+    pushEvent({ cursor: 7, event: 'delta', delta: 'Checked tests too.', step_id: 'asst-2:text:2' });
+    pushEvent({ cursor: 8, event: 'done', status: 'complete' });
+    streamController.close();
+
+    await runPromise;
+
+    assert.equal(sent.filter((m) => m.kind === 'complete').length, 1);
+    const thinkingIds = [...new Set(sent.filter((m) => m.kind === 'thinking').map((m) => m.id))];
+    assert.deepEqual(thinkingIds, ['asst-1:thinking:1', 'asst-2:thinking:1']);
+    const completedTool = sent.filter((m) => m.kind === 'tool_use' && m.toolId === 'call-1').at(-1);
+    assert.equal(completedTool?.status, 'completed');
+    assert.deepEqual(completedTool?.toolResult, { content: 'ok', isError: false });
+    const finalText = sent.filter((m) => m.kind === 'text').at(-1);
+    assert.equal(finalText?.id, 'asst-2:text:2');
+    assert.equal(finalText?.content, 'Checked tests too.');
+  } finally {
+    connectionService.apiForAgent = originalApiForAgent;
+    antigravityBridge.startChatForAccount = originalStartChat;
+    antigravityBridge.request = originalRequest;
+    sessionsDb.getSessionById = originalGetSession;
+    sessionsDb.createSession = originalCreateSession;
+  }
+});

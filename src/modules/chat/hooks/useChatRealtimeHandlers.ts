@@ -301,6 +301,20 @@ export function useChatRealtimeHandlers({
           }
           accumulatedStreamRef.current = '';
 
+          // When a turn-based provider hands off straight into a queued follow-up,
+          // keep the session in its active thinking state without flashing idle or
+          // showing disconnected between sub-turns.
+          if (msg.continuing === true && !msg.aborted) {
+            if (sid === activeViewSessionId) {
+              pendingPermissionRequestsRef.current = [];
+              setPendingPermissionRequests([]);
+            }
+            if (sid) {
+              onSessionProcessing?.(sid);
+            }
+            break;
+          }
+
           // `complete` is the unified terminal event — every provider run ends
           // with exactly one, regardless of success, failure, or abort. The
           // indicator derives from the processing map, so the entry changes

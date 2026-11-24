@@ -128,6 +128,14 @@ def _server_request_response(message: dict[str, Any]) -> dict[str, Any]:
     }}
 
 
+def _merge_acp_usage(acc: dict[str, int], extra: dict[str, int] | None) -> dict[str, int]:
+    if not extra:
+        return acc
+    for key, val in extra.items():
+        acc[key] = acc.get(key, 0) + val
+    return acc
+
+
 async def stream_agy_acp(
     *,
     agy_bin: str,
@@ -146,6 +154,7 @@ async def stream_agy_acp(
     fallback_prompt: str | None = None,
     update_lease: Any = None,
     timeout: int = 0,
+    register_injector: Callable[[Callable[[str, str], Awaitable[bool]] | None], None] | None = None,
 ):
     """Run one turn against the official `agy acp` stdio server and yield bridge events."""
     started_at = time.monotonic()
@@ -178,12 +187,58 @@ async def stream_agy_acp(
     next_id = 1
     phase = "initialize"
     setup_complete = False
+    send_lock = asyncio.Lock()
+    prompt_ready = asyncio.Event()
+    startup_failed = False
+    accepting_input = True
+    pending_prompt_ids: dict[int, str | None] = {}
+    ordered_prompt_ids: list[int] = []
 
     async def _send(payload: dict[str, Any]) -> None:
         assert proc is not None and proc.stdin is not None
         data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
-        proc.stdin.write(data)
-        await asyncio.wait_for(proc.stdin.drain(), timeout=ACP_SETUP_TIMEOUT_SECONDS)
+        async with send_lock:
+            proc.stdin.write(data)
+            await asyncio.wait_for(proc.stdin.drain(), timeout=ACP_SETUP_TIMEOUT_SECONDS)
+
+    async def _inject_message(content: str, message_uuid: str) -> bool:
+        nonlocal next_id
+        try:
+            await asyncio.wait_for(prompt_ready.wait(), timeout=ACP_SETUP_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            return False
+        if (
+            startup_failed
+            or not accepting_input
+            or not session_id
+            or proc is None
+            or proc.returncode is not None
+            or proc.stdin is None
+            or proc.stdin.is_closing()
+        ):
+            return False
+        req_id = next_id
+        next_id += 1
+        pending_prompt_ids[req_id] = message_uuid
+        ordered_prompt_ids.append(req_id)
+        try:
+            await _send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "method": "session/prompt",
+                    "params": {
+                        "sessionId": session_id,
+                        "prompt": [{"type": "text", "text": content}],
+                    },
+                }
+            )
+            return True
+        except Exception:
+            pending_prompt_ids.pop(req_id, None)
+            if req_id in ordered_prompt_ids:
+                ordered_prompt_ids.remove(req_id)
+            return False
 
     async def _read_message(deadline: float | None) -> dict[str, Any] | None:
         assert proc is not None and proc.stdout is not None
@@ -229,6 +284,8 @@ async def stream_agy_acp(
         await reap_cli_process(proc)
 
     try:
+        if register_injector:
+            register_injector(_inject_message)
         # Never use DesktopProfileProxy or reverse proxies in ACP mode; talk directly to `agy acp`.
         acp_env = dict(run_env)
         acp_env.pop("AGY_UPSTREAM_PROFILE", None)
@@ -346,6 +403,8 @@ async def stream_agy_acp(
         effective_prompt = fallback_prompt if (not resumed_existing and fallback_prompt) else prompt
         if clean_system_append and not supports_system_append and not resumed_existing:
             effective_prompt = f"{clean_system_append}\n\n{effective_prompt}" if effective_prompt else clean_system_append
+        pending_prompt_ids[prompt_req_id] = None
+        ordered_prompt_ids.append(prompt_req_id)
         await _send(
             {
                 "jsonrpc": "2.0",
@@ -357,11 +416,14 @@ async def stream_agy_acp(
                 },
             }
         )
+        prompt_ready.set()
 
         accumulated_text: list[str] = []
+        merged_usage: dict[str, int] = {}
         while True:
             msg = await _read_message(deadline)
             if msg is None:
+                accepting_input = False
                 err_txt = stderr_tail.decode("utf-8", errors="replace").strip()
                 yield {"event": "error", "error": err_txt or "agy acp terminated unexpectedly"}
                 return
@@ -422,32 +484,61 @@ async def stream_agy_acp(
                     yield tool_event
                 continue
 
-            # Handle final response for session/prompt
-            if msg.get("id") == prompt_req_id:
-                if route_enricher:
-                    trace = await asyncio.to_thread(_collect_acp_log_trace, log_path, session_id)
-                    await asyncio.to_thread(route_enricher, route_info, trace)
+            # Handle final or handoff response for any in-flight session/prompt
+            msg_id = msg.get("id")
+            if isinstance(msg_id, int) and msg_id in pending_prompt_ids:
+                pending_prompt_ids.pop(msg_id, None)
+                if msg_id in ordered_prompt_ids:
+                    ordered_prompt_ids.remove(msg_id)
                 if "error" in msg:
                     err = msg["error"]
                     err_msg = err.get("message") if isinstance(err, dict) else str(err)
+                    if pending_prompt_ids:
+                        logger.warning("agy acp intermediate prompt %s returned error: %s", msg_id, err_msg)
+                        accumulated_text.clear()
+                        next_req = next((rid for rid in ordered_prompt_ids if rid in pending_prompt_ids), None)
+                        next_uuid = pending_prompt_ids.get(next_req) if next_req is not None else None
+                        if next_uuid:
+                            yield {"event": "user_message_applied", "uuid": next_uuid}
+                        continue
+                    accepting_input = False
+                    if route_enricher:
+                        trace = await asyncio.to_thread(_collect_acp_log_trace, log_path, session_id)
+                        await asyncio.to_thread(route_enricher, route_info, trace)
                     yield {"event": "error", "error": err_msg or "agy acp prompt failed"}
-                else:
-                    res = msg.get("result") if isinstance(msg.get("result"), dict) else {}
-                    usage = _normalize_acp_usage(res.get("usage"))
-                    result_event: dict[str, Any] = {
-                        "event": "result",
-                        "response": "".join(accumulated_text),
-                        "duration_seconds": round(time.monotonic() - started_at, 2),
-                        "route_info": json.loads(json.dumps(route_info)),
-                    }
-                    if usage:
-                        result_event["usage"] = usage
-                    yield result_event
+                    break
+
+                res = msg.get("result") if isinstance(msg.get("result"), dict) else {}
+                _merge_acp_usage(merged_usage, _normalize_acp_usage(res.get("usage")))
+                if pending_prompt_ids:
+                    # A live follow-up session/prompt is already queued/active inside agy acp.
+                    # Stay connected and transition into the new assistant segment without closing.
+                    accumulated_text.clear()
+                    next_req = next((rid for rid in ordered_prompt_ids if rid in pending_prompt_ids), None)
+                    next_uuid = pending_prompt_ids.get(next_req) if next_req is not None else None
+                    if next_uuid:
+                        yield {"event": "user_message_applied", "uuid": next_uuid}
+                    continue
+
+                accepting_input = False
+                if route_enricher:
+                    trace = await asyncio.to_thread(_collect_acp_log_trace, log_path, session_id)
+                    await asyncio.to_thread(route_enricher, route_info, trace)
+                result_event: dict[str, Any] = {
+                    "event": "result",
+                    "response": "".join(accumulated_text),
+                    "duration_seconds": round(time.monotonic() - started_at, 2),
+                    "route_info": json.loads(json.dumps(route_info)),
+                }
+                if merged_usage:
+                    result_event["usage"] = dict(merged_usage)
+                yield result_event
                 break
 
         yield {"event": "metadata", "route_info": json.loads(json.dumps(route_info))}
 
     except asyncio.CancelledError:
+        accepting_input = False
         if proc is not None and proc.returncode is None and session_id:
             try:
                 await _send(
@@ -461,11 +552,17 @@ async def stream_agy_acp(
                 pass
         raise
     except asyncio.TimeoutError:
+        accepting_input = False
         err_txt = stderr_tail.decode("utf-8", errors="replace").strip()
         detail = f" — {err_txt}" if err_txt else ""
         limit = timeout if setup_complete and timeout > 0 else ACP_SETUP_TIMEOUT_SECONDS
         yield {"event": "error", "error": f"antigravity-chat (ACP): {phase} timed out after {limit:g}s{detail}"}
     finally:
+        accepting_input = False
+        startup_failed = True
+        prompt_ready.set()
+        if register_injector:
+            register_injector(None)
         if stderr_task is not None:
             stderr_task.cancel()
             try:

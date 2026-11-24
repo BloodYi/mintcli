@@ -19,8 +19,11 @@ import re
 import secrets
 import shutil
 import tempfile
+import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any
@@ -1181,6 +1184,7 @@ class ChatRequest(BaseModel):
     stream_options: dict[str, Any] | None = None
     api_connection: ApiConnection | None = None
     use_claude_agy: StrictBool = False
+    account_id: str | None = None
 
 
 def _api_environment(env: dict[str, str], api: ApiConnection) -> dict[str, str]:
@@ -1315,24 +1319,51 @@ def _build_argv(
 from egress import egress_environment
 
 
-def _agy_environment() -> dict[str, str]:
-    """Run chat turns with known-stalled MCP servers removed."""
-    env = egress_environment(os.environ.copy())
-    if not AGY_DISABLE_MCP and not AGY_DISABLED_MCP_SERVERS:
-        return env
+_active_account_turns: dict[str, int] = {}
+_SHARED_AGY_CLI_DIRS = (
+    "conversations",
+    "brain",
+    "annotations",
+    "implicit",
+    "presence",
+    "bin",
+    "builtin",
+    "cache",
+    "mcp",
+)
+_SHARED_AGY_CLI_FILES = ("installation_id", "settings.json")
 
-    source_home = Path(os.path.expanduser("~")).resolve()
-    token_source = source_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
-    if not token_source.exists():
-        logger.warning("AGY_DISABLE_MCP is enabled but no agy OAuth token was found; using the current HOME")
-        return env
 
-    runtime_home = Path(os.getenv("AGY_RUNTIME_HOME", str(SCRATCH / ".agy-home"))).expanduser().resolve()
-    if runtime_home == source_home:
-        logger.warning("AGY_RUNTIME_HOME points at HOME; MCP isolation is disabled")
-        return env
+def _ensure_symlink(link_path: Path, target_path: Path) -> None:
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if link_path.is_symlink() and link_path.resolve() == target_path.resolve():
+            return
+    except OSError:
+        pass
+    if link_path.exists() and not link_path.is_symlink():
+        return
+    tmp_link = link_path.with_name(f".{link_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp_link.symlink_to(target_path)
+        os.replace(tmp_link, link_path)
+    finally:
+        if tmp_link.is_symlink() or tmp_link.exists():
+            try:
+                tmp_link.unlink()
+            except OSError:
+                pass
 
+
+def _write_mcp_config(source_home: Path, runtime_home: Path) -> None:
     runtime_config = runtime_home / ".gemini" / "config"
+    if not AGY_DISABLE_MCP and not AGY_DISABLED_MCP_SERVERS:
+        source_config_dir = source_home / ".gemini" / "config"
+        if source_config_dir.exists():
+            _ensure_symlink(runtime_config, source_config_dir)
+        return
+    if runtime_config.is_symlink():
+        runtime_config.unlink(missing_ok=True)
     runtime_config.mkdir(parents=True, exist_ok=True)
     mcp_config = {"mcpServers": {}}
     if not AGY_DISABLE_MCP:
@@ -1351,23 +1382,158 @@ def _agy_environment() -> dict[str, str]:
                 }
         except (OSError, json.JSONDecodeError) as exc:
             logger.warning("Failed to filter agy MCP config %s: %s", source_config, exc)
-    (runtime_config / "mcp_config.json").write_text(json.dumps(mcp_config, indent=2) + "\n")
+    tmp_mcp = runtime_config / f"mcp_config.{uuid.uuid4().hex}.tmp"
+    tmp_mcp.write_text(json.dumps(mcp_config, indent=2) + "\n")
+    tmp_mcp.replace(runtime_config / "mcp_config.json")
+
+
+def _account_homes_root() -> Path:
+    return Path(os.getenv("AGY_ACCOUNT_HOMES_DIR", str(SCRATCH / ".agy-account-homes"))).expanduser().resolve()
+
+
+def _account_home_dir(account_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._@-]", "_", account_id)[:48] or "account"
+    digest = hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:10]
+    return _account_homes_root() / f"{safe}-{digest}"
+
+
+def _atomic_write_json(path: Path, payload: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(payload)
+    tmp.chmod(0o600)
+    tmp.replace(path)
+
+
+def _sync_account_home_token_to_storage(account_id: str) -> None:
+    """Persist any refreshed OAuth token from an isolated account home back to storage."""
+    target_file = _resolve_account_file(account_id)
+    if not target_file or not target_file.exists():
+        return
+    account_token = _account_home_dir(target_file.stem) / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    if not account_token.exists() or account_token.is_symlink():
+        return
+    try:
+        home_data = json.loads(account_token.read_text())
+        if not _has_valid_token(home_data):
+            return
+        stored_data = json.loads(target_file.read_text())
+        if not _same_account(home_data, stored_data):
+            return
+        merged = {**stored_data, **home_data}
+        if merged != stored_data:
+            _atomic_write_json(target_file, json.dumps(merged, indent=2) + "\n")
+        if ACTIVE_TOKEN_FILE.exists():
+            try:
+                active_data = json.loads(ACTIVE_TOKEN_FILE.read_text())
+                if _same_account(active_data, merged):
+                    active_merged = {**active_data, **merged}
+                    if active_merged != active_data:
+                        _atomic_write_json(ACTIVE_TOKEN_FILE, json.dumps(active_merged, indent=2) + "\n")
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.warning("Failed to sync isolated account token for %s: %s", account_id, exc)
+
+
+def _prepare_account_home(account_id: str) -> Path:
+    """Prepare an isolated HOME for one agy account while sharing conversation transcripts."""
+    target_file = _resolve_account_file(account_id)
+    if not target_file or not target_file.exists():
+        raise HTTPException(status_code=404, detail=f"账号 '{account_id}' 不存在")
+    content = target_file.read_text()
+    target_data = json.loads(content)
+    if not _has_valid_token(target_data):
+        raise HTTPException(status_code=400, detail=f"账号 '{account_id}' 凭证无效")
+
+    canonical_id = target_file.stem
+    account_home = _account_home_dir(canonical_id)
+    account_cli_dir = account_home / ".gemini" / "antigravity-cli"
+    account_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    account_cli_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    source_home = Path(HOME).expanduser().resolve()
+    source_cli_dir = source_home / ".gemini" / "antigravity-cli"
+    if source_cli_dir.exists():
+        for name in _SHARED_AGY_CLI_DIRS:
+            src = source_cli_dir / name
+            if name in ("conversations", "brain", "annotations", "implicit", "presence"):
+                src.mkdir(parents=True, exist_ok=True)
+            if src.exists():
+                _ensure_symlink(account_cli_dir / name, src)
+        for name in _SHARED_AGY_CLI_FILES:
+            src = source_cli_dir / name
+            if src.exists():
+                _ensure_symlink(account_cli_dir / name, src)
+
+    _write_mcp_config(source_home, account_home)
+
+    account_token = account_cli_dir / "antigravity-oauth-token"
+    if account_token.is_symlink():
+        account_token.unlink(missing_ok=True)
+
+    needs_write = True
+    if account_token.exists():
+        try:
+            existing_data = json.loads(account_token.read_text())
+            if _same_account(existing_data, target_data):
+                if _active_account_turns.get(canonical_id, 0) > 0:
+                    needs_write = False
+                elif account_token.stat().st_mtime_ns > target_file.stat().st_mtime_ns:
+                    needs_write = False
+                    _sync_account_home_token_to_storage(canonical_id)
+        except Exception:
+            needs_write = True
+    if needs_write:
+        _atomic_write_json(account_token, content)
+
+    return account_home
+
+
+def _agy_environment(account_id: str | None = None) -> dict[str, str]:
+    """Run chat turns with per-account credential isolation and optional MCP filtering."""
+    env = egress_environment(os.environ.copy())
+
+    effective_account = account_id
+    if not effective_account and ACTIVE_TOKEN_FILE.exists():
+        effective_account = _active_account_id()
+    if effective_account:
+        try:
+            account_home = _prepare_account_home(effective_account)
+            env["HOME"] = str(account_home)
+            return env
+        except HTTPException:
+            if account_id:
+                raise
+        except Exception as exc:
+            logger.warning("Failed to prepare isolated agy home for %s: %s", effective_account, exc)
+            if account_id:
+                raise
+
+    if not AGY_DISABLE_MCP and not AGY_DISABLED_MCP_SERVERS:
+        return env
+
+    source_home = Path(os.path.expanduser("~")).resolve()
+    token_source = source_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    if not token_source.exists():
+        logger.warning("AGY_DISABLE_MCP is enabled but no agy OAuth token was found; using the current HOME")
+        return env
+
+    runtime_home = Path(os.getenv("AGY_RUNTIME_HOME", str(SCRATCH / ".agy-home"))).expanduser().resolve()
+    if runtime_home == source_home:
+        logger.warning("AGY_RUNTIME_HOME points at HOME; MCP isolation is disabled")
+        return env
+
+    _write_mcp_config(source_home, runtime_home)
 
     # Reuse the user's token without copying credentials into the runtime directory.
     runtime_token = runtime_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
-    runtime_token.parent.mkdir(parents=True, exist_ok=True)
-    if not runtime_token.is_symlink():
-        if runtime_token.exists():
-            runtime_token.unlink()
-        runtime_token.symlink_to(token_source)
+    _ensure_symlink(runtime_token, token_source)
 
     source_installation_id = source_home / ".gemini" / "antigravity-cli" / "installation_id"
     if source_installation_id.exists():
         runtime_installation_id = runtime_home / ".gemini" / "antigravity-cli" / "installation_id"
-        if not runtime_installation_id.is_symlink():
-            if runtime_installation_id.exists():
-                runtime_installation_id.unlink()
-            runtime_installation_id.symlink_to(source_installation_id)
+        _ensure_symlink(runtime_installation_id, source_installation_id)
 
     env["HOME"] = str(runtime_home)
     return env
@@ -1549,6 +1715,8 @@ async def _stream_agy(
     api_connection: ApiConnection | None = None,
     fallback_prompt: str | None = None,
     system_append: str | None = None,
+    register_injector=None,
+    account_id: str | None = None,
 ):
     """Run agy and yield structured events (dict) as NDJSON or text chunks arrive."""
     turn_timeout = AGY_TIMEOUT if timeout is None else timeout
@@ -1557,7 +1725,7 @@ async def _stream_agy(
         target_cwd = str(SCRATCH)
 
     if api_connection is None:
-        run_env = _agy_environment()
+        run_env = _agy_environment(account_id=account_id) if account_id else _agy_environment()
         agy_home = run_env.get("HOME") or HOME
         updater = globals().get("project_updater")
         update_lease = updater.acquire_turn() if updater else None
@@ -1578,6 +1746,7 @@ async def _stream_agy(
             system_append=system_append,
             update_lease=update_lease,
             timeout=turn_timeout,
+            register_injector=register_injector,
         ):
             yield event
         return
@@ -2418,8 +2587,292 @@ def _sync_active_account_to_storage() -> None:
         logger.warning("Failed to auto-backup active account to %s: %s", ACCOUNTS_DIR, exc)
 
 
+ACCOUNT_TIER_TTL_SECONDS = 1800.0
+ACCOUNT_TIER_RETRY_SECONDS = 120.0
+ACCOUNT_TIER_CACHE_VERSION = 2
+_tier_cache_lock = threading.Lock()
+_tier_refresh_tasks: dict[str, asyncio.Task] = {}
+_tier_retry_at: dict[str, float] = {}
+_tier_refresh_sem: asyncio.Semaphore | None = None
+
+
+def _tiers_cache_file() -> Path:
+    return ACCOUNTS_DIR.parent / "account_tiers.json"
+
+
+def _load_tier_cache() -> dict[str, dict]:
+    cache_file = _tiers_cache_file()
+    with _tier_cache_lock:
+        if not cache_file.exists():
+            return {}
+        try:
+            data = json.loads(cache_file.read_text())
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+
+def _save_tier_cache_entry(account_id: str, entry: dict) -> None:
+    cache_file = _tiers_cache_file()
+    with _tier_cache_lock:
+        cache: dict[str, Any] = {}
+        if cache_file.exists():
+            try:
+                loaded = json.loads(cache_file.read_text())
+                if isinstance(loaded, dict):
+                    cache = loaded
+            except Exception:
+                cache = {}
+        cache[account_id] = entry
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(cache, indent=2) + "\n")
+            tmp.chmod(0o600)
+            tmp.replace(cache_file)
+        except Exception as exc:
+            logger.warning("Failed to save account tier cache: %s", exc)
+
+
+def _remove_tier_cache_entry(account_id: str) -> None:
+    cache_file = _tiers_cache_file()
+    with _tier_cache_lock:
+        if not cache_file.exists():
+            return
+        try:
+            cache = json.loads(cache_file.read_text())
+            if isinstance(cache, dict) and account_id in cache:
+                cache.pop(account_id, None)
+                tmp = cache_file.with_suffix(".tmp")
+                tmp.write_text(json.dumps(cache, indent=2) + "\n")
+                tmp.chmod(0o600)
+                tmp.replace(cache_file)
+        except Exception:
+            pass
+
+
+def _classify_antigravity_tier(load_code_assist: dict, available_models: dict | None = None) -> str | None:
+    """Map Google Cloud Code Assist loadCodeAssist + fetchAvailableModels to official Antigravity tier labels."""
+    if not isinstance(load_code_assist, dict):
+        return None
+    paid_tier = load_code_assist.get("paidTier")
+    if isinstance(paid_tier, dict):
+        paid_id = str(paid_tier.get("id") or "").strip().lower().replace("_", "-")
+        paid_name = str(paid_tier.get("name") or "").strip()
+        if paid_id:
+            if paid_id == "g1-ultra-lite-tier" or ("ultra" in paid_id and ("lite" in paid_id or "5x" in paid_id)):
+                return "Ultra 5x"
+            if paid_id == "ws-ai-ultra-business-tier":
+                return "Ultra Business"
+            if paid_id == "gcp-ge-ultra-tier":
+                return "Ultra Enterprise"
+            if paid_id == "g1-ultra-tier" or "ultra" in paid_id:
+                return "Ultra 20x"
+            if paid_id == "g1-pro-tier" or "pro" in paid_id:
+                models = available_models.get("models") if isinstance(available_models, dict) else None
+                if isinstance(models, dict) and models:
+                    model_ids = [str(k).lower() for k in models.keys()]
+                    has_paid_models = any(
+                        m.startswith(("claude-opus-5", "claude-sonnet-5", "gemini-4-neon", "gemini-4-carbon", "gemini-4-argon"))
+                        for m in model_ids
+                    )
+                    return "PaidPro" if has_paid_models else "FreePro"
+                return "Pro"
+            if paid_id == "g1-plus-tier" or "plus" in paid_id:
+                return "Plus"
+            return paid_name or paid_id
+
+    current_tier = load_code_assist.get("currentTier")
+    if isinstance(current_tier, dict):
+        cur_id = str(current_tier.get("id") or "").strip().lower().replace("_", "-")
+        cur_name = str(current_tier.get("name") or "").strip()
+        if cur_id in ("free-tier", "free"):
+            return "Free"
+        if cur_id in ("standard-tier", "cs-standard-tier", "gcp-ge-standard-tier"):
+            return "Standard"
+        if cur_id == "legacy-tier":
+            return "Legacy"
+        if cur_id == "gcp-ge-edu-pro-tier":
+            return "Edu Pro"
+        if cur_id == "gcp-ge-edu-tier":
+            return "Edu"
+        if "enterprise" in cur_id or cur_id == "gcp-ge-plus-tier":
+            return "Enterprise"
+        if "business" in cur_id:
+            return "Business"
+        if cur_id == "gdp-premium-tier":
+            return "GDP Premium"
+        if cur_name and cur_name.lower() != "antigravity":
+            return cur_name
+        if cur_id:
+            return cur_id
+    return None
+
+
+def _resolve_cached_tier(cached_tier: Any) -> str | None:
+    if not isinstance(cached_tier, dict):
+        return None
+    tier = cached_tier.get("tier")
+    if not isinstance(tier, str) or not tier:
+        return None
+    if tier == "Ultra":
+        paid_id = str(cached_tier.get("paid_tier_id") or "").strip().lower().replace("_", "-")
+        if paid_id == "g1-ultra-lite-tier" or ("ultra" in paid_id and ("lite" in paid_id or "5x" in paid_id)):
+            return "Ultra 5x"
+        if paid_id == "g1-ultra-tier":
+            return "Ultra 20x"
+    return tier
+
+
+def _http_post_json(url: str, access_token: str, payload: dict, env: dict[str, str], timeout: float = 15.0) -> dict:
+    proxies: dict[str, str] = {}
+    https_proxy = env.get("HTTPS_PROXY") or env.get("https_proxy") or env.get("ALL_PROXY") or env.get("all_proxy")
+    http_proxy = env.get("HTTP_PROXY") or env.get("http_proxy") or env.get("ALL_PROXY") or env.get("all_proxy")
+    if https_proxy:
+        proxies["https"] = https_proxy
+    if http_proxy:
+        proxies["http"] = http_proxy
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies)) if proxies else urllib.request.build_opener()
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "antigravity/1.5.15",
+        },
+        method="POST",
+    )
+    with opener.open(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+async def _refresh_account_token_via_cli(account_id: str) -> str | None:
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            AGY_BIN, "-p=/credits",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            cwd=str(SCRATCH),
+            env=_agy_environment(account_id=account_id),
+            start_new_session=os.name == "posix",
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=20.0)
+    except Exception as exc:
+        logger.debug("Token refresh via agy CLI failed for %s: %s", account_id, exc)
+    finally:
+        await reap_cli_process(proc)
+    _sync_account_home_token_to_storage(account_id)
+    target_file = _resolve_account_file(account_id)
+    if not target_file or not target_file.exists():
+        return None
+    try:
+        data = json.loads(target_file.read_text())
+        tok = data.get("token")
+        return tok.get("access_token") if isinstance(tok, dict) else (tok if isinstance(tok, str) else None)
+    except Exception:
+        return None
+
+
+async def _refresh_account_tier(account_id: str) -> str | None:
+    global _tier_refresh_sem
+    if _tier_refresh_sem is None:
+        _tier_refresh_sem = asyncio.Semaphore(3)
+    async with _tier_refresh_sem:
+        target_file = _resolve_account_file(account_id)
+        if not target_file or not target_file.exists():
+            return None
+        try:
+            data = json.loads(target_file.read_text())
+            tok = data.get("token")
+            access_token = tok.get("access_token") if isinstance(tok, dict) else (tok if isinstance(tok, str) else None)
+            if not access_token:
+                return None
+        except Exception:
+            return None
+
+        env = egress_environment(os.environ.copy())
+        base_url = env.get("CLOUD_CODE_URL", "https://daily-cloudcode-pa.googleapis.com").rstrip("/")
+        lca_url = f"{base_url}/v1internal:loadCodeAssist"
+        lca_payload = {"metadata": {"ideType": "IDE_UNSPECIFIED", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}}
+
+        try:
+            try:
+                lca = await asyncio.to_thread(_http_post_json, lca_url, access_token, lca_payload, env)
+            except urllib.error.HTTPError as err:
+                if err.code != 401:
+                    raise
+                refreshed_token = await _refresh_account_token_via_cli(account_id)
+                if not refreshed_token:
+                    raise
+                access_token = refreshed_token
+                lca = await asyncio.to_thread(_http_post_json, lca_url, access_token, lca_payload, env)
+
+            fam: dict | None = None
+            paid_tier = lca.get("paidTier") if isinstance(lca, dict) else None
+            paid_id = str(paid_tier.get("id") or "").strip().lower() if isinstance(paid_tier, dict) else ""
+            if paid_id and (paid_id == "g1-pro-tier" or ("pro" in paid_id and "ultra" not in paid_id)):
+                fam_url = f"{base_url}/v1internal:fetchAvailableModels"
+                project = lca.get("cloudaicompanionProject") or "aicode-consumers"
+                try:
+                    fam = await asyncio.to_thread(_http_post_json, fam_url, access_token, {"project": project}, env)
+                except Exception as exc:
+                    logger.debug("fetchAvailableModels failed for %s: %s", account_id, exc)
+
+            tier = _classify_antigravity_tier(lca, fam)
+            if tier:
+                _save_tier_cache_entry(account_id, {
+                    "v": ACCOUNT_TIER_CACHE_VERSION,
+                    "tier": tier,
+                    "paid_tier_id": paid_id or None,
+                    "current_tier_id": str((lca.get("currentTier") or {}).get("id") or "") or None,
+                    "checked_at": time.time(),
+                })
+                _tier_retry_at.pop(account_id, None)
+            return tier
+        except Exception as exc:
+            logger.debug("Failed to refresh subscription tier for agy account %s: %s", account_id, exc)
+            _tier_retry_at[account_id] = time.monotonic() + ACCOUNT_TIER_RETRY_SECONDS
+            return None
+
+
+def _schedule_tier_refresh(accounts: list[dict], force: bool = False) -> None:
+    if os.environ.get("AGY_DISABLE_TIER_REFRESH") == "1":
+        return
+    cache = _load_tier_cache()
+    now = time.time()
+    mono = time.monotonic()
+    for acc in accounts:
+        account_id = acc.get("id")
+        if not account_id:
+            continue
+        existing_task = _tier_refresh_tasks.get(account_id)
+        if existing_task and not existing_task.done():
+            continue
+        if not force and _tier_retry_at.get(account_id, 0.0) > mono:
+            continue
+        cached = cache.get(account_id)
+        if (
+            not force
+            and isinstance(cached, dict)
+            and cached.get("v") == ACCOUNT_TIER_CACHE_VERSION
+            and cached.get("tier")
+            and (now - float(cached.get("checked_at") or 0.0) < ACCOUNT_TIER_TTL_SECONDS)
+        ):
+            continue
+        try:
+            task = asyncio.create_task(_refresh_account_tier(account_id))
+        except RuntimeError:
+            return
+        _tier_refresh_tasks[account_id] = task
+        task.add_done_callback(lambda _t, aid=account_id: _tier_refresh_tasks.pop(aid, None))
+
+
 def _list_stored_accounts() -> list[dict]:
     _sync_active_account_to_storage()
+    tier_cache = _load_tier_cache()
     active_data = {}
     if ACTIVE_TOKEN_FILE.exists():
         try:
@@ -2436,6 +2889,8 @@ def _list_stored_accounts() -> list[dict]:
                     continue
                 info = _get_token_account_info(data)
                 is_active = _same_account(active_data, data)
+                cached_tier = tier_cache.get(f.stem)
+                subscription_tier = _resolve_cached_tier(cached_tier)
                 accounts.append({
                     "id": f.stem,
                     "filename": f.name,
@@ -2443,6 +2898,7 @@ def _list_stored_accounts() -> list[dict]:
                     "name": info["name"],
                     "exp": info.get("exp"),
                     "active": is_active,
+                    "subscription_tier": subscription_tier,
                     "updated_at": int(f.stat().st_mtime),
                 })
             except Exception as exc:
@@ -2450,6 +2906,47 @@ def _list_stored_accounts() -> list[dict]:
 
     accounts.sort(key=lambda a: (not a["active"], a["email"]))
     return accounts
+
+
+def _resolve_account_file(account_id: str) -> Path | None:
+    if not account_id or not isinstance(account_id, str) or any(ch in account_id for ch in ("/", "\\", "\x00")) or ".." in account_id:
+        return None
+    if not ACCOUNTS_DIR.exists():
+        return None
+    candidates = [ACCOUNTS_DIR / f"{account_id}.json", ACCOUNTS_DIR / account_id]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    for f in ACCOUNTS_DIR.glob("*.json"):
+        if f.stem == account_id or f.name == account_id:
+            return f
+        try:
+            d = json.loads(f.read_text())
+            if _get_token_account_info(d).get("email") == account_id:
+                return f
+        except Exception:
+            pass
+    return None
+
+
+def _active_account_id() -> str | None:
+    _sync_active_account_to_storage()
+    if not ACTIVE_TOKEN_FILE.exists() or not ACCOUNTS_DIR.exists():
+        return None
+    try:
+        active_data = json.loads(ACTIVE_TOKEN_FILE.read_text())
+        if not _has_valid_token(active_data):
+            return None
+    except Exception:
+        return None
+    for f in sorted(ACCOUNTS_DIR.glob("*.json")):
+        try:
+            f_data = json.loads(f.read_text())
+            if _same_account(active_data, f_data):
+                return f.stem
+        except Exception:
+            pass
+    return None
 
 
 def _clear_quota_cache() -> None:
@@ -2461,26 +2958,9 @@ def _clear_quota_cache() -> None:
 
 
 def _switch_to_account(account_id: str) -> dict:
-    if any(turn.status == "running" for turn in web_turns.turns.values()):
-        raise HTTPException(status_code=409, detail="agy 仍有回复正在生成，请等待结束或停止生成后再切换账号。")
     _sync_active_account_to_storage()
-    target_file = ACCOUNTS_DIR / f"{account_id}.json"
-    if not target_file.exists():
-        target_file = ACCOUNTS_DIR / account_id
-    if not target_file.exists():
-        for f in ACCOUNTS_DIR.glob("*.json"):
-            if f.stem == account_id or f.name == account_id:
-                target_file = f
-                break
-            try:
-                d = json.loads(f.read_text())
-                if _get_token_account_info(d).get("email") == account_id:
-                    target_file = f
-                    break
-            except Exception:
-                pass
-
-    if not target_file.exists():
+    target_file = _resolve_account_file(account_id)
+    if not target_file or not target_file.exists():
         raise HTTPException(status_code=404, detail=f"账号 '{account_id}' 不存在")
 
     content = target_file.read_text()
@@ -2494,6 +2974,12 @@ def _switch_to_account(account_id: str) -> dict:
     tmp_file.write_text(content)
     tmp_file.chmod(0o600)
     tmp_file.replace(ACTIVE_TOKEN_FILE)
+
+    # Prepare this account's isolated runtime home without touching any other running account.
+    try:
+        _prepare_account_home(target_file.stem)
+    except Exception as exc:
+        logger.warning("Failed to prepare isolated home during switch to %s: %s", account_id, exc)
 
     # Sync runtime isolate token if configured
     runtime_home = Path(os.getenv("AGY_RUNTIME_HOME", str(SCRATCH / ".agy-home"))).expanduser().resolve()
@@ -2555,11 +3041,12 @@ def _save_new_account(token_data: dict | str, alias: str | None = None, switch_n
 
 
 def _delete_stored_account(account_id: str) -> dict:
-    target_file = ACCOUNTS_DIR / f"{account_id}.json"
-    if not target_file.exists():
-        target_file = ACCOUNTS_DIR / account_id
-    if not target_file.exists():
+    target_file = _resolve_account_file(account_id)
+    if not target_file or not target_file.exists():
         raise HTTPException(status_code=404, detail="账号不存在")
+
+    if _active_account_turns.get(target_file.stem, 0) > 0:
+        raise HTTPException(status_code=409, detail="该账号仍有回复正在生成，请等待结束后再删除")
 
     if ACTIVE_TOKEN_FILE.exists():
         try:
@@ -2573,6 +3060,7 @@ def _delete_stored_account(account_id: str) -> dict:
             pass
 
     target_file.unlink(missing_ok=True)
+    _remove_tier_cache_entry(target_file.stem)
     return {"ok": True, "message": "账号已删除"}
 
 
@@ -2707,8 +3195,9 @@ async def get_quota_ep(force: bool = False) -> dict:
 
 
 @app.get("/api/accounts")
-async def list_accounts_ep() -> dict:
+async def list_accounts_ep(force: bool = False) -> dict:
     accs = _list_stored_accounts()
+    _schedule_tier_refresh(accs, force=force)
     active_email = next((a["email"] for a in accs if a["active"]), None)
     return {"ok": True, "active_account": active_email, "accounts": accs}
 
@@ -2721,7 +3210,12 @@ async def switch_account_ep(req: SwitchAccountRequest) -> dict:
 @app.post("/api/accounts/add")
 async def add_account_ep(req: AddAccountRequest) -> dict:
     raw = req.token_json or req.token or ""
-    return _save_new_account(raw, alias=req.alias, switch_now=req.switch_now)
+    result = _save_new_account(raw, alias=req.alias, switch_now=req.switch_now)
+    acc_id = result.get("id")
+    if isinstance(acc_id, str) and acc_id:
+        _remove_tier_cache_entry(acc_id)
+        _schedule_tier_refresh([{"id": acc_id}], force=True)
+    return result
 
 
 @app.delete("/api/accounts/{account_id}")
@@ -2758,12 +3252,40 @@ async def resume_web_turn(turn_id: str, cursor: int = 0):
     return _turn_response(turn, max(0, cursor))
 
 
+class InjectTurnMessageRequest(BaseModel):
+    content: str = ""
+    attachments: list[dict] | None = None
+    client_attachments: list[dict] | None = None
+    message_id: str | None = None
+
+
 @app.post("/api/turns/{turn_id}/stop")
 async def stop_web_turn(turn_id: str):
     result = await web_turns.stop(turn_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Turn not found")
     return result
+
+
+@app.post("/api/turns/{turn_id}/messages")
+async def inject_web_turn_message(turn_id: str, req: InjectTurnMessageRequest):
+    turn = web_turns.turns.get(turn_id)
+    if not turn or turn.status != "running":
+        raise HTTPException(status_code=409, detail="Turn is not running")
+    formatted = _format_message_content(Message(role="user", content=req.content, attachments=req.attachments))
+    if not formatted.strip():
+        raise HTTPException(status_code=422, detail="Message content must not be empty")
+    persisted_attachments = req.client_attachments if req.client_attachments is not None else req.attachments
+    result = await web_turns.inject(
+        turn_id,
+        req.content,
+        formatted_prompt=formatted,
+        attachments=persisted_attachments,
+        message_id=req.message_id,
+    )
+    if result is None:
+        raise HTTPException(status_code=409, detail="Turn does not accept live messages")
+    return {"ok": True, **result}
 
 
 _HISTORY_TRUNCATE_MARKER = "\n... [内容过长已截断] ...\n"
@@ -2950,18 +3472,43 @@ async def chat(req: ChatRequest):
 
     if req.use_claude_agy and req.api_connection:
         raise HTTPException(status_code=400, detail="Claude → agy 模式需要已登录的 agy 账号。")
+    turn_account_id: str | None = None
+    if not req.api_connection:
+        if req.account_id:
+            account_file = _resolve_account_file(req.account_id)
+            if not account_file or not account_file.exists():
+                raise HTTPException(status_code=404, detail=f"账号 '{req.account_id}' 不存在")
+            try:
+                account_data = json.loads(account_file.read_text())
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"账号 '{req.account_id}' 凭证无效")
+            if not _has_valid_token(account_data):
+                raise HTTPException(status_code=400, detail=f"账号 '{req.account_id}' 凭证无效")
+            turn_account_id = account_file.stem
+        else:
+            turn_account_id = _active_account_id()
     saved = read_message_history(cid) if cid else []
     if cid and req.history_revision is not None and req.history_revision != message_revision(saved):
         raise HTTPException(status_code=409, detail="聊天记录已在其他设备更新，请同步后重新发送。")
     replay_native, native_id = _resolve_conversation_route(cid, saved)
 
+    bound_turn: list[Any] = []
+    pending_injector: list[Any] = [None]
+
+    def register_injector(handler) -> None:
+        pending_injector[0] = handler
+        if bound_turn:
+            bound_turn[0].set_injector(handler)
+
     async def stream():
+        if turn_account_id:
+            _active_account_turns[turn_account_id] = _active_account_turns.get(turn_account_id, 0) + 1
         try:
             if req.use_claude_agy:
                 target_cwd = _within_allowed(req.cwd) or str(SCRATCH)
                 requested_model = (req.model or "").strip()
                 model = requested_model if requested_model and requested_model != "default" else await _default_claude_agy_model()
-                run_env = _agy_environment()
+                run_env = _agy_environment(account_id=turn_account_id) if turn_account_id else _agy_environment()
                 agy_home = run_env.get("HOME") or HOME
                 updater = globals().get("project_updater")
                 if _is_orchestrator_model(model, req.model_label):
@@ -3009,6 +3556,7 @@ async def chat(req: ChatRequest):
                         system_append=_claude_agy_orchestrator_system_append(req.system),
                         update_lease=lease,
                         timeout=0,
+                        register_injector=register_injector,
                     ):
                         if stable_id:
                             if event.get("event") == "init" and event.get("conversation_id"):
@@ -3038,6 +3586,7 @@ async def chat(req: ChatRequest):
                         scratch=SCRATCH, prompt=_prompt_with_saved_history(req, saved, claude_agy=True),
                         model=model, turn_id=route["request_id"], sandbox=AGY_SANDBOX,
                         system_append=_claude_agy_system_append(req.system),
+                        register_injector=register_injector,
                     ):
                         if event.get("event") == "agy_trace":
                             saw_trace = True
@@ -3072,6 +3621,8 @@ async def chat(req: ChatRequest):
                 continue_last=continue_last and not stable_id, user_id=user_id, timeout=0,
                 persist_conversation=stable_id is None, api_connection=req.api_connection,
                 fallback_prompt=fallback_prompt,
+                register_injector=register_injector,
+                account_id=turn_account_id,
             ):
                 if stable_id:
                     if event.get("event") == "init" and event.get("conversation_id"):
@@ -3091,11 +3642,22 @@ async def chat(req: ChatRequest):
             if req.api_connection:
                 raise RuntimeError("第三方 Gemini API 连接或返回格式异常") from None
             raise
+        finally:
+            if turn_account_id:
+                remaining = _active_account_turns.get(turn_account_id, 1) - 1
+                if remaining > 0:
+                    _active_account_turns[turn_account_id] = remaining
+                else:
+                    _active_account_turns.pop(turn_account_id, None)
+                _sync_account_home_token_to_storage(turn_account_id)
     snapshot = req.message_snapshot or [message.model_dump() for message in req.messages]
     try:
         turn = web_turns.start(stream, cid, snapshot, req.model, req.model_label or "", req.turn_id)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error))
+    bound_turn.append(turn)
+    if pending_injector[0] is not None:
+        turn.set_injector(pending_injector[0])
     return _turn_response(turn)
 
 

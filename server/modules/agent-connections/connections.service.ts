@@ -29,7 +29,7 @@ async function nativeJson(response: Response): Promise<AnyRecord> { const body =
 async function catalog(force = false) {
   const codex = connectionService.list(); const claude = claudeAccounts.list();
   let agy: AnyRecord = { accounts: [] }, warning = '';
-  try { agy = await nativeJson(await antigravityBridge.request('GET', '/api/accounts')); } catch { warning = 'agy 账号暂时无法读取，请稍后刷新'; }
+  try { agy = await nativeJson(await antigravityBridge.request('GET', force ? '/api/accounts?force=true' : '/api/accounts')); } catch { warning = 'agy 账号暂时无法读取，请稍后刷新'; }
   const connections = [
     ...await cliAccounts.list(force),
     ...codex.connections.map(item => {
@@ -39,7 +39,17 @@ async function catalog(force = false) {
         current: ['claude', 'antigravity'].includes(provider) ? codex.apiSelections[provider as 'claude' | 'antigravity'] === item.id : item.id === codex.activeId };
     }),
     ...claude.accounts.map(item => ({ ...item, id: 'claude:' + item.id, accountId: item.id, current: !codex.apiSelections.claude && item.id === claude.activeId })),
-    ...(agy.accounts || []).map((item: AnyRecord) => ({ id: 'antigravity:' + item.id, accountId: item.id, provider: 'antigravity', kind: 'antigravity', name: item.name || item.email || 'agy 账号', email: item.email, authorized: true, current: !codex.apiSelections.antigravity && item.active })),
+    ...(agy.accounts || []).map((item: AnyRecord) => ({
+      id: 'antigravity:' + item.id,
+      accountId: item.id,
+      provider: 'antigravity',
+      kind: 'antigravity',
+      name: item.name || item.email || 'agy 账号',
+      email: item.email,
+      subscriptionTier: typeof item.subscription_tier === 'string' && item.subscription_tier ? item.subscription_tier : undefined,
+      authorized: true,
+      current: !codex.apiSelections.antigravity && item.active,
+    })),
   ];
   let stored = savedSelection();
   if (stored.startsWith('codex:') && codex.connections.some(item => item.kind === 'api' && item.id === stored.slice(6))) stored = 'api:' + stored.slice(6);

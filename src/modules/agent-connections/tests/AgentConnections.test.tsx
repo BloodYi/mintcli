@@ -172,3 +172,21 @@ it('official reset controls are present inside the unified account manager witho
   expect(await within(manager).findByRole('button',{name:'使用重置卡（2）'})).toBeTruthy();
   expect(api.agentConnections.select).not.toHaveBeenCalled();
 });
+
+it('displays official subscription tiers after account labels across Codex, Claude and Antigravity', async () => {
+  const tieredFixtures = [
+    { id: 'codex:c', accountId: 'c', provider: 'codex', kind: 'chatgpt', name: 'Business', email: 'biz@example.com', subscriptionTier: 'Team', current: true, authorized: true },
+    { id: 'claude:h', accountId: 'h', provider: 'claude', kind: 'claude', name: 'Claude Max', email: 'max@example.com', subscriptionTier: 'Max 20x', current: true, authorized: true },
+    { id: 'antigravity:u', accountId: 'u', provider: 'antigravity', kind: 'antigravity', name: 'UltraAcc', email: 'u@example.com', subscriptionTier: 'Ultra', current: true, authorized: true },
+    { id: 'antigravity:fp', accountId: 'fp', provider: 'antigravity', kind: 'antigravity', name: 'FreeProAcc', email: 'fp@example.com', subscriptionTier: 'FreePro', current: false, authorized: true },
+    { id: 'antigravity:pp', accountId: 'pp', provider: 'antigravity', kind: 'antigravity', name: 'PaidProAcc', email: 'pp@example.com', subscriptionTier: 'PaidPro', current: false, authorized: true },
+  ];
+  vi.mocked(api.agentConnections.list).mockResolvedValue(Response.json({ activeId: 'codex:c', connections: tieredFixtures }));
+  vi.mocked(api.agentConnections.quota).mockImplementation(async id => Response.json({ connectionId: id, windows: [] }));
+  render(<AgentConnections provider="codex" sessionId="existing" disabled={false} onChoice={vi.fn()} onProviderChange={vi.fn()} />);
+  expect(await screen.findByRole('option', { name: 'Codex · Business · biz@example.com · Team' })).toBeTruthy();
+  expect(screen.getByRole('option', { name: 'Claude · Claude Max · max@example.com · Max 20x' })).toBeTruthy();
+  expect(screen.getByRole('option', { name: 'agy · UltraAcc · u@example.com · Ultra' })).toBeTruthy();
+  expect(screen.getByRole('option', { name: 'agy · FreeProAcc · fp@example.com · FreePro' })).toBeTruthy();
+  expect(screen.getByRole('option', { name: 'agy · PaidProAcc · pp@example.com · PaidPro' })).toBeTruthy();
+});

@@ -74,22 +74,80 @@ def _extract(raw, streaming=False):
 class WebTurn:
     def __init__(self, manager, turn_id, stream, conversation_id, messages, model, model_label):
         self.manager, self.id, self.stream, self.cid = manager, turn_id, stream, conversation_id
+        self._model, self._model_label = model, model_label
         self.messages = copy.deepcopy(messages)
         if self.messages:
             self.messages[-1]['turnId'] = turn_id
             self.messages[-1].setdefault('id', uuid.uuid4().hex)
             self.messages[-1].setdefault('created_at', time.time())
-        self.assistant = {'role': 'assistant', 'content': '', 'thinking': '', 'thoughtOpen': True,
-                          'id': uuid.uuid4().hex, 'created_at': time.time(),
-                          'model': model_label, 'requestedModel': model or 'default',
-                          'turnId': turn_id, 'status': 'streaming', 'rawText': '', 'finalResponse': '',
-                          'eventThinking': '', 'thinkingOrder': [], 'errorText': '', 'steps': []}
+        self.assistant = self._new_assistant()
+        self._turn_assistants = [self.assistant]
+        self._pending_segments: dict[str, dict] = {}
+        self._inject_handler = None
+        self._inject_lock = asyncio.Lock()
         self._step_seq = 0
         self._step_raw: dict[str, str] = {}
         self.messages.append(self.assistant)
         self.status, self.sequence, self.history = 'running', 0, deque(maxlen=256)
         self.changed, self.saved_at, self.task, self.updated_at = asyncio.Event(), 0, None, time.time()
         self.stop_requested = False
+
+    def _new_assistant(self, created_at: float | None = None):
+        return {
+            'role': 'assistant', 'content': '', 'thinking': '', 'thoughtOpen': True,
+            'id': uuid.uuid4().hex, 'created_at': created_at if created_at is not None else time.time(),
+            'model': self._model_label, 'requestedModel': self._model or 'default',
+            'turnId': self.id, 'status': 'streaming', 'rawText': '', 'finalResponse': '',
+            'eventThinking': '', 'thinkingOrder': [], 'errorText': '', 'steps': [],
+        }
+
+    def set_injector(self, handler):
+        self._inject_handler = handler
+
+    async def inject(self, content: str, *, formatted_prompt: str, attachments=None, message_id: str | None = None):
+        async with self._inject_lock:
+            if self.status != 'running' or self.stop_requested or self._inject_handler is None:
+                return None
+            msg_id = message_id or uuid.uuid4().hex
+            accepted = await self._inject_handler(formatted_prompt, msg_id)
+            if not accepted:
+                return None
+            now_ts = time.time()
+            user_msg = {
+                'id': msg_id,
+                'role': 'user',
+                'content': content,
+                'created_at': now_ts,
+                'timestamp': self._iso_now(),
+                'turnId': self.id,
+            }
+            if attachments:
+                user_msg['attachments'] = copy.deepcopy(attachments)
+            next_assistant = self._new_assistant(created_at=now_ts + 0.001)
+            self.messages.append(user_msg)
+            self.messages.append(next_assistant)
+            self._turn_assistants.append(next_assistant)
+            self._pending_segments[msg_id] = next_assistant
+            self.save(True)
+            return {
+                'id': self.id,
+                'conversation_id': self.cid,
+                'status': self.status,
+                'message_id': msg_id,
+                'assistant_id': next_assistant['id'],
+            }
+
+    @staticmethod
+    def _is_empty_assistant(message: dict) -> bool:
+        if str(message.get('content') or '').strip():
+            return False
+        if str(message.get('thinking') or '').strip():
+            return False
+        if str(message.get('errorText') or '').strip():
+            return False
+        if message.get('steps'):
+            return False
+        return True
 
     def info(self):
         return {'id': self.id, 'conversation_id': self.cid, 'status': self.status}
@@ -115,8 +173,7 @@ class WebTurn:
         temporary.replace(path)
         self.saved_at = time.monotonic()
 
-    def text(self):
-        message = self.assistant
+    def _text_for(self, message: dict):
         raw, final = message['rawText'], message['finalResponse']
         streamed, complete = _extract(raw, self.status == 'running'), _extract(final)
         inline = complete['thinking'] if raw and final.startswith(raw) else streamed['thinking']
@@ -129,6 +186,9 @@ class WebTurn:
         separate = message['eventThinking'].strip()
         message['thinking'] = '\n\n'.join(value for value in ('' if separate == '...' else separate, inline) if value)
         message['content'] = (complete['content'] or streamed['content']) + message['errorText']
+
+    def text(self):
+        self._text_for(self.assistant)
 
     @staticmethod
     def _iso_now():
@@ -144,17 +204,19 @@ class WebTurn:
             return 'completed'
         return 'running'
 
-    def _next_step_id(self, prefix: str) -> str:
+    def _next_step_id(self, prefix: str, owner: dict | None = None) -> str:
         self._step_seq += 1
-        return f"{self.assistant['id']}:{prefix}:{self._step_seq}"
+        target = owner if owner is not None else self.assistant
+        return f"{target['id']}:{prefix}:{self._step_seq}"
 
-    def _sync_inline_step(self, step: dict, streaming: bool):
+    def _sync_inline_step(self, step: dict, streaming: bool, owner: dict | None = None):
         raw_text = self._step_raw.get(step['id'], '')
         parsed = _extract(raw_text, streaming)
         step['content'] = parsed['content']
         inline_thought = parsed['thinking']
         if inline_thought:
-            steps = self.assistant.setdefault('steps', [])
+            target_owner = owner if owner is not None else self.assistant
+            steps = target_owner.setdefault('steps', [])
             think_id = step['id'] + ':think'
             existing = next((s for s in steps if s.get('id') == think_id), None)
             if existing is not None:
@@ -168,17 +230,17 @@ class WebTurn:
                     'timestamp': step.get('timestamp') or self._iso_now(),
                 })
 
-    def finalize_steps(self):
-        steps = self.assistant.setdefault('steps', [])
+    def _finalize_steps_for(self, message: dict, *, keep_running_tools: bool = False):
+        steps = message.setdefault('steps', [])
         for step in list(steps):
             if step.get('type') == 'text' and step.get('id') in self._step_raw:
-                self._sync_inline_step(step, False)
+                self._sync_inline_step(step, False, message)
         terminal_tool_status = 'completed' if self.status == 'complete' else 'error'
         cleaned = []
         for step in steps:
             stype = step.get('type')
             if stype == 'tool_use':
-                if step.get('status') == 'running':
+                if not keep_running_tools and step.get('status') == 'running':
                     step['status'] = terminal_tool_status
                 cleaned.append(step)
             elif stype in ('text', 'thinking'):
@@ -186,14 +248,32 @@ class WebTurn:
                     cleaned.append(step)
             else:
                 cleaned.append(step)
-        if self.assistant.get('content') and not any(s.get('type') == 'text' and str(s.get('content') or '').strip() for s in cleaned):
+        if message.get('content') and not any(s.get('type') == 'text' and str(s.get('content') or '').strip() for s in cleaned):
             cleaned.append({
-                'id': self._next_step_id('text'),
+                'id': self._next_step_id('text', message),
                 'type': 'text',
-                'content': self.assistant['content'],
+                'content': message['content'],
                 'timestamp': self._iso_now(),
             })
-        self.assistant['steps'] = cleaned
+        message['steps'] = cleaned
+
+    def finalize_steps(self):
+        self._finalize_steps_for(self.assistant, keep_running_tools=False)
+
+    def _find_tool_step(self, tool_id: str, *, fallback_running: bool = False):
+        if tool_id:
+            for owner in reversed(self._turn_assistants):
+                steps = owner.get('steps') or []
+                match = next((s for s in steps if s.get('type') == 'tool_use' and s.get('toolId') == tool_id), None)
+                if match is not None:
+                    return owner, match
+        if fallback_running:
+            for owner in reversed(self._turn_assistants):
+                steps = owner.get('steps') or []
+                match = next((s for s in reversed(steps) if s.get('type') == 'tool_use' and s.get('status') == 'running'), None)
+                if match is not None:
+                    return owner, match
+        return None, None
 
     def absorb(self, event):
         message, kind = self.assistant, event.get('event')
@@ -204,6 +284,31 @@ class WebTurn:
                 raise ValueError('Invalid conversation ID returned by CLI')
             self.cid = cid
             self.manager.by_conversation[cid] = self.id
+        if kind == 'user_message_applied':
+            msg_uuid = str(event.get('uuid') or '')
+            next_assistant = self._pending_segments.pop(msg_uuid, None)
+            if next_assistant is None and self._pending_segments:
+                first_key = next(iter(self._pending_segments))
+                next_assistant = self._pending_segments.pop(first_key)
+                msg_uuid = msg_uuid or first_key
+            if next_assistant is not None:
+                prev = self.assistant
+                self._text_for(prev)
+                self._finalize_steps_for(prev, keep_running_tools=True)
+                if prev.get('routeInfo') and not next_assistant.get('routeInfo'):
+                    next_assistant['routeInfo'] = copy.deepcopy(prev['routeInfo'])
+                if self._is_empty_assistant(prev):
+                    if prev in self.messages:
+                        self.messages.remove(prev)
+                    if prev in self._turn_assistants:
+                        self._turn_assistants.remove(prev)
+                else:
+                    prev['status'] = 'complete'
+                self.assistant = next_assistant
+                meta['user_message_id'] = msg_uuid
+                meta['previous_assistant_id'] = prev['id']
+                meta['assistant'] = copy.deepcopy(self.assistant)
+            return meta
         if event.get('route_info'):
             message['routeInfo'] = copy.deepcopy(event['route_info'])
         if kind == 'delta':
@@ -252,13 +357,8 @@ class WebTurn:
             if event.get('mode') != 'snapshot':
                 message['status'] = 'streaming'
         elif kind == 'tool_result':
-            steps = message.setdefault('steps', [])
             tool_id = str(event.get('tool_id') or event.get('toolId') or '')
-            target = None
-            if tool_id:
-                target = next((s for s in steps if s.get('type') == 'tool_use' and s.get('toolId') == tool_id), None)
-            if target is None:
-                target = next((s for s in reversed(steps) if s.get('type') == 'tool_use' and s.get('status') == 'running'), None)
+            owner, target = self._find_tool_step(tool_id, fallback_running=True)
             if target is not None:
                 is_err = bool(event.get('is_error') or event.get('isError'))
                 result_obj = {'content': str(event.get('content') or ''), 'isError': is_err}
@@ -268,6 +368,8 @@ class WebTurn:
                 target['status'] = 'error' if is_err else 'completed'
                 meta['step_id'] = target['id']
                 meta['tool_id'] = target['toolId']
+                if owner is not None and owner is not message:
+                    meta['assistant_id'] = owner['id']
         elif kind == 'tool' or event.get('tool'):
             tool_label = str(event.get('tool') or event.get('name') or 'executing')
             message['tool'] = tool_label
@@ -276,10 +378,9 @@ class WebTurn:
             tool_name = str(event.get('tool_name') or event.get('toolName') or event.get('name') or tool_label)
             tool_input = event['tool_input'] if 'tool_input' in event and event['tool_input'] is not None else event.get('args')
             mapped_status = self._normalize_tool_status(event.get('status'))
-            target = None
-            if raw_tool_id:
-                target = next((s for s in steps if s.get('type') == 'tool_use' and s.get('toolId') == raw_tool_id), None)
+            owner, target = self._find_tool_step(raw_tool_id, fallback_running=False)
             if target is None:
+                owner = message
                 tool_id = raw_tool_id or self._next_step_id('tool')
                 target = {
                     'id': f"{message['id']}:tool:{tool_id}",
@@ -308,6 +409,8 @@ class WebTurn:
                     target['status'] = 'error' if is_err else 'completed'
             meta['step_id'] = target['id']
             meta['tool_id'] = target['toolId']
+            if owner is not None and owner is not message:
+                meta['assistant_id'] = owner['id']
         elif kind == 'result':
             if event.get('response'):
                 message['finalResponse'] = str(event['response'])
@@ -356,10 +459,10 @@ class WebTurn:
             self.save(True)
             async for event in self.stream:
                 meta = self.absorb(event)
-                self.save(event.get('event') == 'init')
+                self.save(event.get('event') in ('init', 'user_message_applied'))
                 self.publish({**event, **meta} if meta else event)
             # Later deltas may follow an error; they must not erase its outcome.
-            outcome = 'error' if self.assistant['errorText'] else 'complete'
+            outcome = 'error' if any(asst.get('errorText') for asst in self._turn_assistants) else 'complete'
         except asyncio.CancelledError:
             outcome = 'stopped'
             self.assistant['errorText'] += '\n\n_Stopped: Response cancelled_'
@@ -373,9 +476,26 @@ class WebTurn:
                 await self.stream.aclose()
             finally:
                 self.status = outcome
-                self.assistant['status'] = self.status
-                self.text()
-                self.finalize_steps()
+                self._pending_segments.clear()
+                for asst in list(self._turn_assistants):
+                    self._text_for(asst)
+                    self._finalize_steps_for(asst, keep_running_tools=False)
+                    if asst is not self.assistant and self._is_empty_assistant(asst):
+                        if asst in self.messages:
+                            self.messages.remove(asst)
+                        self._turn_assistants.remove(asst)
+                        continue
+                    if asst is self.assistant or asst.get('status') == 'streaming':
+                        asst['status'] = self.status
+                if (
+                    self.status == 'complete'
+                    and self._is_empty_assistant(self.assistant)
+                    and len(self._turn_assistants) > 1
+                ):
+                    if self.assistant in self.messages:
+                        self.messages.remove(self.assistant)
+                    self._turn_assistants.remove(self.assistant)
+                    self.assistant = self._turn_assistants[-1]
                 try:
                     self.save(True)
                 except Exception:
@@ -444,20 +564,37 @@ class TurnManager:
         job = self.for_conversation(cid)
         if not job or (job.status != 'running' and transport_turn_id != job.id):
             return messages
-        # A reader's partial/error snapshot must not replace the server-owned reply.
-        result = copy.deepcopy(messages)
-        current_user = next((value for value in job.messages if value.get('turnId') == job.id and value.get('role') == 'user'), None)
-        incoming = next((value for value in result if value.get('turnId') == job.id and value.get('role') == 'assistant'), None)
-        answer = copy.deepcopy(job.assistant)
-        if incoming and 'thoughtOpen' in incoming:
-            answer['thoughtOpen'] = incoming['thoughtOpen']
-        result = [value for value in result if not (value.get('turnId') == job.id and value.get('role') == 'assistant')]
-        if current_user and not any(value.get('turnId') == job.id and value.get('role') == 'user' for value in result):
-            result.append(copy.deepcopy(current_user))
-        result.append(answer)
+        # A reader's partial/error snapshot must not replace the server-owned reply
+        # or any mid-turn injected follow-ups belonging to this turn.
+        incoming_by_id = {
+            value.get('id'): value
+            for value in messages
+            if isinstance(value, dict) and value.get('turnId') == job.id and value.get('role') == 'assistant' and value.get('id')
+        }
+        incoming_first_asst = next(
+            (value for value in messages if isinstance(value, dict) and value.get('turnId') == job.id and value.get('role') == 'assistant'),
+            None,
+        )
+        for asst in job._turn_assistants:
+            matched = incoming_by_id.get(asst.get('id')) or (incoming_first_asst if asst is job.assistant else None)
+            if matched and 'thoughtOpen' in matched:
+                asst['thoughtOpen'] = matched['thoughtOpen']
+        prefix = [copy.deepcopy(value) for value in messages if not (isinstance(value, dict) and value.get('turnId') == job.id)]
+        owned = [value for value in job.messages if isinstance(value, dict) and value.get('turnId') == job.id]
+        result = prefix + owned
         job.messages = result
-        job.assistant = answer
         return result
+
+    async def inject(self, turn_id, content: str, *, formatted_prompt: str, attachments=None, message_id: str | None = None):
+        job = self.turns.get(turn_id)
+        if not job or job.status != 'running':
+            return None
+        return await job.inject(
+            content,
+            formatted_prompt=formatted_prompt,
+            attachments=attachments,
+            message_id=message_id,
+        )
 
     async def stop(self, turn_id):
         job = self.turns.get(turn_id)

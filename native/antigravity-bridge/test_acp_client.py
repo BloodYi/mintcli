@@ -227,3 +227,67 @@ for line in sys.stdin:
     asyncio.run(run())
 
 
+def test_stream_agy_acp_live_mid_turn_injection():
+    fake_server = """
+import json, sys
+
+prompt_ids = []
+for line in sys.stdin:
+    msg = json.loads(line)
+    mid = msg.get("id")
+    method = msg.get("method")
+    if method == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "sid-acp-live"}}), flush=True)
+    elif method == "session/set_model":
+        print(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {}}), flush=True)
+    elif method == "session/prompt":
+        text = msg.get("params", {}).get("prompt", [{}])[0].get("text", "")
+        prompt_ids.append((mid, text))
+        if len(prompt_ids) == 1:
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-acp-live", "update": {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "thinking 1"}}}}), flush=True)
+        else:
+            first_id = prompt_ids[0][0]
+            print(json.dumps({"jsonrpc": "2.0", "id": first_id, "result": {"stopReason": "end_turn", "usage": {"inputTokens": 10, "outputTokens": 4, "totalTokens": 14}}}), flush=True)
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-acp-live", "update": {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "thinking 2 for " + text}}}}), flush=True)
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-acp-live", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Reply: " + text}}}}), flush=True)
+            print(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn", "usage": {"inputTokens": 20, "outputTokens": 6, "totalTokens": 26}}}), flush=True)
+            break
+    elif method == "session/cancel":
+        raise SystemExit("must not cancel on live injection")
+"""
+
+    async def run():
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wrapper = tmp_path / "fake_agy.py"
+            wrapper.write_text(f"#!{sys.executable}\n{fake_server}", encoding="utf-8")
+            wrapper.chmod(0o755)
+            injector = [None]
+            events = []
+            async for ev in stream_agy_acp(
+                agy_bin=str(wrapper),
+                prompt="first",
+                model="gemini-4-neon-high",
+                target_cwd=tmp,
+                run_env={"PATH": "/usr/bin:/bin"},
+                scratch_dir=tmp_path,
+                register_injector=lambda fn: injector.__setitem__(0, fn),
+            ):
+                events.append(ev)
+                if ev.get("event") == "thinking" and ev.get("thinking") == "thinking 1":
+                    ok = await injector[0]("second prompt", "u-acp-2")
+                    assert ok is True
+
+            kinds = [e["event"] for e in events]
+            assert kinds == ["init", "thinking", "user_message_applied", "thinking", "delta", "result", "metadata"]
+            assert events[2]["uuid"] == "u-acp-2"
+            assert events[3]["thinking"] == "thinking 2 for second prompt"
+            assert events[4]["delta"] == "Reply: second prompt"
+            assert events[5]["response"] == "Reply: second prompt"
+            assert events[5]["usage"] == {"input_tokens": 30, "output_tokens": 10, "total_tokens": 40}
+
+    asyncio.run(run())
+
+

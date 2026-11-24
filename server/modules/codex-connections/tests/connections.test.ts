@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { connectionService, resolveCodexConnection } from '../connections.service.js';
+import { connectionService, formatCodexPlanTier, resolveCodexConnection } from '../connections.service.js';
 
 test('account selection captures isolated environments and never exposes saved API secrets', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cloudcli-connections-'));
@@ -48,6 +48,47 @@ test('account storage accepts more than twenty identities without deleting prior
     assert.ok(connectionService.list().connections.length >= 25);
   } finally {
     for (const [key, value] of Object.entries(original)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Codex connections extract official ChatGPT planType from auth.json JWT', () => {
+  assert.equal(formatCodexPlanTier('free'), 'Free');
+  assert.equal(formatCodexPlanTier('go'), 'Go');
+  assert.equal(formatCodexPlanTier('plus'), 'Plus');
+  assert.equal(formatCodexPlanTier('pro'), 'Pro 20x');
+  assert.equal(formatCodexPlanTier('prolite'), 'Pro 5x');
+  assert.equal(formatCodexPlanTier('promax'), 'Pro Max');
+  assert.equal(formatCodexPlanTier('team'), 'Team Standard');
+  assert.equal(formatCodexPlanTier('business'), 'Business Standard');
+  assert.equal(formatCodexPlanTier('self_serve_business_prolite'), 'Team Premium 5x');
+  assert.equal(formatCodexPlanTier('self_serve_business_usage_based'), 'Business Usage');
+  assert.equal(formatCodexPlanTier('enterprise'), 'Enterprise');
+  assert.equal(formatCodexPlanTier('edu_pro'), 'Edu Pro');
+  assert.equal(formatCodexPlanTier('unknown'), undefined);
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-tier-'));
+  const previous = process.env.CODEX_CONNECTIONS_ROOT;
+  process.env.CODEX_CONNECTIONS_ROOT = root;
+  try {
+    const acctHome = path.join(root, 'acct-team');
+    fs.mkdirSync(acctHome, { recursive: true });
+    const jwtPayload = Buffer.from(JSON.stringify({
+      email: 'team@example.com',
+      'https://api.openai.com/auth': { chatgpt_plan_type: 'team' },
+    })).toString('base64url');
+    fs.writeFileSync(path.join(acctHome, 'auth.json'), JSON.stringify({
+      tokens: { id_token: `hdr.${jwtPayload}.sig` },
+    }));
+    fs.writeFileSync(path.join(root, 'store.json'), JSON.stringify({
+      activeId: 't1',
+      connections: [{ id: 't1', name: 'Team Account', kind: 'chatgpt', home: acctHome }],
+    }));
+    const listed = connectionService.list().connections;
+    assert.equal(listed[0].email, 'team@example.com');
+    assert.equal(listed[0].subscriptionTier, 'Team Standard');
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_CONNECTIONS_ROOT; else process.env.CODEX_CONNECTIONS_ROOT = previous;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

@@ -1,4 +1,4 @@
-import { egressEnvironment } from '@/modules/egress/index.js';
+import { egressEnvironment, egressFetch } from '@/modules/egress/index.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,7 +9,81 @@ import * as pty from 'node-pty';
 import { AppError, resolveManagedCli } from '@/shared/index.js';
 import type { AnyRecord } from '@/shared/types.js';
 
-type Account = { id: string; name: string; email?: string };
+type Account = { id: string; name: string; email?: string; subscriptionType?: string; rateLimitTier?: string; seatTier?: string };
+
+const CLAUDE_ORG_TYPE_TO_SUB: Record<string, string> = {
+  claude_max: 'max',
+  claude_pro: 'pro',
+  claude_team: 'team',
+  claude_enterprise: 'enterprise',
+  claude_free: 'free',
+};
+
+const CLAUDE_SEAT_TIER_KIND: Record<string, 'premium' | 'standard' | 'usage_based' | 'other'> = {
+  team_tier_1: 'premium',
+  team_bendep_nonprofit_premium: 'premium',
+  team_labs_premium: 'premium',
+  enterprise_tier_1: 'premium',
+  enterprise_bendep_premium: 'premium',
+  team_standard: 'standard',
+  team_bendep_nonprofit_standard: 'standard',
+  team_labs_standard: 'standard',
+  enterprise_standard: 'standard',
+  enterprise_nonprofit: 'standard',
+  enterprise_higher_ed: 'standard',
+  enterprise_usage_based: 'usage_based',
+  enterprise_usage_based_chat: 'usage_based',
+  enterprise_hipaa_chat: 'usage_based',
+  enterprise_hipaa_chat_and_code: 'usage_based',
+  enterprise_lite: 'other',
+  enterprise_bendep_global_access: 'other',
+};
+
+function resolveClaudeSeatKind(seatTier: unknown): 'premium' | 'standard' | 'usage_based' | 'other' | undefined {
+  if (typeof seatTier !== 'string') return undefined;
+  const seat = seatTier.trim().toLowerCase();
+  if (!seat) return undefined;
+  if (Object.hasOwn(CLAUDE_SEAT_TIER_KIND, seat)) return CLAUDE_SEAT_TIER_KIND[seat];
+  if (seat.includes('premium')) return 'premium';
+  if (seat.includes('standard')) return 'standard';
+  if (seat.includes('usage_based')) return 'usage_based';
+  return undefined;
+}
+
+export function formatClaudeSubscriptionTier(
+  subscriptionType: unknown,
+  rateLimitTier?: unknown,
+  seatTier?: unknown,
+): string | undefined {
+  const rawSub = typeof subscriptionType === 'string' ? subscriptionType.trim().toLowerCase() : '';
+  const sub = Object.hasOwn(CLAUDE_ORG_TYPE_TO_SUB, rawSub) ? CLAUDE_ORG_TYPE_TO_SUB[rawSub] : rawSub;
+  const tier = typeof rateLimitTier === 'string' ? rateLimitTier.trim().toLowerCase() : '';
+  const seatKind = resolveClaudeSeatKind(seatTier);
+  const multMatch = tier.match(/(?:^|_)(\d+x)(?:$|_)/);
+  const mult = multMatch ? multMatch[1] : '';
+  if (sub === 'max') return mult ? `Max ${mult}` : 'Max';
+  if (sub === 'pro') return mult ? `Pro ${mult}` : 'Pro';
+  if (sub === 'team') {
+    if (seatKind === 'premium') return 'Team Premium';
+    if (seatKind === 'standard') return 'Team Standard';
+    if (tier === 'default_claude_max_5x') return 'Team Premium';
+    return mult ? `Team ${mult}` : 'Team';
+  }
+  if (sub === 'enterprise') {
+    if (seatKind === 'premium') return 'Enterprise Premium';
+    if (seatKind === 'standard') return 'Enterprise Standard';
+    return mult ? `Enterprise ${mult}` : 'Enterprise';
+  }
+  if (sub === 'free') return 'Free';
+  if (!sub) {
+    if (tier.includes('max') && mult) return `Max ${mult}`;
+    if (tier.includes('max')) return 'Max';
+    if (tier.includes('pro')) return 'Pro';
+    return undefined;
+  }
+  const label = sub.split(/[_-]+/).filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
+  return mult ? `${label} ${mult}` : label;
+}
 type Store = { activeId: string; accounts: Account[] };
 const root = () => process.env.CLAUDE_ACCOUNTS_ROOT || path.join(os.homedir(), 'unified', 'claude');
 const fail = (message: string) => new AppError(message, { code: 'CLAUDE_ACCOUNT_ERROR', statusCode: 400 });
@@ -34,10 +108,25 @@ function write(value: Store) {
 function credentials(id: string): AnyRecord | null {
   try { return JSON.parse(fs.readFileSync(path.join(home(id), '.credentials.json'), 'utf8')); } catch { return null; }
 }
+function oauthAccountMeta(id: string): AnyRecord | null {
+  const candidates = id === 'legacy'
+    ? [path.join(home(id), '.claude.json'), path.join(os.homedir(), '.claude.json')]
+    : [path.join(home(id), '.claude.json')];
+  for (const filePath of candidates) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as AnyRecord;
+      if (parsed?.oauthAccount && typeof parsed.oauthAccount === 'object') return parsed.oauthAccount as AnyRecord;
+    } catch { /* optional profile metadata */ }
+  }
+  return null;
+}
 const busy = new Map<string, number>();
 const quotas = new Map<string, AnyRecord>();
 const logins = new Map<string, { process: pty.IPty; url?: string; status: string; timer: ReturnType<typeof setTimeout> }>();
 const quotaJobs = new Map<string, Promise<AnyRecord>>();
+const identityJobs = new Map<string, Promise<void>>();
+const identityRetryAt = new Map<string, number>();
+const IDENTITY_RETRY_MS = 120_000;
 const nativeBinary = () => process.env.CLAUDE_CLI_PATH || resolveManagedCli('claude') || path.join(path.dirname(createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk-linux-x64/package.json')), 'claude');
 function ensureProfile(id: string) {
   const target = home(id);
@@ -47,7 +136,13 @@ function ensureProfile(id: string) {
 }
 function publicAccount(account: Account) {
   const cred = credentials(account.id);
-  return { ...account, provider: 'claude', kind: 'claude', authorized: Boolean(cred?.claudeAiOauth?.accessToken) };
+  const oauth = cred?.claudeAiOauth && typeof cred.claudeAiOauth === 'object' ? cred.claudeAiOauth as AnyRecord : undefined;
+  const meta = oauthAccountMeta(account.id);
+  const subType = oauth?.subscriptionType ?? account.subscriptionType;
+  const rateLimitTier = oauth?.rateLimitTier ?? account.rateLimitTier;
+  const seatTier = oauth?.seatTier ?? meta?.seatTier ?? account.seatTier;
+  const subscriptionTier = formatClaudeSubscriptionTier(subType, rateLimitTier, seatTier);
+  return { ...account, provider: 'claude', kind: 'claude', authorized: Boolean(oauth?.accessToken), subscriptionTier };
 }
 function resolve(id?: string) {
   const store = read();
@@ -61,21 +156,117 @@ function accountEnv(id: string): Record<string, string> {
   delete env.CLAUDECODE;
   return { ...egressEnvironment('claude', env), CLAUDE_CONFIG_DIR: home(id), BROWSER: '/bin/true' };
 }
+async function fetchOAuthProfile(accessToken: string): Promise<{
+  email?: string;
+  subscriptionType?: string;
+  rateLimitTier?: string;
+  seatTier?: string;
+} | null> {
+  if (!accessToken || process.env.NODE_ENV === 'test' || process.env.CLAUDE_DISABLE_PROFILE_FETCH === '1') return null;
+  try {
+    const response = await egressFetch('claude')('https://api.anthropic.com/api/oauth/profile', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as AnyRecord;
+    const org = data?.organization && typeof data.organization === 'object' ? data.organization as AnyRecord : undefined;
+    const acct = data?.account && typeof data.account === 'object' ? data.account as AnyRecord : undefined;
+    const orgType = typeof org?.organization_type === 'string' ? org.organization_type.trim().toLowerCase() : '';
+    const subscriptionType = orgType && Object.hasOwn(CLAUDE_ORG_TYPE_TO_SUB, orgType) ? CLAUDE_ORG_TYPE_TO_SUB[orgType] : undefined;
+    return {
+      email: typeof acct?.email_address === 'string' && acct.email_address ? acct.email_address : undefined,
+      subscriptionType,
+      rateLimitTier: typeof org?.rate_limit_tier === 'string' && org.rate_limit_tier ? org.rate_limit_tier : undefined,
+      seatTier: typeof org?.seat_tier === 'string' && org.seat_tier ? org.seat_tier : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
 async function refreshIdentity(id: string) {
-  await new Promise<void>(done => execFile(nativeBinary(), ['auth', 'status'], { env: accountEnv(id), timeout: 15000, maxBuffer: 65536 }, (_error, stdout) => {
+  const existing = identityJobs.get(id);
+  if (existing) return existing;
+  const job = (async () => {
+    let email: string | undefined;
+    let subscriptionType: string | undefined;
+    let rateLimitTier: string | undefined;
+    let seatTier: string | undefined;
+
+    const cred = credentials(id);
+    const accessToken = typeof cred?.claudeAiOauth?.accessToken === 'string' ? cred.claudeAiOauth.accessToken : '';
+    if (accessToken) {
+      const profile = await fetchOAuthProfile(accessToken);
+      if (profile) {
+        email = profile.email;
+        subscriptionType = profile.subscriptionType;
+        rateLimitTier = profile.rateLimitTier;
+        seatTier = profile.seatTier;
+      }
+    }
+
+    await new Promise<void>(done => execFile(nativeBinary(), ['auth', 'status'], { env: accountEnv(id), timeout: 15000, maxBuffer: 65536 }, (_error, stdout) => {
+      try {
+        const status = JSON.parse(stdout);
+        if (!email && typeof status.email === 'string' && status.email) email = status.email;
+        if (!subscriptionType && typeof status.subscriptionType === 'string' && status.subscriptionType) subscriptionType = status.subscriptionType;
+        if (!rateLimitTier && typeof status.rateLimitTier === 'string' && status.rateLimitTier) rateLimitTier = status.rateLimitTier;
+        if (!seatTier && typeof status.seatTier === 'string' && status.seatTier) seatTier = status.seatTier;
+      } catch { /* Missing identity is distinct from successful native authorization. */ }
+      done();
+    }));
+
+    const meta = oauthAccountMeta(id);
+    if (!seatTier && typeof meta?.seatTier === 'string' && meta.seatTier) seatTier = meta.seatTier;
+
     try {
-      const status = JSON.parse(stdout);
       const store = read();
       const item = store.accounts.find(value => value.id === id);
-      if (item && typeof status.email === 'string') { item.email = status.email; write(store); }
-    } catch { /* Missing identity is distinct from successful native authorization. */ }
-    done();
-  }));
+      if (item) {
+        let changed = false;
+        if (email && email !== item.email) { item.email = email; changed = true; }
+        if (subscriptionType && subscriptionType !== item.subscriptionType) { item.subscriptionType = subscriptionType; changed = true; }
+        if (rateLimitTier && rateLimitTier !== item.rateLimitTier) { item.rateLimitTier = rateLimitTier; changed = true; }
+        if (seatTier && seatTier !== item.seatTier) { item.seatTier = seatTier; changed = true; }
+        if (changed) write(store);
+      }
+    } catch { /* Ignore store write failures during background refresh. */ }
+    identityRetryAt.set(id, Date.now() + IDENTITY_RETRY_MS);
+  })().finally(() => { identityJobs.delete(id); });
+  identityJobs.set(id, job);
+  return job;
+}
+function scheduleIdentityRefreshIfNeeded(accounts: Account[]) {
+  if (process.env.NODE_ENV === 'test' || process.env.CLAUDE_DISABLE_PROFILE_FETCH === '1') return;
+  const now = Date.now();
+  for (const account of accounts) {
+    if (identityJobs.has(account.id)) continue;
+    if ((identityRetryAt.get(account.id) || 0) > now) continue;
+    const cred = credentials(account.id);
+    const oauth = cred?.claudeAiOauth && typeof cred.claudeAiOauth === 'object' ? cred.claudeAiOauth as AnyRecord : undefined;
+    if (!oauth?.accessToken) continue;
+    const meta = oauthAccountMeta(account.id);
+    const sub = String(oauth.subscriptionType ?? account.subscriptionType ?? '').trim().toLowerCase();
+    const rate = oauth.rateLimitTier ?? account.rateLimitTier;
+    const seat = oauth.seatTier ?? meta?.seatTier ?? account.seatTier;
+    const needsSeat = (sub === 'team' || sub === 'enterprise') && !seat;
+    const needsTier = !sub || ((sub === 'max' || sub === 'team') && !rate);
+    if (needsSeat || needsTier) void refreshIdentity(account.id);
+  }
 }
 
 /** Native account profiles share transcripts, while authorization stays isolated per selected account. */
 export const claudeAccounts = {
-  list() { const store = read(); return { activeId: store.activeId, accounts: store.accounts.map(publicAccount) }; },
+  list() {
+    const store = read();
+    scheduleIdentityRefreshIfNeeded(store.accounts);
+    return { activeId: store.activeId, accounts: store.accounts.map(publicAccount) };
+  },
   resolve,
   env: accountEnv,
   select(id: string) { resolve(id); const store = read(); store.activeId = id; write(store); return this.list(); },
@@ -87,16 +278,27 @@ export const claudeAccounts = {
     if (!name || name.length > 80) throw fail('请填写 1–80 字的账号名称');
     if (input.credentials && busy.get(id)) throw fail('此账号正在生成回复，请结束后再更新授权');
     ensureProfile(id);
+    let updatedCredentials: AnyRecord | null = null;
     if (input.credentials) {
       let value: AnyRecord;
       try { value = typeof input.credentials === 'string' ? JSON.parse(input.credentials) : input.credentials; } catch { throw fail('请提供原生 Claude .credentials.json 文件内容'); }
       if (typeof value?.claudeAiOauth?.accessToken !== 'string' || !value.claudeAiOauth.accessToken) throw fail('没有找到 Claude 官方登录凭据');
       fs.writeFileSync(path.join(home(id), '.credentials.json'), JSON.stringify(value), { mode: 0o600 });
       quotas.delete(id);
+      updatedCredentials = value;
     }
-    const account = { ...previous, id, name };
+    const account: Account = updatedCredentials
+      ? { id, name }
+      : { ...previous, id, name };
     if (previous) store.accounts = store.accounts.map(item => item.id === id ? account : item); else store.accounts.push(account);
     write(store);
+    if (updatedCredentials) {
+      const oauth = updatedCredentials.claudeAiOauth as AnyRecord;
+      const sub = String(oauth?.subscriptionType || '').trim().toLowerCase();
+      if (!sub || !oauth?.rateLimitTier || ((sub === 'team' || sub === 'enterprise') && !oauth?.seatTier)) {
+        void refreshIdentity(id);
+      }
+    }
     return publicAccount(account);
   },
   remove(id: string) {

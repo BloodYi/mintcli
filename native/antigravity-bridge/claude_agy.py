@@ -12,7 +12,21 @@ from process_lifecycle import reap_cli_process
 
 
 logger = logging.getLogger("antigravity-chat")
-_slots = asyncio.Semaphore(1)
+
+
+def _configured_max_concurrency() -> int:
+    raw = os.getenv("MINTCLI_CLAUDE_AGY_MAX_CONCURRENCY", "").strip()
+    try:
+        parsed = int(raw)
+        if parsed >= 1:
+            return parsed
+    except ValueError:
+        pass
+    return 6
+
+
+_MAX_CONCURRENCY = _configured_max_concurrency()
+_slots = asyncio.Semaphore(_MAX_CONCURRENCY)
 _bridge = Path(__file__).resolve().parent
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 _ACP_SESSION_RE = re.compile(
@@ -96,9 +110,13 @@ def _worker_environment(source, agy_bin, temporary):
 
 async def stream_claude_agy(
     *, agy_bin, env, cwd, scratch, prompt, model, turn_id, sandbox, system_append=None,
+    register_injector=None,
 ):
     if _slots.locked():
-        yield {"event": "error", "error": "Claude → agy 正在处理另一条回复，请稍后重试。"}
+        yield {
+            "event": "error",
+            "error": f"Claude → agy 当前并发对话已达上限（{_MAX_CONCURRENCY} 个），请稍后重试。",
+        }
         return
     async with _slots:
         with tempfile.TemporaryDirectory(prefix="claude-agy-", dir=scratch) as temporary:
@@ -121,24 +139,69 @@ async def stream_claude_agy(
                     "--slice=mintcli.slice", "--property=MemoryMax=7G",
                     "--property=MemorySwapMax=1G", "--property=OOMPolicy=kill", "--", *argv,
                 ]
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE, start_new_session=True,
-                env=worker_env, limit=32 * 1024 * 1024,
-            )
-            stderr_tail = bytearray()
 
-            async def _drain_stderr() -> None:
-                assert proc.stderr is not None
-                while True:
-                    chunk = await proc.stderr.read(4096)
-                    if not chunk:
-                        return
-                    stderr_tail.extend(chunk)
-                    del stderr_tail[:-4096]
+            ready_event = asyncio.Event()
+            startup_failed = False
+            accepting_input = True
+            stdin_lock = asyncio.Lock()
+            pending_acks: dict[str, asyncio.Future[bool]] = {}
+            proc: asyncio.subprocess.Process | None = None
+            stderr_task: asyncio.Task | None = None
+            stdout_task: asyncio.Task | None = None
 
-            stderr_task = asyncio.create_task(_drain_stderr())
+            def _fail_pending_acks() -> None:
+                for fut in list(pending_acks.values()):
+                    if not fut.done():
+                        fut.set_result(False)
+                pending_acks.clear()
+
+            def _close_stdin() -> None:
+                if proc is not None and proc.stdin is not None and not proc.stdin.is_closing():
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass
+
+            async def _inject_message(content: str, message_uuid: str) -> bool:
+                try:
+                    await asyncio.wait_for(ready_event.wait(), timeout=15)
+                except asyncio.TimeoutError:
+                    return False
+                if (
+                    startup_failed
+                    or not accepting_input
+                    or proc is None
+                    or proc.returncode is not None
+                    or proc.stdin is None
+                    or proc.stdin.is_closing()
+                ):
+                    return False
+                loop = asyncio.get_running_loop()
+                ack: asyncio.Future[bool] = loop.create_future()
+                pending_acks[message_uuid] = ack
+                try:
+                    async with stdin_lock:
+                        if (
+                            not accepting_input
+                            or proc.returncode is not None
+                            or proc.stdin.is_closing()
+                        ):
+                            pending_acks.pop(message_uuid, None)
+                            return False
+                        frame = json.dumps(
+                            {"type": "user_message", "uuid": message_uuid, "content": content},
+                            ensure_ascii=False,
+                        ) + "\n"
+                        proc.stdin.write(frame.encode("utf-8"))
+                        await asyncio.wait_for(proc.stdin.drain(), timeout=10)
+                    return bool(await asyncio.wait_for(ack, timeout=10))
+                except (OSError, asyncio.TimeoutError, asyncio.CancelledError, ConnectionError):
+                    pending_acks.pop(message_uuid, None)
+                    return False
+
+            if register_injector:
+                register_injector(_inject_message)
+
             terminal = False
             saw_error = False
             agy_trace: dict[str, list[str]] = {
@@ -147,19 +210,71 @@ async def stream_claude_agy(
                 "trace_ids": [],
                 "upstream_urls": [],
             }
+            stderr_tail = bytearray()
+            event_queue: asyncio.Queue[dict | None] = asyncio.Queue()
             try:
-                proc.stdin.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-                await asyncio.wait_for(proc.stdin.drain(), timeout=30)
-                proc.stdin.close()
-                while line := await proc.stdout.readline():
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE, start_new_session=True,
+                    env=worker_env, limit=32 * 1024 * 1024,
+                )
+
+                async def _drain_stderr() -> None:
+                    assert proc is not None and proc.stderr is not None
+                    while True:
+                        chunk = await proc.stderr.read(4096)
+                        if not chunk:
+                            return
+                        stderr_tail.extend(chunk)
+                        del stderr_tail[:-4096]
+
+                async def _read_stdout() -> None:
+                    nonlocal accepting_input
+                    assert proc is not None and proc.stdout is not None
                     try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            "claude-agy emitted non-JSON stdout: %s",
-                            line[:200].decode("utf-8", errors="replace").strip(),
-                        )
-                        continue
+                        while line := await proc.stdout.readline():
+                            try:
+                                event = json.loads(line)
+                            except json.JSONDecodeError:
+                                logger.warning(
+                                    "claude-agy emitted non-JSON stdout: %s",
+                                    line[:200].decode("utf-8", errors="replace").strip(),
+                                )
+                                continue
+                            kind = event.get("event")
+                            if kind == "user_message_queued":
+                                msg_uuid = str(event.get("uuid") or "")
+                                fut = pending_acks.pop(msg_uuid, None)
+                                if fut is not None and not fut.done():
+                                    fut.set_result(True)
+                                continue
+                            if kind == "inject_rejected":
+                                msg_uuid = str(event.get("uuid") or "")
+                                fut = pending_acks.pop(msg_uuid, None)
+                                if fut is not None and not fut.done():
+                                    fut.set_result(False)
+                                continue
+                            if kind in ("result", "error"):
+                                accepting_input = False
+                                _fail_pending_acks()
+                                _close_stdin()
+                            await event_queue.put(event)
+                    finally:
+                        accepting_input = False
+                        _fail_pending_acks()
+                        await event_queue.put(None)
+
+                stderr_task = asyncio.create_task(_drain_stderr())
+                stdout_task = asyncio.create_task(_read_stdout())
+
+                assert proc.stdin is not None
+                async with stdin_lock:
+                    proc.stdin.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+                    await asyncio.wait_for(proc.stdin.drain(), timeout=30)
+                ready_event.set()
+
+                while (event := await event_queue.get()) is not None:
                     kind = event.get("event")
                     if kind == "agy_trace":
                         _merge_trace(agy_trace, event)
@@ -172,6 +287,9 @@ async def stream_claude_agy(
                     terminal |= kind in ("result", "error")
                     saw_error |= kind == "error"
                     yield event
+                accepting_input = False
+                _fail_pending_acks()
+                _close_stdin()
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5)
                 except asyncio.TimeoutError:
@@ -197,6 +315,20 @@ async def stream_claude_agy(
                         **{key: list(values) for key, values in agy_trace.items()},
                     }
             finally:
+                accepting_input = False
+                startup_failed = True
+                ready_event.set()
+                _fail_pending_acks()
+                if register_injector:
+                    register_injector(None)
+                _close_stdin()
+                if stdout_task is not None:
+                    if not stdout_task.done():
+                        stdout_task.cancel()
+                    try:
+                        await stdout_task
+                    except BaseException:
+                        pass
                 await reap_cli_process(proc)
                 if scope:
                     # Also terminate descendants that started a separate process group.
@@ -208,9 +340,10 @@ async def stream_claude_agy(
                         await asyncio.wait_for(stop.wait(), timeout=3)
                     except (OSError, asyncio.TimeoutError):
                         logger.warning("Could not stop worker scope %s", scope)
-                if not stderr_task.done():
-                    stderr_task.cancel()
-                try:
-                    await stderr_task
-                except BaseException:
-                    pass
+                if stderr_task is not None:
+                    if not stderr_task.done():
+                        stderr_task.cancel()
+                    try:
+                        await stderr_task
+                    except BaseException:
+                        pass

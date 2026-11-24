@@ -5,13 +5,16 @@ import { createMonitorUpdateTaskService } from '../update-task.service.js';
 function fixture() {
   let saved: Awaited<ReturnType<ReturnType<typeof createMonitorUpdateTaskService>['status']>> = null; let running = false; let created = 0; let prompt = '';
   let finish!: (value: { started: boolean; error: string | null }) => void;
+  type Report = { targetVersion: string; updatedAt: number; state: 'waiting' | 'activating' | 'failed' | 'active_verified' };
+  let deployment: Report | null = null;
   const release = { status: 'ok', installedVersion: '1.0.0', latestVersion: '1.1.0', updateAvailable: true };
   const service = createMonitorUpdateTaskService({
+    readDeployment: async () => deployment,
     read: () => saved, write: value => { saved = value; }, check: async () => release,
     running: () => running, root: () => '/app', create: () => { created++; return 'update-session'; },
     launch: async (_id, _user, content) => { prompt = content; running = true; return new Promise(resolve => { finish = resolve; }); },
   });
-  return { service, release, saved: () => saved!, created: () => created, prompt: () => prompt,
+  return { service, release, report(value: Report | null) { deployment = value; }, saved: () => saved!, created: () => created, prompt: () => prompt,
     finish(error: string | null = null) { running = false; finish({ started: true, error }); } };
 }
 
@@ -25,7 +28,10 @@ test('concurrent update clicks share one tracked conversation with the persisted
   await f.service.start(1); assert.equal(f.created(), 1);
   f.finish(); await new Promise(resolve => setImmediate(resolve));
   assert.equal((await f.service.status())?.state, 'review');
+  f.report({ targetVersion: '1.1.0', state: 'waiting', updatedAt: Date.now() });
+  assert.equal((await f.service.status())?.state, 'waiting');
   await f.service.start(1); assert.equal(f.created(), 1);
+  f.report({ targetVersion: '1.1.0', state: 'active_verified', updatedAt: Date.now() });
   f.release.installedVersion = '1.1.0';
   assert.equal((await f.service.status())?.state, 'installed');
   f.release.installedVersion = '1.2.0';
@@ -46,3 +52,22 @@ test('failed agent turns remain failed and a restart cannot claim a running or i
   const restarted = createMonitorUpdateTaskService({ read: () => ({ ...f.saved(), state: 'running' }), check: async () => f.release, running: () => false });
   assert.equal((await restarted.status())?.state, 'interrupted');
 });
+
+for (const scenario of ['missing', 'failed', 'expired'] as const) {
+  test(`a finished task with a ${scenario} deployment handoff can start again`, async () => {
+    const f = fixture();
+    await f.service.start(1);
+    f.finish();
+    await new Promise(resolve => setImmediate(resolve));
+    if (scenario !== 'missing') f.report({
+      targetVersion: '1.1.0',
+      state: scenario === 'failed' ? 'failed' : 'waiting',
+      updatedAt: Date.now() - (scenario === 'expired' ? 10 * 60_000 : 0),
+    });
+    const expected = { missing: 'review', failed: 'failed', expired: 'interrupted' };
+    assert.equal((await f.service.status())?.state, expected[scenario]);
+    await f.service.start(1);
+    assert.equal(f.created(), 2);
+    f.finish();
+  });
+}

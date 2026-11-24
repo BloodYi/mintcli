@@ -330,28 +330,42 @@ export function applyAgyStreamEvent(
 
   return message;
 }
-const running = new Map<string, { turnId: string; controller: AbortController }>();
+type RunningAgyTurn = {
+  turnId: string;
+  controller: AbortController;
+  ready: Promise<boolean>;
+};
+
+async function uploadNativeAttachments(attachments: AnyRecord[]): Promise<AnyRecord[]> {
+  if (!attachments.length) return [];
+  const nativeAttachments: AnyRecord[] = [];
+  const assets = await fs.realpath(getGlobalImageAssetsDir()).catch(() => getGlobalImageAssetsDir());
+  for (const item of attachments) {
+    const file = await fs.realpath(item.path);
+    if (path.dirname(file) !== assets || (await fs.stat(file)).size > 25 * 1024 * 1024) {
+      throw new Error('附件必须来自聊天上传区，且不超过 25 MB');
+    }
+    nativeAttachments.push(await json(await antigravityBridge.request('POST', '/api/upload', {
+      filename: item.name || path.basename(file),
+      data: (await fs.readFile(file)).toString('base64'),
+    })));
+  }
+  return nativeAttachments;
+}
+
+const running = new Map<string, RunningAgyTurn>();
 const runtime: IProviderRuntime = {
   async run(command, options, writer, context) {
-    const api = connectionService.apiForAgent('antigravity', options.connectionId);
-    if (api) await validateConnectionEndpoint(api.baseUrl!);
     const appId = String(options.sessionId);
-    let cid = context.resolveProviderSessionId(appId);
-    const history = cid ? await json(await antigravityBridge.request('GET', endpoint(cid))) : { messages: [], revision: null };
-    if (history.active_turn?.status === 'running') throw new AppError('这段聊天仍在生成，请等待完成后再发送', { code: 'AGY_BUSY', statusCode: 409 });
-    const attachments: AnyRecord[] = options.attachments || [];
-    const nativeAttachments: AnyRecord[] = [];
-    const assets = await fs.realpath(getGlobalImageAssetsDir()).catch(() => getGlobalImageAssetsDir());
-    for (const item of attachments) {
-      const file = await fs.realpath(item.path);
-      if (path.dirname(file) !== assets || (await fs.stat(file)).size > 25 * 1024 * 1024) throw new Error('附件必须来自聊天上传区，且不超过 25 MB');
-      nativeAttachments.push(await json(await antigravityBridge.request('POST', '/api/upload', { filename: item.name || path.basename(file), data: (await fs.readFile(file)).toString('base64') })));
-    }
-    const user = { id: randomUUID(), role: 'user', content: command, attachments };
     const turnId = randomUUID().replace(/-/g, '');
     const controller = new AbortController();
-    running.set(appId, { turnId, controller });
+    let resolveReady!: (ok: boolean) => void;
+    const ready = new Promise<boolean>((resolve) => { resolveReady = resolve; });
+    const runEntry: RunningAgyTurn = { turnId, controller, ready };
+    running.set(appId, runEntry);
+    let cid = context.resolveProviderSessionId(appId);
     let message: AnyRecord = { id: turnId + ':assistant', role: 'assistant', content: '', status: 'streaming', steps: [] };
+    const turnAssistants = new Map<string, AnyRecord>([[String(message.id), message]]);
     let failed = false;
     let done = false;
     const streamState = { stepSeq: 0 };
@@ -385,7 +399,30 @@ const runtime: IProviderRuntime = {
         send(createNormalizedMessage({ provider, kind: 'session_created', sessionId: cid, newSessionId: cid }));
       }
     };
+    const findAssistantOwningTool = (event: AnyRecord): AnyRecord | null => {
+      const explicitId = typeof event.assistant_id === 'string' ? event.assistant_id : '';
+      if (explicitId && explicitId !== String(message.id) && turnAssistants.has(explicitId)) {
+        return turnAssistants.get(explicitId) ?? null;
+      }
+      const toolId = String(event.tool_id || event.toolId || '');
+      if (!toolId) return null;
+      for (const candidate of turnAssistants.values()) {
+        if (candidate === message) continue;
+        const steps = Array.isArray(candidate.steps) ? (candidate.steps as AnyRecord[]) : [];
+        if (steps.some((step) => step.type === 'tool_use' && step.toolId === toolId)) {
+          return candidate;
+        }
+      }
+      return null;
+    };
     try {
+      const api = connectionService.apiForAgent('antigravity', options.connectionId);
+      if (api) await validateConnectionEndpoint(api.baseUrl!);
+      const history = cid ? await json(await antigravityBridge.request('GET', endpoint(cid))) : { messages: [], revision: null };
+      if (history.active_turn?.status === 'running') throw new AppError('这段聊天仍在生成，请等待完成后再发送', { code: 'AGY_BUSY', statusCode: 409 });
+      const attachments: AnyRecord[] = options.attachments || [];
+      const nativeAttachments = await uploadNativeAttachments(attachments);
+      const user = { id: randomUUID(), role: 'user', content: command, attachments };
       if (api?.protocol === 'chat_completions') relay = await startApiRelay('antigravity', { ...api, model: options.model || api.model });
       const payload = {
         messages: [{ ...user, attachments: nativeAttachments }], message_snapshot: [...history.messages, user], conversation_id: cid,
@@ -399,8 +436,9 @@ const runtime: IProviderRuntime = {
       const response = api
         ? await antigravityBridge.request('POST', '/api/chat', payload, controller.signal)
         : await antigravityBridge.startChatForAccount(options.connectionId, payload, controller.signal);
-      if (!response.ok) { await json(response); return; }
-      if (!response.body) throw new Error('agy 回复流为空');
+      if (!response.ok) { resolveReady(false); await json(response); return; }
+      if (!response.body) { resolveReady(false); throw new Error('agy 回复流为空'); }
+      resolveReady(true);
       let pending = '', cursor = 0;
       const decoder = new TextDecoder();
       const processEvent = (block: string) => {
@@ -410,9 +448,39 @@ const runtime: IProviderRuntime = {
         if (event.cursor && event.cursor <= cursor) return;
         cursor = event.cursor || cursor;
         capture(event.conversation_id);
+        if (event.event === 'user_message_applied') {
+          emitChanged(normalizeAgy(message, appId, { streaming: false }));
+          if (event.assistant && typeof event.assistant === 'object') {
+            const incoming = event.assistant as AnyRecord;
+            message = {
+              ...incoming,
+              steps: Array.isArray(incoming.steps) ? (incoming.steps as AnyRecord[]).map((step) => ({ ...step })) : [],
+            };
+            turnAssistants.set(String(message.id), message);
+            streamState.stepSeq = Math.max(0, (message.steps as AnyRecord[]).length);
+          }
+          return;
+        }
+        if (event.event === 'tool' || event.event === 'tool_result') {
+          const owner = findAssistantOwningTool(event);
+          if (owner) {
+            const updated = applyAgyStreamEvent(owner, event, streamState);
+            turnAssistants.set(String(updated.id), updated);
+            emitChanged(normalizeAgy(updated, appId, { streaming: false }));
+            return;
+          }
+        }
         if (event.event === 'error') failed = true;
         if (event.event === 'done') done = true;
         message = applyAgyStreamEvent(message, event, streamState);
+        turnAssistants.set(String(message.id), message);
+        if (done) {
+          for (const previous of turnAssistants.values()) {
+            if (previous === message) continue;
+            const settled = applyAgyStreamEvent(previous, event, streamState);
+            emitChanged(normalizeAgy(settled, appId, { streaming: false }));
+          }
+        }
         // Emit only changed step rows so thinking, tool calls, tool results and
         // text stream inline in the conversation without flooding unchanged rows.
         emitChanged(normalizeAgy(message, appId, { streaming: !done }));
@@ -439,17 +507,62 @@ const runtime: IProviderRuntime = {
     } catch (error) {
       if (!controller.signal.aborted) { failed = true; throw error; }
     } finally {
-      if (!done && ((Array.isArray(message.steps) && message.steps.length > 0) || message.content || message.thinking || message.errorText)) {
-        message = applyAgyStreamEvent(message, { event: 'done', status: failed ? 'error' : 'stopped' }, streamState);
-        emitChanged(normalizeAgy(message, appId, { streaming: false }));
+      resolveReady(false);
+      if (!done) {
+        const doneEvent = { event: 'done', status: failed ? 'error' : 'stopped' };
+        for (const previous of turnAssistants.values()) {
+          if (previous === message) continue;
+          const settled = applyAgyStreamEvent(previous, doneEvent, streamState);
+          emitChanged(normalizeAgy(settled, appId, { streaming: false }));
+        }
+        if ((Array.isArray(message.steps) && message.steps.length > 0) || message.content || message.thinking || message.errorText) {
+          message = applyAgyStreamEvent(message, doneEvent, streamState);
+          emitChanged(normalizeAgy(message, appId, { streaming: false }));
+        }
       }
       await relay?.close();
-      running.delete(appId);
+      if (running.get(appId) === runEntry) {
+        running.delete(appId);
+      }
       if (cid) {
         const session = sessionsDb.getSessionById(appId);
         sessionsDb.createSession(cid, provider, session?.project_path || options.cwd || '/home/ubuntu', undefined, undefined, new Date().toISOString());
       }
       send(createCompleteMessage({ provider, sessionId: appId, exitCode: failed ? 1 : 0, aborted: controller.signal.aborted }));
+    }
+  },
+  async injectMessage(sessionId, command, options) {
+    const turn = running.get(sessionId);
+    if (!turn) return false;
+    const isReady = await turn.ready;
+    if (!isReady || turn.controller.signal.aborted || running.get(sessionId) !== turn) {
+      return false;
+    }
+    const attachments: AnyRecord[] = Array.isArray(options.attachments) ? options.attachments : [];
+    let nativeAttachments: AnyRecord[] = [];
+    try {
+      nativeAttachments = await uploadNativeAttachments(attachments);
+    } catch {
+      return false;
+    }
+    if (turn.controller.signal.aborted || running.get(sessionId) !== turn) {
+      return false;
+    }
+    try {
+      const response = await antigravityBridge.request(
+        'POST',
+        '/api/turns/' + turn.turnId + '/messages',
+        {
+          content: command,
+          attachments: nativeAttachments,
+          client_attachments: attachments,
+          message_id: randomUUID(),
+        },
+        turn.controller.signal,
+      );
+      return response.ok;
+    } catch {
+      return false;
     }
   },
   async abort(sessionId) {

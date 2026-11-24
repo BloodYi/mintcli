@@ -14,7 +14,7 @@ export type ApiProtocol = 'responses' | 'anthropic' | 'gemini' | 'chat_completio
 /** Safe connection selection shared by the native chat composer and account manager. */
 export type CodexConnectionChoice = { id: string; kind: 'chatgpt' | 'api'; model: string };
 /** Safe native credential choice for a turn; no credential values reach this view. */
-export type AgentConnectionChoice = { id: string; accountId: string; provider: LLMProvider; kind: string; agent?: ApiAgent; model?: string; name: string; email?: string; authorized: boolean; current?: boolean; baseUrl?: string; protocol?: string };
+export type AgentConnectionChoice = { id: string; accountId: string; provider: LLMProvider; kind: string; agent?: ApiAgent; model?: string; name: string; email?: string; subscriptionTier?: string; authorized: boolean; current?: boolean; baseUrl?: string; protocol?: string };
 /** One common catalog for the account selector and manager. */
 export type AgentConnectionsCatalog = { activeId: string; connections: AgentConnectionChoice[]; warning?: string };
 

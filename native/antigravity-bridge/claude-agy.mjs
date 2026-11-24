@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import { createServer } from 'node:http';
@@ -169,8 +169,153 @@ async function readBody(stream) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+async function* readJsonLines(stream) {
+  let buffer = '';
+  let bufferedBytes = 0;
+  for await (const chunk of stream) {
+    const piece = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bufferedBytes += piece.length;
+    if (bufferedBytes > limit) throw new Error('Input line too large');
+    buffer += piece.toString('utf8');
+    let newlineIndex;
+    while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      bufferedBytes = Buffer.byteLength(buffer, 'utf8');
+      if (line) yield line;
+    }
+  }
+  const trailing = buffer.trim();
+  if (trailing) yield trailing;
+}
+
+function createHeldPromptStream(initialMessages) {
+  const queue = [...initialMessages];
+  let closed = false;
+  let notify = null;
+  const wake = () => {
+    if (notify) {
+      const resolve = notify;
+      notify = null;
+      resolve();
+    }
+  };
+  return {
+    push(message) {
+      if (closed) return false;
+      queue.push(message);
+      wake();
+      return true;
+    },
+    release() {
+      if (closed) return;
+      closed = true;
+      wake();
+    },
+    stream: (async function* () {
+      while (true) {
+        while (!closed && queue.length > 0) {
+          yield queue.shift();
+        }
+        if (closed) return;
+        await new Promise(resolve => { notify = resolve; });
+      }
+    })(),
+  };
+}
+
+function mergeUsage(prev, next) {
+  if (!next || typeof next !== 'object') return prev;
+  if (!prev) return { ...next };
+  const merged = { ...prev };
+  for (const key of [
+    'input_tokens',
+    'output_tokens',
+    'cache_read_tokens',
+    'cache_creation_tokens',
+    'cache_read_input_tokens',
+    'cache_creation_input_tokens',
+    'thinking_tokens',
+    'total_tokens',
+  ]) {
+    const a = Number(prev[key]);
+    const b = Number(next[key]);
+    if (Number.isFinite(a) || Number.isFinite(b)) {
+      merged[key] = (Number.isFinite(a) ? a : 0) + (Number.isFinite(b) ? b : 0);
+    }
+  }
+  return merged;
+}
+
 async function run() {
-  const input = JSON.parse(await readBody(process.stdin));
+  const lineReader = readJsonLines(process.stdin);
+  const firstLine = await lineReader.next();
+  if (firstLine.done || !firstLine.value) {
+    throw new Error('Missing initial claude-agy payload on stdin');
+  }
+  const input = JSON.parse(firstLine.value);
+  const pendingInjectedUuids = new Set();
+  const injectedUuids = new Set();
+  let acceptingInput = true;
+  let finished = false;
+  let terminalError = '';
+  const heldPrompt = createHeldPromptStream([{
+    type: 'user',
+    uuid: randomUUID(),
+    message: { role: 'user', content: input.prompt },
+    parent_tool_use_id: null,
+    timestamp: new Date().toISOString(),
+  }]);
+
+  // Keep listening on stdin for mid-turn user follow-up messages so they are
+  // pushed into the running Claude Code process immediately without aborting.
+  const stdinLoop = (async () => {
+    try {
+      for await (const rawLine of lineReader) {
+        let msg;
+        try {
+          msg = JSON.parse(rawLine);
+        } catch {
+          continue;
+        }
+        if (!msg || typeof msg !== 'object') continue;
+        if (msg.type === 'close_input') {
+          acceptingInput = false;
+          continue;
+        }
+        if (msg.type === 'user_message') {
+          const msgUuid = typeof msg.uuid === 'string' && msg.uuid.trim() ? msg.uuid.trim() : randomUUID();
+          const content = typeof msg.content === 'string' ? msg.content : '';
+          if (!acceptingInput || finished || terminalError || !content.trim()) {
+            emit({ event: 'inject_rejected', uuid: msgUuid });
+            continue;
+          }
+          pendingInjectedUuids.add(msgUuid);
+          injectedUuids.add(msgUuid);
+          const pushed = heldPrompt.push({
+            type: 'user',
+            uuid: msgUuid,
+            message: { role: 'user', content },
+            parent_tool_use_id: null,
+            timestamp: new Date().toISOString(),
+          });
+          if (pushed) {
+            emit({ event: 'user_message_queued', uuid: msgUuid });
+          } else {
+            pendingInjectedUuids.delete(msgUuid);
+            injectedUuids.delete(msgUuid);
+            emit({ event: 'inject_rejected', uuid: msgUuid });
+          }
+        }
+      }
+    } catch (err) {
+      if (!finished) {
+        process.stderr.write('[claude-agy] stdin reader error: ' + (err?.message || String(err)) + '\n');
+      }
+    }
+  })();
+  void stdinLoop;
+
   const load = createRequire(path.join(process.env.MINTCLI_REPO, 'package.json'));
   const { query } = await import(pathToFileURL(load.resolve('@anthropic-ai/claude-agent-sdk')));
   const pluginFile = path.join(process.env.MINTCLI_MAGPIE_AGY, 'index.mjs');
@@ -179,7 +324,6 @@ async function run() {
   const adapter = await host.auth.loader(async () => ({ key: 'agy' }));
   const secret = randomBytes(32).toString('hex');
   const controller = new AbortController();
-  let terminalError = '';
   let lastUpstreamError = '';
   const agyTrace = {
     sessions: new Set(),
@@ -308,7 +452,6 @@ async function run() {
     // so the fallback window for unknown model IDs doesn't compact early.
     env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = GEMINI_NEON_CONTEXT_WINDOW;
   }
-  let finished = false;
   let hasPartialText = false;
   let hasPartialThinking = false;
   let emittedText = '';
@@ -316,6 +459,18 @@ async function run() {
   let emittedThinking = false;
   let needsThinkingSeparator = false;
   let toolSeq = 0;
+  let accumulatedUsage = null;
+  let totalDurationMs = 0;
+  let hasDuration = false;
+
+  const resetSegmentOutput = () => {
+    hasPartialText = false;
+    hasPartialThinking = false;
+    emittedText = '';
+    needsTextSeparator = false;
+    emittedThinking = false;
+    needsThinkingSeparator = false;
+  };
 
   const emitText = text => {
     if (!text) return;
@@ -346,7 +501,7 @@ async function run() {
 
   try {
     const turn = query({
-      prompt: input.prompt,
+      prompt: heldPrompt.stream,
       options: {
         cwd: input.cwd, env, model: input.model, abortController: controller,
         pathToClaudeCodeExecutable: process.env.MINTCLI_CLAUDE_PATH,
@@ -357,6 +512,7 @@ async function run() {
         },
         tools, allowedTools: tools, permissionMode: 'dontAsk',
         settingSources: [], includePartialMessages: true, persistSession: false,
+        extraArgs: { 'replay-user-messages': null },
         ...(input.sandbox ? { sandbox: {
           enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
         } } : {}),
@@ -404,6 +560,15 @@ async function run() {
         hasPartialText = false;
         hasPartialThinking = false;
       } else if (item.type === 'user') {
+        if (item.isReplay === true) {
+          if (typeof item.uuid === 'string' && injectedUuids.has(item.uuid)) {
+            pendingInjectedUuids.delete(item.uuid);
+            injectedUuids.delete(item.uuid);
+            resetSegmentOutput();
+            emit({ event: 'user_message_applied', uuid: item.uuid });
+          }
+          continue;
+        }
         const blocks = Array.isArray(item.message?.content) ? item.message.content : [];
         const structuredResult = sanitizeToolUseResult(item.tool_use_result ?? item.toolUseResult);
         for (const block of blocks) {
@@ -418,7 +583,18 @@ async function run() {
           }
         }
       } else if (item.type === 'result') {
+        accumulatedUsage = mergeUsage(accumulatedUsage, normalizeUsage(item.usage));
+        if (typeof item.duration_ms === 'number' && Number.isFinite(item.duration_ms)) {
+          totalDurationMs += item.duration_ms;
+          hasDuration = true;
+        }
+        if (!item.is_error && !terminalError && pendingInjectedUuids.size > 0) {
+          resetSegmentOutput();
+          continue;
+        }
+        acceptingInput = false;
         finished = true;
+        heldPrompt.release();
         flushAgyTrace(true);
         if (item.is_error || terminalError) {
           if (item.is_error && item.result) {
@@ -427,9 +603,14 @@ async function run() {
           emit({ event: 'error', error: terminalError || lastUpstreamError || 'Claude Code 未能完成这条回复。' });
         } else {
           const responseText = emittedText || item.result || '';
-          emit({ event: 'result', response: responseText, usage: normalizeUsage(item.usage),
-            duration_seconds: item.duration_ms / 1000 });
+          emit({
+            event: 'result',
+            response: responseText,
+            usage: accumulatedUsage,
+            duration_seconds: hasDuration ? totalDurationMs / 1000 : null,
+          });
         }
+        break;
       }
     }
     if (!finished) {
@@ -437,6 +618,9 @@ async function run() {
       emit({ event: 'error', error: 'Claude Code 已退出，未返回生成结果。' });
     }
   } finally {
+    acceptingInput = false;
+    finished = true;
+    heldPrompt.release();
     controller.abort();
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));

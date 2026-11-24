@@ -179,6 +179,11 @@ export function AgentConnections({
                       <span className="shrink-0 rounded-md bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
                         {labels[item.kind] || item.kind}
                       </span>
+                      {item.subscriptionTier && (
+                        <span className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary">
+                          {item.subscriptionTier}
+                        </span>
+                      )}
                     </span>
                     {subtitle && (
                       <span className="mt-0.5 block truncate text-[11px] leading-tight text-muted-foreground">
@@ -215,10 +220,10 @@ export function AgentConnections({
           <label htmlFor="agent-account" className="shrink-0 font-medium text-muted-foreground">账号</label>
           <select id="agent-account" aria-label="切换账号" value={active?.id || ''} disabled={disabled || pending} className="h-8 min-w-0 flex-1 truncate rounded-lg border border-border bg-background pl-2.5 pr-7 text-xs leading-tight sm:max-w-md" onChange={event => void run(() => select(event.target.value))}>
             {!active && <option value="">请添加或选择账号</option>}
-            {catalog.connections.map(item => <option key={item.id} value={item.id}>{labels[item.kind]} · {item.name}{item.agent && item.kind === 'api' ? ' · ' + AGENT_LABELS[item.agent] : ''}{item.email ? ' · ' + item.email : ''}{item.authorized ? '' : '（待登录）'}</option>)}
+            {catalog.connections.map(item => <option key={item.id} value={item.id}>{labels[item.kind]} · {item.name}{item.agent && item.kind === 'api' ? ' · ' + AGENT_LABELS[item.agent] : ''}{item.email ? ' · ' + item.email : ''}{item.subscriptionTier ? ' · ' + item.subscriptionTier : ''}{item.authorized ? '' : '（待登录）'}</option>)}
           </select>
           <button type="button" className="h-8 shrink-0 whitespace-nowrap rounded-lg border border-border bg-background px-2.5 text-xs font-medium transition-colors hover:bg-muted/60" onClick={() => edit(active)}>管理账号</button>
-          {active?.email && <span className="hidden max-w-[15rem] truncate text-muted-foreground sm:inline">{active.email}</span>}
+          {(active?.email || active?.subscriptionTier) && <span className="hidden max-w-[18rem] truncate text-muted-foreground sm:inline">{[active.email, active.subscriptionTier].filter(Boolean).join(' · ')}</span>}
           {!open && (notice || catalog.warning) && <span className="w-full text-[11px] text-muted-foreground sm:w-auto" role="status">{notice || catalog.warning}</span>}
         </div>
         <AccountQuota id={active?.id} />
@@ -229,7 +234,7 @@ export function AgentConnections({
         <DialogTitle>账号管理</DialogTitle>
         <div className="flex items-center justify-between"><h2 id="accounts-title" className="font-semibold">账号管理</h2><button type="button" aria-label="关闭账号管理" disabled={pending} onClick={() => setOpen(false)}>✕</button></div>
         <p id="accounts-help" className="text-sm text-muted-foreground">Codex、Claude、Cursor、OpenCode、agy 和第三方 API 都在这里添加和切换。模型在聊天输入框旁选择。</p>
-        <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2" aria-label="所有账号">{catalog.connections.map(item => <button type="button" key={item.id} className={button + ' text-left break-all'} onClick={() => edit(item)}><strong>{labels[item.kind]} · {item.name}</strong><span className="block text-xs text-muted-foreground">{item.email || (item.authorized ? '已保存授权' : '等待登录')}{active?.id === item.id ? ' · 当前使用' : ''}</span></button>)}</div>
+        <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2" aria-label="所有账号">{catalog.connections.map(item => <button type="button" key={item.id} className={button + ' text-left break-all'} onClick={() => edit(item)}><strong>{labels[item.kind]} · {item.name}{item.subscriptionTier ? ' · ' + item.subscriptionTier : ''}</strong><span className="block text-xs text-muted-foreground">{item.email || (item.authorized ? '已保存授权' : '等待登录')}{active?.id === item.id ? ' · 当前使用' : ''}</span></button>)}</div>
         <button type="button" className={button} onClick={() => edit()}>＋ 添加账号 / API</button>
         {(!nativeCli || !form.id) && <label className="block text-sm">账号类型<select className={input} disabled={Boolean(form.id)} value={form.kind} onChange={event => { field('kind', event.target.value); setLogin(null); setCode(''); }}><option value="chatgpt">Codex / ChatGPT</option><option value="claude">Claude 官方账号</option><option value="cursor">Cursor 原生账号</option><option value="opencode">OpenCode 原生账号</option><option value="antigravity">Antigravity · agy</option><option value="api">第三方模型 API</option></select></label>}
         {selectedForm && ['chatgpt', 'claude'].includes(selectedForm.kind) && <AccountQuota id={selectedForm.id} />}

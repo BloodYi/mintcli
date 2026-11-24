@@ -145,6 +145,15 @@ test('turn-based providers queue follow-ups without aborting and run them in ord
     await until(() => calls.length === 5);
     assert.deepEqual(calls, ['turn A', 'closed-1', 'follow-up B', 'closed-3', 'follow-up C']);
     assert.equal(aborts.length, 0);
+    // Intermediate completes while follow-ups remain queued are tagged `continuing: true`
+    // so clients keep thinking uninterrupted without flashing idle.
+    const completeFrames = frames.filter((frame) => frame.kind === 'complete');
+    assert.equal(completeFrames.length, 2);
+    assert.equal(completeFrames[0].continuing, true);
+    assert.equal(completeFrames[1].continuing, true);
+    finishes[2]();
+    await until(() => frames.filter((frame) => frame.kind === 'complete').length === 3);
+    assert.equal(frames.filter((frame) => frame.kind === 'complete')[2].continuing, undefined);
   });
 });
 

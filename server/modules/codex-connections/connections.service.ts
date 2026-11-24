@@ -22,6 +22,62 @@ type Store = { activeId: string; connections: Connection[]; apiSelections?: Part
 type Login = { status: string; method: 'browser' | 'device'; url?: string; code?: string; state?: string; redirectUri?: string; expiresAt: number; process?: ChildProcess };
 const BROWSER_LOGIN_PORT = 1455;
 const logins = new Map<string, Login>();
+const observedPlanTypes = new Map<string, string>();
+const CODEX_PLAN_LABELS: Record<string, string> = {
+  free: 'Free',
+  go: 'Go',
+  plus: 'Plus',
+  pro: 'Pro 20x',
+  prolite: 'Pro 5x',
+  promax: 'Pro Max',
+  team: 'Team Standard',
+  business: 'Business Standard',
+  self_serve_business_prolite: 'Team Premium 5x',
+  self_serve_business_usage_based: 'Business Usage',
+  enterprise: 'Enterprise',
+  ent26: 'Enterprise',
+  enterprise_cbp_automation: 'Enterprise',
+  enterprise_cbp_trial: 'Enterprise',
+  enterprise_cbp_usage_based: 'Enterprise',
+  edu: 'Edu',
+  education: 'Edu',
+  edu_plus: 'Edu Plus',
+  edu_pro: 'Edu Pro',
+  sci: 'Sci',
+  sci_plus: 'Sci Plus',
+};
+
+function decodeJwtPayload(token: unknown): Record<string, unknown> | null {
+  if (typeof token !== 'string') return null;
+  const part = token.split('.')[1];
+  if (!part) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+export function formatCodexPlanTier(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized || normalized === 'unknown') return undefined;
+  if (Object.hasOwn(CODEX_PLAN_LABELS, normalized)) return CODEX_PLAN_LABELS[normalized];
+  return normalized.split(/[_-]+/).filter(Boolean).map(word => word[0].toUpperCase() + word.slice(1)).join(' ');
+}
+
+function readCodexJwtPlanType(tokens: Record<string, unknown> | undefined): string {
+  for (const key of ['id_token', 'access_token'] as const) {
+    const payload = decodeJwtPayload(tokens?.[key]);
+    const authClaim = payload?.['https://api.openai.com/auth'];
+    if (authClaim && typeof authClaim === 'object') {
+      const plan = (authClaim as Record<string, unknown>).chatgpt_plan_type;
+      if (typeof plan === 'string' && plan.trim()) return plan.trim();
+    }
+  }
+  return '';
+}
 const root = () => process.env.CODEX_CONNECTIONS_ROOT || path.join(os.homedir(), 'connections');
 const storePath = () => path.join(root(), 'store.json');
 
@@ -52,14 +108,25 @@ function connection(id?: unknown): Connection {
 
 function publicConnection(item: Connection) {
   let email = '';
-  try { const auth = JSON.parse(fs.readFileSync(path.join(item.home, 'auth.json'), 'utf8')); const payload = JSON.parse(Buffer.from(auth.tokens?.id_token?.split('.')[1] || '', 'base64url').toString('utf8')); email = typeof payload.email === 'string' ? payload.email : ''; } catch { /* API connections have no ChatGPT identity. */ }
+  let jwtPlanType = '';
   let authorized = Boolean(item.apiKey);
   if (item.kind === 'chatgpt') {
-    try { authorized = Boolean(JSON.parse(fs.readFileSync(path.join(item.home, 'auth.json'), 'utf8')).tokens); }
-    catch { authorized = false; }
+    try {
+      const auth = JSON.parse(fs.readFileSync(path.join(item.home, 'auth.json'), 'utf8')) as { tokens?: Record<string, unknown> };
+      const tokens = auth.tokens && typeof auth.tokens === 'object' ? auth.tokens : undefined;
+      authorized = Boolean(tokens);
+      const idPayload = decodeJwtPayload(tokens?.id_token);
+      email = typeof idPayload?.email === 'string' ? idPayload.email : '';
+      jwtPlanType = readCodexJwtPlanType(tokens);
+    } catch {
+      authorized = false;
+    }
   }
+  const subscriptionTier = item.kind === 'chatgpt'
+    ? formatCodexPlanTier(observedPlanTypes.get(item.home) || jwtPlanType)
+    : undefined;
   return { id: item.id, name: item.name, kind: item.kind, baseUrl: item.baseUrl || '',
-    protocol: item.protocol || 'responses', agent: apiAgent(item), model: item.model || '', authorized, email, hasApiKey: Boolean(item.apiKey) };
+    protocol: item.protocol || 'responses', agent: apiAgent(item), model: item.model || '', authorized, email, subscriptionTier, hasApiKey: Boolean(item.apiKey) };
 }
 
 function apiAgent(item: Connection): ApiAgent {
@@ -228,7 +295,9 @@ export const connectionService = {
     return this.list();
   },
   remove(id: string) {
-    id = connection(id).id;
+    const removed = connection(id);
+    id = removed.id;
+    observedPlanTypes.delete(removed.home);
     const login = logins.get(id); login?.process?.kill(); logins.delete(id);
     const store = readStore(); store.connections = store.connections.filter(item => item.id !== id);
     for (const agent of Object.keys(store.apiSelections || {}) as ApiAgent[]) if (store.apiSelections?.[agent] === id) delete store.apiSelections[agent];
@@ -289,6 +358,7 @@ export const connectionService = {
     child.stdout?.on('data', consume); child.stderr?.on('data', consume);
     child.on('error', () => { login.status = 'error'; login.process = undefined; });
     child.on('close', code => {
+      if (code === 0) observedPlanTypes.delete(item.home);
       if (!['cancelled', 'expired'].includes(login.status)) login.status = code === 0 && publicConnection(item).authorized ? 'authorized' : 'error';
       login.process = undefined;
     });
@@ -345,7 +415,11 @@ export const connectionService = {
     const item = connection(id);
     if (item.kind === 'api') return { connectionId: id, status: 'unavailable', windows: [],
       reason: '第三方 API 未提供通用余额接口；请以服务商后台为准。' };
-    return { connectionId: id, ...await readAccountQuota(environment(item.home)) };
+    const result = await readAccountQuota(environment(item.home));
+    if (typeof result.planType === 'string' && result.planType.trim()) {
+      observedPlanTypes.set(item.home, result.planType.trim());
+    }
+    return { connectionId: id, ...result };
   },
   async consumeReset(id: string, idempotencyKey: string, creditId?: string) {
     const item = connection(id);

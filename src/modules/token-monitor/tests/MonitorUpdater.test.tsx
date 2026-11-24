@@ -16,13 +16,28 @@ it('starts once, shows the durable conversation link, and disables repeated upda
   fireEvent.click(screen.getByRole('button', { name: '更新中…' }));
   expect(api.tokenMonitor.startUpdate).toHaveBeenCalledTimes(1);
 });
-it('restores persisted task status and only reports installation after server verification', async () => {
-  vi.mocked(api.tokenMonitor.updateTask).mockResolvedValue(Response.json({ task: { sessionId: 'job', state: 'review' } }));
+it('waits for an active deployment and re-enables the button when the worker reports failure', async () => {
+  vi.useFakeTimers();
+  const status = vi.mocked(api.tokenMonitor.updateTask);
+  status.mockResolvedValueOnce(Response.json({ task: { sessionId: 'job', state: 'waiting' } }));
+  status.mockResolvedValue(Response.json({ task: { sessionId: 'job', state: 'failed' } }));
   render(<MonitorUpdater available />);
-  await screen.findByText(/任务已结束，请查看验证与部署结果/);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(screen.getByText(/等待对话空闲后部署/)).toBeTruthy();
+  expect(screen.getByRole('button', { name: '更新中…' }).hasAttribute('disabled')).toBe(true);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(screen.getByText(/更新失败，可重试/)).toBeTruthy();
+  expect(screen.getByRole('button', { name: '更新' }).hasAttribute('disabled')).toBe(false);
   expect(screen.queryByText(/更新已生效/)).toBeNull();
-  expect(screen.getByRole('button', { name: '更新' }).hasAttribute('disabled')).toBe(true);
-  expect(api.tokenMonitor.startUpdate).not.toHaveBeenCalled();
+});
+it('lets the operator retry a finished conversation with no confirmed deployment', async () => {
+  vi.mocked(api.tokenMonitor.updateTask).mockResolvedValue(Response.json({ task: { sessionId: 'job', state: 'review' } }));
+  vi.mocked(api.tokenMonitor.startUpdate).mockResolvedValue(Response.json({ task: { sessionId: 'retry', state: 'running' } }));
+  render(<MonitorUpdater available />);
+  await screen.findByText(/任务已结束，未确认部署，可重试/);
+  fireEvent.click(screen.getByRole('button', { name: '更新' }));
+  await screen.findByText(/更新任务运行中/);
+  expect(api.tokenMonitor.startUpdate).toHaveBeenCalledTimes(1);
 });
 it('displays startup errors without fabricating success', async () => {
   vi.mocked(api.tokenMonitor.updateTask).mockResolvedValue(Response.json({ task: null }));

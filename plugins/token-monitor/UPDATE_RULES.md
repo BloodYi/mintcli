@@ -12,3 +12,15 @@ The update button authorizes an independent Codex update conversation. Read this
 8. Save review/check/browser/deployment evidence in a new dated artifact directory under `/home/ubuntu/token-monitor-update-*`. Previous workflows and idle deployment workers are available there. Persist a concise final result in the update conversation, distinguishing queued deployment, active verification and failure. Do not recursively call the update-task endpoint/button or claim success merely because the agent turn ended. The button state is only "installed" when the running adapter reports the target version.
 
 The user has authorized this workflow by clicking Update. No repeated confirmation is needed for steps already authorized. Follow the active session's agent and tool restrictions; do not delegate unless explicitly authorized. If an action genuinely needs additional input, leave the reason in the update conversation instead of bypassing it.
+
+## Update task and deployment status
+
+For a button-triggered task, the launch message gives the exact deployment status file and target version. The deployment worker owns this file. Write the following JSON atomically using a temporary sibling and rename, with `updatedAt` in Unix milliseconds:
+
+```json
+{"targetVersion":"0.97.0","state":"waiting","updatedAt":1795455860227}
+```
+
+Publish `waiting` after the exclusive deployment worker has started and staged the verified update. Refresh it on each idle check. Publish `activating` during exchange, restart, verification or rollback, and keep updating it during any extended wait. Publish `active_verified` after runtime verification passes or `failed` on every terminal failure, including preflight rejection and rollback. A `waiting` or `activating` report expires after five minutes without a heartbeat. An update conversation without an active deployment report can be retried. The worker must share the host's `/run/lock/token-monitor-deploy.lock` so only one Token Monitor deployment can activate at a time. Never let a duplicate worker overwrite the active worker's status file.
+
+Once idle, compare both the current application source snapshot and live artifacts against the staging manifest. Keep the source check strict. If another build changed the live artifacts, stop safely and publish failure so the update can be retried from that newer state. On a retry, take a fresh backup of the current live artifacts and retain their hashed frontend chunks for already-open tabs. The app's reported version determines installation; verify the deployed files and APIs before marking `active_verified`.

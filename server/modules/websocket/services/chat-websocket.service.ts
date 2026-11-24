@@ -519,19 +519,25 @@ async function dispatchRun(
     await beforeRun?.(run);
     const prefix = !sessionsService.resolveProviderSessionId(sessionId)
       ? await sessionsService.prepareHandoffPrompt(sessionId) : '';
-    // Only the first turn on a new engine receives the previous transcript.
-    // Hide that transport prefix from live user echoes, just as history does.
-    const writer = prefix ? new Proxy(run.writer, {
+    // Hide handoff transport prefixes from live user echoes, and tag intermediate
+    // `complete` frames when follow-ups are already queued behind a turn-based
+    // provider so the UI keeps its thinking state uninterrupted into the next turn.
+    const writer = new Proxy(run.writer, {
       get(target, property) {
         if (property === 'send') return (value: unknown) => {
+          let outgoing = value;
           const message = value as AnyRecord | null;
-          target.send(message?.role === 'user' && typeof message.content === 'string' && message.content.startsWith(prefix)
-            ? { ...message, content: message.content.slice(prefix.length) } : value);
+          if (prefix && message?.role === 'user' && typeof message.content === 'string' && message.content.startsWith(prefix)) {
+            outgoing = { ...message, content: message.content.slice(prefix.length) };
+          } else if (message?.kind === 'complete' && !message.aborted && !lifecycle.aborted && lifecycle.followUps.length > 0) {
+            outgoing = { ...message, continuing: true };
+          }
+          target.send(outgoing);
         };
         const value = Reflect.get(target, property);
         return typeof value === 'function' ? value.bind(target) : value;
       },
-    }) : run.writer;
+    });
     await dependencies.runtime.run(provider, prefix + command, runtimeOptions, writer);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);

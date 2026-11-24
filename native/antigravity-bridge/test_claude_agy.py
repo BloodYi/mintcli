@@ -577,6 +577,212 @@ export async function* query({ options }) {
             ["https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"],
         )
 
+    async def test_multiple_claude_agy_conversations_run_concurrently(self):
+        barrier_dir = self.root / "barrier"
+        barrier_dir.mkdir()
+        sdk_code = f"""
+import fs from 'node:fs';
+import path from 'node:path';
+const barrierDir = {json.dumps(str(barrier_dir))};
+export async function* query({{ prompt, options }}) {{
+  let text = '';
+  for await (const msg of prompt) {{
+    text = String(msg?.message?.content || '');
+    break;
+  }}
+  const marker = path.join(barrierDir, text + '.started');
+  fs.writeFileSync(marker, '1');
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {{
+    const count = fs.readdirSync(barrierDir).filter(f => f.endsWith('.started')).length;
+    if (count >= 3) break;
+    await new Promise(r => setTimeout(r, 25));
+  }}
+  const seenCount = fs.readdirSync(barrierDir).filter(f => f.endsWith('.started')).length;
+  yield {{ type: 'stream_event', event: {{ type: 'content_block_delta', delta: {{ type: 'text_delta', text: text + ':parallel=' + seenCount }} }} }};
+  yield {{ type: 'result', is_error: false, result: text + ':parallel=' + seenCount, usage: {{ input_tokens: 5, output_tokens: 2 }}, duration_ms: 50 }};
+}}
+"""
+        plugin_code = "export default { async server() { return { auth: { async loader() { return {}; } } }; } };"
+        self._write_mocks(sdk_code, plugin_code)
+        self.assertGreaterEqual(claude_agy._MAX_CONCURRENCY, 2)
+
+        async def run_one(name: str):
+            events = await self._run_stream(prompt=name)
+            return next(ev["response"] for ev in events if ev.get("event") == "result")
+
+        results = await asyncio.gather(run_one("conv-1"), run_one("conv-2"), run_one("conv-3"))
+        self.assertEqual(results, ["conv-1:parallel=3", "conv-2:parallel=3", "conv-3:parallel=3"])
+
+    async def test_live_mid_turn_injection_delivers_immediately_and_persists_new_thinking(self):
+        sdk_code = """
+export async function* query({ prompt, options }) {
+  if (!options.extraArgs || !('replay-user-messages' in options.extraArgs)) {
+    throw new Error('missing replay-user-messages');
+  }
+  const iter = prompt[Symbol.asyncIterator]();
+  const first = await iter.next();
+  if (first.done) throw new Error('missing initial prompt');
+
+  yield { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'initial thought' } } };
+  yield {
+    type: 'assistant',
+    message: {
+      content: [
+        { type: 'tool_use', id: 'tool_1', name: 'Read', input: { file_path: '/tmp/a.txt' } },
+      ],
+    },
+  };
+
+  // Wait for the live injected user message while the tool is in flight.
+  const injected = await iter.next();
+  if (injected.done) throw new Error('expected injected follow-up');
+  const injectedMsg = injected.value;
+
+  // Tool finishes, then CLI replays the injected message and emits fresh thinking.
+  yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'file-body', is_error: false }] } };
+  yield { type: 'user', isReplay: true, uuid: injectedMsg.uuid, message: injectedMsg.message };
+  yield { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'new thought for: ' + injectedMsg.message.content } } };
+  yield { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Handled ' + injectedMsg.message.content } } };
+  yield { type: 'result', is_error: false, result: 'Handled ' + injectedMsg.message.content, usage: { input_tokens: 20, output_tokens: 10 }, duration_ms: 200 };
+}
+"""
+        plugin_code = "export default { async server() { return { auth: { async loader() { return {}; } } }; } };"
+        self._write_mocks(sdk_code, plugin_code)
+
+        messages_dir = self.root / "messages"
+        messages_dir.mkdir()
+        manager = detached_chat.TurnManager(messages_dir, app.logger)
+        turn_id = "d" * 32
+        req = app.ChatRequest(
+            messages=[app.Message(role="user", content="first task")],
+            model="gemini-4-neon-xhigh",
+            use_claude_agy=True,
+            cwd=str(self.root),
+            turn_id=turn_id,
+        )
+
+        orig_worker_env = claude_agy._worker_environment
+        def wrapped_worker_env(source, agy_bin, temporary):
+            worker_env, claude_home = orig_worker_env(source, agy_bin, temporary)
+            worker_env["MINTCLI_REPO"] = str(self.repo)
+            return worker_env, claude_home
+
+        with patch.dict(os.environ, {
+            "MINTCLI_MAGPIE_AGY": str(self.plugin_dir),
+            "MINTCLI_CLAUDE_PATH": "/bin/true",
+        }), patch.object(claude_agy, "_worker_environment", side_effect=wrapped_worker_env), \
+             patch.object(app, "MESSAGES_DIR", messages_dir), \
+             patch.object(app, "SCRATCH", self.scratch), \
+             patch.object(app, "web_turns", manager), \
+             patch.object(app, "AGY_PERSIST_CONVERSATIONS", False), \
+             patch.object(app, "_within_allowed", return_value=str(self.root)), \
+             patch.object(app, "_agy_environment", return_value=dict(os.environ)):
+            resp = await app.chat(req)
+            turn = manager.turns[turn_id]
+            seen_events = []
+            injected_ok = None
+
+            async def read_sse():
+                nonlocal injected_ok
+                async for chunk in resp.body_iterator:
+                    text = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+                    for line in text.splitlines():
+                        if not line.startswith("data: "):
+                            continue
+                        ev = json.loads(line[6:])
+                        seen_events.append(ev)
+                        if ev.get("event") == "tool" and injected_ok is None:
+                            injected_ok = await app.inject_web_turn_message(
+                                turn_id,
+                                app.InjectTurnMessageRequest(content="also check tests", message_id="user-msg-2"),
+                            )
+
+            await read_sse()
+            await turn.task
+
+        self.assertIsNotNone(injected_ok)
+        self.assertTrue(injected_ok["ok"])
+        self.assertEqual(injected_ok["message_id"], "user-msg-2")
+        applied_events = [ev for ev in seen_events if ev.get("event") == "user_message_applied"]
+        self.assertEqual(len(applied_events), 1)
+        self.assertEqual(applied_events[0]["user_message_id"], "user-msg-2")
+
+        # Verify persisted history keeps [user1, assistant1(thinking1, tool1[completed]), user2, assistant2(thinking2, text)]
+        saved_files = list(messages_dir.glob("mintcli-claude-*.json"))
+        self.assertEqual(len(saved_files), 1)
+        history = json.loads(saved_files[0].read_text(encoding="utf-8"))
+        self.assertEqual([row["role"] for row in history], ["user", "assistant", "user", "assistant"])
+        self.assertEqual(history[0]["content"], "first task")
+        self.assertEqual(history[1]["steps"][0]["type"], "thinking")
+        self.assertEqual(history[1]["steps"][0]["content"], "initial thought")
+        self.assertEqual(history[1]["steps"][1]["type"], "tool_use")
+        self.assertEqual(history[1]["steps"][1]["status"], "completed")
+        self.assertEqual(history[1]["steps"][1]["toolResult"]["content"], "file-body")
+        self.assertEqual(history[2]["id"], "user-msg-2")
+        self.assertEqual(history[2]["content"], "also check tests")
+        self.assertEqual(history[3]["thinking"], "new thought for: also check tests")
+        self.assertEqual(history[3]["content"], "Handled also check tests")
+        self.assertEqual(history[3]["status"], "complete")
+
+    async def test_mid_text_injection_defers_result_until_injected_followup_finishes(self):
+        sdk_code = """
+export async function* query({ prompt }) {
+  const iter = prompt[Symbol.asyncIterator]();
+  const first = await iter.next();
+  if (first.done) throw new Error('missing initial prompt');
+
+  yield { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'First reply.' } } };
+  const second = await iter.next();
+  if (second.done) throw new Error('expected injected follow-up');
+  // Sub-turn 1 result arrives BEFORE CLI replays the injected message.
+  yield { type: 'result', is_error: false, result: 'First reply.', usage: { input_tokens: 10, output_tokens: 5 }, duration_ms: 100 };
+  yield { type: 'user', isReplay: true, uuid: second.value.uuid, message: second.value.message };
+  yield { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'thinking on follow-up' } } };
+  yield { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Follow-up done.' } } };
+  yield { type: 'result', is_error: false, result: 'Follow-up done.', usage: { input_tokens: 12, output_tokens: 8 }, duration_ms: 150 };
+}
+"""
+        plugin_code = "export default { async server() { return { auth: { async loader() { return {}; } } }; } };"
+        self._write_mocks(sdk_code, plugin_code)
+
+        env = dict(os.environ)
+        orig_worker_env = claude_agy._worker_environment
+        def wrapped_worker_env(source, agy_bin, temporary):
+            worker_env, claude_home = orig_worker_env(source, agy_bin, temporary)
+            worker_env["MINTCLI_REPO"] = str(self.repo)
+            return worker_env, claude_home
+
+        injector_holder = [None]
+        events = []
+        with patch.dict(os.environ, {
+            "MINTCLI_MAGPIE_AGY": str(self.plugin_dir),
+            "MINTCLI_CLAUDE_PATH": "/bin/true",
+        }), patch.object(claude_agy, "_worker_environment", side_effect=wrapped_worker_env):
+            async for ev in claude_agy.stream_claude_agy(
+                agy_bin="agy",
+                env=env,
+                cwd=str(self.root),
+                scratch=self.scratch,
+                prompt="start",
+                model="test-model",
+                turn_id="turn-defer",
+                sandbox=False,
+                register_injector=lambda fn: injector_holder.__setitem__(0, fn),
+            ):
+                events.append(ev)
+                if ev.get("event") == "delta" and ev.get("delta") == "First reply.":
+                    ok = await injector_holder[0]("new direction", "u-mid-text")
+                    self.assertTrue(ok)
+
+        results = [ev for ev in events if ev.get("event") == "result"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["response"], "Follow-up done.")
+        self.assertEqual(results[0]["usage"]["input_tokens"], 22)
+        self.assertEqual(results[0]["usage"]["output_tokens"], 13)
+        self.assertTrue(any(ev.get("event") == "user_message_applied" and ev.get("uuid") == "u-mid-text" for ev in events))
+        self.assertTrue(any(ev.get("event") == "thinking" and ev.get("thinking") == "thinking on follow-up" for ev in events))
+
 
 class ClaudeAgyOrchestratorRouteTests(unittest.IsolatedAsyncioTestCase):
     def test_orchestrator_detection_and_prompt_enhancement(self):

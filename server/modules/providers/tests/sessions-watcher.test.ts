@@ -6,11 +6,11 @@ import test from 'node:test';
 
 import chokidar from 'chokidar';
 
-import { createWatcherIgnoredMatcher } from '@/modules/providers/services/sessions-watcher.service.js';
+import { createWatcherIgnoredMatcher } from '../services/sessions-watcher.service.js';
 
 test('the ignored matcher skips build output, VCS data, subagents and tool results', () => {
   const root = path.join(os.tmpdir(), 'watch-root');
-  const isIgnored = createWatcherIgnoredMatcher(root);
+  const isIgnored = createWatcherIgnoredMatcher(root, 'claude');
 
   assert.equal(isIgnored(path.join(root, '-home-me-app', 'abc.jsonl')), false);
   assert.equal(isIgnored(path.join(root, '-home-me-app', 'abc', 'subagents', 'agent-1.jsonl')), true);
@@ -24,7 +24,7 @@ test('the ignored matcher skips build output, VCS data, subagents and tool resul
 test('the ignored matcher never looks above its own root', () => {
   // A home directory under /build or /dist must not hide a whole provider.
   const root = path.join(os.tmpdir(), 'build', 'home', '.claude', 'projects');
-  const isIgnored = createWatcherIgnoredMatcher(root);
+  const isIgnored = createWatcherIgnoredMatcher(root, 'claude');
 
   assert.equal(isIgnored(root), false);
   assert.equal(isIgnored(path.join(root, '-home-me-app', 'abc.jsonl')), false);
@@ -34,16 +34,17 @@ test('the ignored matcher never looks above its own root', () => {
 
 test('a child whose name starts with two dots is still inside the root', () => {
   const root = path.join(os.tmpdir(), 'watch-root');
-  const isIgnored = createWatcherIgnoredMatcher(root);
+  const isIgnored = createWatcherIgnoredMatcher(root, 'claude');
 
   assert.equal(isIgnored(path.join(root, '..archive', 'node_modules', 'x.js')), true);
   assert.equal(isIgnored(path.join(root, '..archive', 'abc.jsonl')), false);
 });
 
-test('chokidar reports only session files through the matcher (#1156)', async () => {
+test('chokidar watches plain Codex rollouts and skips compressed ones and ignored directories', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'sessions-watcher-'));
   const files = [
     path.join('-home-me-app', 'abc.jsonl'),
+    path.join('-home-me-app', 'finished.jsonl.zst'),
     path.join('-home-me-app', 'abc', 'subagents', 'agent-1.jsonl'),
     path.join('-home-me-app', 'abc', 'tool-results', 'out.txt'),
     path.join('pkg', 'node_modules', 'dep', 'index.js'),
@@ -54,7 +55,7 @@ test('chokidar reports only session files through the matcher (#1156)', async ()
   }
 
   const watcher = chokidar.watch(root, {
-    ignored: createWatcherIgnoredMatcher(root),
+    ignored: createWatcherIgnoredMatcher(root, 'codex'),
     ignoreInitial: false,
     persistent: true,
   });
