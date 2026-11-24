@@ -62,6 +62,7 @@ type ChatInterfaceProps = {
   showThinking?: boolean;
   sendByCtrlEnter?: boolean;
   agyUseClaude?: boolean;
+  agyArmor?: boolean;
   onAgyApiConnectionChange?: (usingApi: boolean) => void;
   externalMessageUpdate?: number;
   newSessionTrigger?: number;
@@ -95,6 +96,7 @@ function ChatInterface({
   showThinking,
   sendByCtrlEnter,
   agyUseClaude = false,
+  agyArmor = false,
   onAgyApiConnectionChange,
   externalMessageUpdate,
   newSessionTrigger,
@@ -314,6 +316,7 @@ function ChatInterface({
     currentProviderEffort,
     fastMode: supportsFastMode ? fastMode : undefined,
     agyUseClaude: effectiveAgyUseClaude,
+    agyArmor: agyArmor,
     isLoading: isProcessing,
     processingSessions,
     canAbortSession,
@@ -555,12 +558,13 @@ function ChatInterface({
       scheduledFor,
       options: { model: currentProviderModel, effort: currentProviderEffort, permissionMode,
         ...(supportsFastMode && fastMode !== undefined ? { fastMode } : {}),
-        ...(provider === 'antigravity' && effectiveAgyUseClaude ? { useClaudeAgy: true } : {}) },
+        ...(provider === 'antigravity' && effectiveAgyUseClaude ? { useClaudeAgy: true } : {}),
+        ...(provider === 'antigravity' && agyArmor ? { useArmor: true } : {}) },
     });
     if (scheduled) {
       setInput('');
     }
-  }, [effectiveAgyUseClaude, currentProviderEffort, currentProviderModel, input, permissionMode, provider, scheduleMessage, setInput, supportsFastMode, fastMode]);
+  }, [effectiveAgyUseClaude, agyArmor, currentProviderEffort, currentProviderModel, input, permissionMode, provider, scheduleMessage, setInput, supportsFastMode, fastMode]);
 
   const permissionContextValue = useMemo(() => ({
     pendingPermissionRequests,

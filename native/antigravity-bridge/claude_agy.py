@@ -8,6 +8,12 @@ from pathlib import Path
 import re
 import tempfile
 
+from armor_engine import (
+    MAX_ARMOR_RETRIES,
+    detect_prompt_lang,
+    get_escalation_prompt,
+    soften_prompt,
+)
 from process_lifecycle import reap_cli_process
 
 
@@ -110,7 +116,7 @@ def _worker_environment(source, agy_bin, temporary):
 
 async def stream_claude_agy(
     *, agy_bin, env, cwd, scratch, prompt, model, turn_id, sandbox, system_append=None,
-    register_injector=None,
+    register_injector=None, use_armor: bool = False, is_shutting_down=None,
 ):
     if _slots.locked():
         yield {
@@ -127,6 +133,13 @@ async def stream_claude_agy(
             }
             if system_append:
                 payload["systemAppend"] = system_append
+            if use_armor:
+                lang = detect_prompt_lang(prompt)
+                payload["useArmor"] = True
+                payload["armorEscalations"] = [
+                    get_escalation_prompt(attempt=idx, lang=lang, original_prompt=prompt)
+                    for idx in range(MAX_ARMOR_RETRIES)
+                ]
             argv = [
                 os.getenv("MINTCLI_NODE_BIN", "/opt/mintcli-node/bin/node"),
                 str(_bridge / "claude-agy.mjs"),
@@ -163,6 +176,8 @@ async def stream_claude_agy(
                         pass
 
             async def _inject_message(content: str, message_uuid: str) -> bool:
+                if use_armor and content:
+                    content, _ = soften_prompt(content)
                 try:
                     await asyncio.wait_for(ready_event.wait(), timeout=15)
                 except asyncio.TimeoutError:
@@ -304,6 +319,8 @@ async def stream_claude_agy(
                 if (saw_error or not terminal) and err_txt:
                     logger.warning("claude-agy failed (rc=%s): %s", proc.returncode, err_txt)
                 if not terminal:
+                    if is_shutting_down and is_shutting_down():
+                        raise asyncio.CancelledError
                     error = "Claude → agy 进程提前退出。"
                     if proc.returncode in (-9, 137):
                         error = "本轮进程被系统终止，可能达到内存上限。请缩小任务或分批运行测试后重试。"

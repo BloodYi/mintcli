@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronLeft, ChevronRight, SlidersHorizontal, SquarePen } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Shield, SlidersHorizontal, SquarePen } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -49,6 +49,8 @@ type WorkspaceHeaderProps = {
   agyUseClaude?: boolean;
   agyUseClaudeDisabled?: boolean;
   onToggleAgyUseClaude?: () => void;
+  agyArmor?: boolean;
+  onToggleAgyArmor?: () => void;
 };
 
 /** Rendered by WorkspaceMain to show the workspace title and chat connection status alongside the scrollable tab bar. */
@@ -72,6 +74,8 @@ export default function WorkspaceHeader({
   agyUseClaude = false,
   agyUseClaudeDisabled = false,
   onToggleAgyUseClaude,
+  agyArmor = false,
+  onToggleAgyArmor,
 }: WorkspaceHeaderProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -137,6 +141,7 @@ export default function WorkspaceHeader({
   if (isMobile) {
     const isFloatingChatHeader = activeTab === 'chat';
     const hasActiveAgyClaude = Boolean(onToggleAgyUseClaude && agyUseClaude && !agyUseClaudeDisabled);
+    const hasActiveAgyArmor = Boolean(onToggleAgyArmor && agyArmor);
     const showAccountPill = isFloatingChatHeader && Boolean(onOpenMobileAccount);
     const pillProvider = activeAccount?.provider ?? selectedSession?.__provider ?? activeProvider;
     const accountLabel = formatCompactAccountLabel(activeAccount);
@@ -261,11 +266,18 @@ export default function WorkspaceHeader({
                 )}
               >
                 <SlidersHorizontal className="h-4 w-4" />
-                {hasActiveAgyClaude && (
+                {(hasActiveAgyArmor || hasActiveAgyClaude) && (
                   <span
                     aria-hidden="true"
-                    className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-background"
-                  />
+                    className="absolute right-1 top-1 flex items-center gap-0.5"
+                  >
+                    {hasActiveAgyArmor && (
+                      <span className="h-2 w-2 rounded-full bg-amber-500 ring-2 ring-background" />
+                    )}
+                    {hasActiveAgyClaude && (
+                      <span className="h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-background" />
+                    )}
+                  </span>
                 )}
               </button>
             )}
@@ -335,6 +347,32 @@ export default function WorkspaceHeader({
               </button>
             )}
           </div>
+
+          {onToggleAgyArmor && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={agyArmor}
+              aria-label="切换 Antigravity Armor 破甲"
+              title={
+                agyArmor
+                  ? agyUseClaudeDisabled
+                    ? '已开启：Antigravity Armor 破甲（第三方 API 模式生效出站软化与交付契约；登录原生 agy 账号可启用流式拒答重发）'
+                    : '已开启：Antigravity Armor 破甲（六层破甲/防过滤/防拒绝/强制交付）'
+                  : '已关闭：点击开启 Antigravity Armor 破甲增强'
+              }
+              onClick={onToggleAgyArmor}
+              className={cn(
+                'mr-2 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                agyArmor
+                  ? 'border-amber-500/50 bg-amber-500/15 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400'
+                  : 'border-border/70 bg-muted/40 text-muted-foreground hover:bg-accent hover:text-foreground',
+              )}
+            >
+              <Shield className={cn('h-3.5 w-3.5', agyArmor ? 'text-amber-500' : 'text-muted-foreground')} />
+              <span>Armor 破甲</span>
+            </button>
+          )}
 
           {onToggleAgyUseClaude && (
             <button

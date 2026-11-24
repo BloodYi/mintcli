@@ -84,6 +84,8 @@ describe('Mobile chat floating header, separate sheets, and popover viewport cla
         onRenameSession={vi.fn(async () => true)}
         agyUseClaude={true}
         onToggleAgyUseClaude={vi.fn()}
+        agyArmor={true}
+        onToggleAgyArmor={vi.fn()}
       />,
     );
 
@@ -102,8 +104,11 @@ describe('Mobile chat floating header, separate sheets, and popover viewport cla
     expect(onOpenMobileAccount).toHaveBeenCalledTimes(1);
     expect(onOpenMobileControls).not.toHaveBeenCalled();
 
-    // Top-right button opens the separate Workspace & Tools sheet.
-    fireEvent.click(screen.getByRole('button', { name: '打开控制菜单' }));
+    // Top-right button opens the separate Workspace & Tools sheet and shows both Armor (amber) & Claude->agy (emerald) dots.
+    const controlsBtn = screen.getByRole('button', { name: '打开控制菜单' });
+    expect(controlsBtn.querySelector('.bg-amber-500')).not.toBeNull();
+    expect(controlsBtn.querySelector('.bg-emerald-500')).not.toBeNull();
+    fireEvent.click(controlsBtn);
     expect(onOpenMobileControls).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole('button', { name: /New Session|新对话/i }));

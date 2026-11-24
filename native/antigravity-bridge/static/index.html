@@ -390,20 +390,42 @@
       animation: blink 1s steps(2) infinite;
       margin-left: 2px;
     }
-    #thinking-toggle {
+    #thinking-toggle,
+    #armor-toggle {
       font-size: 13px;
       width: 35px;
       padding: 5px;
       text-align: center;
-      transition: opacity .15s, border-color .15s, color .15s;
+      transition: opacity .15s, border-color .15s, color .15s, background .15s;
     }
-    body[data-thinking="off"] #thinking-toggle {
+    body[data-thinking="off"] #thinking-toggle,
+    body[data-armor="off"] #armor-toggle {
       opacity: .5;
       filter: grayscale(1);
     }
     body[data-thinking="on"] #thinking-toggle {
       border-color: rgba(173, 140, 255, 0.5);
       background: var(--soft-violet);
+    }
+    body[data-armor="on"] #armor-toggle {
+      border-color: rgba(245, 158, 11, 0.55);
+      background: rgba(245, 158, 11, 0.14);
+      opacity: 1;
+    }
+    #claude-agy-toggle {
+      transition: opacity .15s, border-color .15s, color .15s, background .15s;
+    }
+    body[data-claude-agy="off"] #claude-agy-toggle {
+      opacity: .65;
+    }
+    body[data-claude-agy="on"] #claude-agy-toggle {
+      border-color: rgba(16, 185, 129, 0.55);
+      background: rgba(16, 185, 129, 0.14);
+      color: #34d399;
+      opacity: 1;
+    }
+    [data-theme="light"] body[data-claude-agy="on"] #claude-agy-toggle {
+      color: #059669;
     }
     textarea { flex: 1; min-width: 0; resize: none; background: transparent; color: var(--text); border: none; padding: 10px 0; font-size: 16px; line-height: 1.5; height: 44px; max-height: 200px; min-height: 44px; }
     textarea::placeholder { color: var(--muted); opacity: .9; }
@@ -1107,6 +1129,8 @@
         <button id="ws-btn" class="ws-btn" title="选择工作文件夹" aria-label="选择工作文件夹">📁 <span class="workspace-prefix">工作空间 /</span><span id="ws-label">scratch</span></button>
         <button id="quota-btn" title="查看额度与多账号管理" aria-label="额度与账号">⚡ <span>额度</span></button>
         <button id="route-inspect-btn" title="查看回复记录或检测当前选择的模型" aria-label="模型返回信息">🔍 <span>验真</span></button>
+        <button id="claude-agy-toggle" type="button" role="switch" aria-checked="false" title="Claude → agy：已关闭（点击开启 Claude Code 工具执行 + agy 模型）" aria-label="Claude → agy 开关">🧩 <span>Claude→agy</span></button>
+        <button id="armor-toggle" type="button" role="switch" aria-checked="false" title="Armor 破甲：已关闭（点击开启六层破甲增强）" aria-label="Armor 破甲开关">🛡️</button>
         <button id="thinking-toggle" title="思维链开关：显示/隐藏思考过程" aria-label="思维链开关">💭</button>
         <button id="theme-toggle" title="切换深浅主题" aria-label="切换深浅主题">☀️</button>
         <button id="bg-toggle" title="切换聊天背景" aria-label="切换聊天背景">🖼️</button>
@@ -1285,6 +1309,10 @@
           <div class="route-val" id="route-trace-val">加载中…</div>
         </div>
         <div class="route-item">
+          <span class="route-label">🛡️ Armor 破甲防护状态</span>
+          <div class="route-val" id="route-armor-val">未启用</div>
+        </div>
+        <div class="route-item">
           <span class="route-label">📜 字段来源与本次请求编号</span>
           <pre class="route-raw-logs" id="route-logs-val">尚无返回记录</pre>
         </div>
@@ -1368,6 +1396,47 @@
     function toggleThinkingMode() {
       const cur = document.body.getAttribute("data-thinking") || "on";
       applyThinkingMode(cur === "on" ? "off" : "on");
+    }
+
+    /* ---------- Antigravity Armor ---------- */
+    function applyArmorMode(val) {
+      const mode = val === "on" ? "on" : "off";
+      document.body.setAttribute("data-armor", mode);
+      const btn = $("#armor-toggle");
+      if (btn) {
+        btn.setAttribute("aria-checked", mode === "on" ? "true" : "false");
+        btn.title = mode === "on"
+          ? "Armor 破甲：已开启（六层破甲/防过滤/防拒绝/强制交付）"
+          : "Armor 破甲：已关闭（点击开启破甲增强）";
+        btn.style.borderColor = mode === "on" ? "rgba(245, 158, 11, 0.55)" : "";
+        btn.style.background = mode === "on" ? "rgba(245, 158, 11, 0.14)" : "";
+        btn.style.opacity = mode === "on" ? "1" : "0.5";
+      }
+      try { localStorage.setItem("agy_armor", mode); } catch (e) {}
+    }
+
+    function toggleArmorMode() {
+      const cur = document.body.getAttribute("data-armor") || "off";
+      applyArmorMode(cur === "on" ? "off" : "on");
+    }
+
+    /* ---------- Claude -> agy ---------- */
+    function applyClaudeAgyMode(val) {
+      const mode = val === "on" ? "on" : "off";
+      document.body.setAttribute("data-claude-agy", mode);
+      const btn = $("#claude-agy-toggle");
+      if (btn) {
+        btn.setAttribute("aria-checked", mode === "on" ? "true" : "false");
+        btn.title = mode === "on"
+          ? "Claude → agy：已开启（Claude Code 执行工具 + agy 提供模型，可与 Armor 破甲叠加生效）"
+          : "Claude → agy：已关闭（点击开启 Claude Code 工具链模式）";
+      }
+      try { localStorage.setItem("agy_claude_agy", mode); } catch (e) {}
+    }
+
+    function toggleClaudeAgyMode() {
+      const cur = document.body.getAttribute("data-claude-agy") || "off";
+      applyClaudeAgyMode(cur === "on" ? "off" : "on");
     }
 
     function extractThinkingAndContent(rawText = "", eventThinking = "", isStreaming = false) {
@@ -2023,7 +2092,11 @@
       try {
         const response = await apiFetch("/api/inspect-route", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: selected }),
+          body: JSON.stringify({
+            model: selected,
+            use_armor: (document.body.getAttribute("data-armor") || "off") === "on",
+            use_claude_agy: (document.body.getAttribute("data-claude-agy") || "off") === "on",
+          }),
         });
         const result = await response.json();
         if (version !== routeCheckVersion) return;
@@ -2050,6 +2123,22 @@
       $("#route-url-val").textContent = values("upstream_urls");
       $("#route-response-val").textContent = values("response_ids");
       $("#route-trace-val").textContent = values("trace_ids");
+      const armor = d.armor;
+      if ($("#route-armor-val")) {
+        if (armor && armor.enabled) {
+          const armorLabels = {
+            armed: "已启用 · 契约与出站净化生效中",
+            armed_cli: "已启用 · CLI 契约与出站净化生效",
+            delivered: "已启用 · 正常交付",
+            escalated: `已启用 · 拦截拒答并升档重试（第 ${armor.retries || 1} 档）`,
+            recovered: `已启用 · 拒答拦截恢复成功（共重试 ${armor.retries || 1} 次）`,
+            exhausted: `已启用 · 已达最大重试上限（${armor.retries || 3} 次）`,
+          };
+          $("#route-armor-val").textContent = armorLabels[armor.status] || "已启用";
+        } else {
+          $("#route-armor-val").textContent = "未启用";
+        }
+      }
       const sources = { agy_session_db: "本次 CLI 响应记录", cli_init: "CLI 配置", cli_result: "CLI 结果字段", cli_step_update: "CLI 步骤字段", request_log: "本次请求日志" };
       const evidence = Array.isArray(d.evidence) ? d.evidence.map(e => `${sources[e.source] || e.source} · ${e.field}: ${e.value}${e.step_indices?.length ? `（步骤 ${e.step_indices.join(", ")}）` : ""}`).join("\n") : "";
       const status = { unavailable: "未提供可验证字段", available: "已取得响应字段", partial: "部分回复步骤有记录", conflict: "不同步骤返回了多个模型名" }[d.status] || "等待返回";
@@ -2064,7 +2153,10 @@
       const actual = [...new Set([...(d.returned_models || []), ...(d.returned_model_fulls || [])])];
       const label = actual?.length ? `接口返回：${actual.join(" / ")}`
         : message.requestedModel ? `所选：${message.model || message.requestedModel}` : `已存标签：${message.model || "未记录"}`;
-      return `<span class="meta-item meta-model clickable" data-message-id="${escapeHtml(message._id)}" title="查看本条回复的返回证据" onclick="openRouteModal(this.dataset.messageId)">🤖 ${escapeHtml(label)} <span class="inspect-hint">🔍</span></span>`;
+      const armorBadge = d.armor?.enabled
+        ? `<span class="meta-item" title="Antigravity Armor 破甲已生效">🛡️ ${d.armor.retries ? `Armor ×${escapeHtml(String(d.armor.retries))}` : "Armor"}</span>`
+        : "";
+      return `<span class="meta-item meta-model clickable" data-message-id="${escapeHtml(message._id)}" title="查看本条回复的返回证据" onclick="openRouteModal(this.dataset.messageId)">🤖 ${escapeHtml(label)} <span class="inspect-hint">🔍</span></span>${armorBadge}`;
     }
 
     if ($("#route-inspect-btn")) {
@@ -3298,6 +3390,8 @@
       if (bodyEl) bodyEl.classList.add("cursor");
 
       const isThinkingOn = (document.body.getAttribute("data-thinking") || "on") === "on";
+      const isArmorOn = (document.body.getAttribute("data-armor") || "off") === "on";
+      const isClaudeAgyOn = (document.body.getAttribute("data-claude-agy") || "off") === "on";
       let streamCompleted = false;
       try {
         const resp = await apiFetch("/api/chat", {
@@ -3310,6 +3404,8 @@
             continue_conversation: !!turn.cid,
             user_id: userId,
             thinking: isThinkingOn,
+            use_armor: isArmorOn,
+            use_claude_agy: isClaudeAgyOn,
             turn_id: turn.id,
             model_label: selectedModelLabel,
             message_snapshot: messages.slice(0, -1),
@@ -3411,6 +3507,8 @@
     $("#sidebar-close").onclick = closeSidebar;
     $("#scrim").onclick = closeSidebar;
     $("#quota-btn").onclick = openQuotaModal;
+    if ($("#claude-agy-toggle")) $("#claude-agy-toggle").onclick = toggleClaudeAgyMode;
+    if ($("#armor-toggle")) $("#armor-toggle").onclick = toggleArmorMode;
     $("#thinking-toggle").onclick = toggleThinkingMode;
     $("#theme-toggle").onclick = toggleTheme;
     $("#bg-toggle").onclick = toggleChatBg;
@@ -3433,6 +3531,8 @@
     });
 
     applyThinkingMode(localStorage.getItem("agy_thinking") || "on");
+    applyArmorMode(localStorage.getItem("agy_armor") || "off");
+    applyClaudeAgyMode(localStorage.getItem("agy_claude_agy") || "off");
     applyTheme(localStorage.getItem("agy_theme") || "dark");
     applyChatBg(localStorage.getItem("agy_chatbg") === "on");
     updateConversationPill();

@@ -532,6 +532,36 @@ class TurnManager:
         self.directory, self.logger = directory, logger
         self.turns, self.by_conversation = {}, {}
         self.cancelled_ids = {}
+        self.shutting_down = False
+
+    async def shutdown(self, drain_timeout: float = 22.0) -> None:
+        """Allow active turns to finish naturally on service restart; cancel cleanly if timeout expires."""
+        self.shutting_down = True
+        running_jobs = [
+            job
+            for job in list(self.turns.values())
+            if job.status == 'running' and job.task is not None and not job.task.done()
+        ]
+        if not running_jobs:
+            return
+        self.logger.info(
+            'Gracefully draining %d active turn(s) before shutdown (timeout=%.1fs)...',
+            len(running_jobs),
+            drain_timeout,
+        )
+        _, pending = await asyncio.wait(
+            [job.task for job in running_jobs],
+            timeout=max(0.1, drain_timeout),
+        )
+        if pending:
+            for job in running_jobs:
+                if job.task in pending and not job.stop_requested:
+                    job.stop_requested = True
+                    job.task.cancel()
+            await asyncio.gather(
+                *(job.task for job in running_jobs if job.task in pending),
+                return_exceptions=True,
+            )
 
     @staticmethod
     def serializable(messages):

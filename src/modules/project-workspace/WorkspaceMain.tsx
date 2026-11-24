@@ -68,7 +68,7 @@ function WorkspaceMain({
   const handleStartNewSession = useCallback(() => {
     if (selectedProject) onProjectSelect(selectedProject);
   }, [onProjectSelect, selectedProject]);
-  const { showRawParameters, showThinking, sendByCtrlEnter, agyUseClaude } = preferences;
+  const { showRawParameters, showThinking, sendByCtrlEnter, agyUseClaude, agyArmor } = preferences;
   const [storedProvider, setStoredProvider] = useState<LLMProvider>(readSelectedProvider);
   const [activeConnection, setActiveConnection] = useState<AgentConnectionChoice | null>(null);
   const [agyUsingApiConnection, setAgyUsingApiConnection] = useState(false);
@@ -113,6 +113,10 @@ function WorkspaceMain({
     if (agyUsingApiConnection) return;
     setUiPreference('agyUseClaude', !agyUseClaude);
   }, [agyUseClaude, agyUsingApiConnection, setUiPreference]);
+
+  const handleToggleAgyArmor = useCallback(() => {
+    setUiPreference('agyArmor', !agyArmor);
+  }, [agyArmor, setUiPreference]);
 
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const browserUseEnabled = useBrowserUseEnabled();
@@ -215,6 +219,8 @@ function WorkspaceMain({
         agyUseClaude={agyUseClaude}
         agyUseClaudeDisabled={agyUsingApiConnection}
         onToggleAgyUseClaude={showAgyClaudeToggle ? handleToggleAgyUseClaude : undefined}
+        agyArmor={agyArmor}
+        onToggleAgyArmor={showAgyClaudeToggle ? handleToggleAgyArmor : undefined}
       />
 
       {isMobile && (
@@ -236,6 +242,8 @@ function WorkspaceMain({
             agyUseClaude={agyUseClaude}
             agyUseClaudeDisabled={agyUsingApiConnection}
             onToggleAgyUseClaude={showAgyClaudeToggle ? handleToggleAgyUseClaude : undefined}
+            agyArmor={agyArmor}
+            onToggleAgyArmor={showAgyClaudeToggle ? handleToggleAgyArmor : undefined}
             onStartNewSession={handleStartNewSession}
             onShowSettings={onShowSettings}
             onOpenQuickSettings={handleOpenQuickSettings}
@@ -271,6 +279,7 @@ function WorkspaceMain({
                 showThinking={showThinking}
                 sendByCtrlEnter={sendByCtrlEnter}
                 agyUseClaude={agyUseClaude}
+                agyArmor={agyArmor}
                 onAgyApiConnectionChange={setAgyUsingApiConnection}
                 externalMessageUpdate={externalMessageUpdate}
                 newSessionTrigger={newSessionTrigger}

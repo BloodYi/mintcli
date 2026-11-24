@@ -5,6 +5,7 @@ import {
   MessageSquare,
   MonitorPlay,
   Settings,
+  Shield,
   SlidersHorizontal,
   SquarePen,
   Terminal,
@@ -75,6 +76,8 @@ type MobileWorkspaceSheetProps = {
   agyUseClaude?: boolean;
   agyUseClaudeDisabled?: boolean;
   onToggleAgyUseClaude?: () => void;
+  agyArmor?: boolean;
+  onToggleAgyArmor?: () => void;
   onStartNewSession?: () => void;
   onShowSettings?: (tab?: SettingsMainTab) => void;
   onOpenQuickSettings?: () => void;
@@ -99,6 +102,8 @@ export default function MobileWorkspaceSheet({
   agyUseClaude = false,
   agyUseClaudeDisabled = false,
   onToggleAgyUseClaude,
+  agyArmor = false,
+  onToggleAgyArmor,
   onStartNewSession,
   onShowSettings,
   onOpenQuickSettings,
@@ -218,6 +223,53 @@ export default function MobileWorkspaceSheet({
               })}
             </div>
           </section>
+
+          {/* Section: Antigravity Armor mode switch */}
+          {onToggleAgyArmor && (
+            <section className="space-y-2">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={agyArmor}
+                aria-label="切换 Antigravity Armor 破甲"
+                onClick={onToggleAgyArmor}
+                className={cn(
+                  'flex w-full items-center justify-between gap-3 rounded-2xl border px-3.5 py-3 text-left transition-colors',
+                  agyArmor
+                    ? 'border-amber-500/35 bg-amber-500/10'
+                    : 'border-border/50 bg-muted/35 active:bg-muted/60',
+                )}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <Shield className={cn('h-3.5 w-3.5 shrink-0', agyArmor ? 'text-amber-500' : 'text-muted-foreground')} />
+                    <span className="text-[13px] font-semibold text-foreground">Armor 破甲增强</span>
+                  </div>
+                  <p className="mt-0.5 truncate text-[11.5px] text-muted-foreground">
+                    {agyArmor
+                      ? agyUseClaudeDisabled
+                        ? '已开启：出站软化与交付契约生效（原生账号支持流式拒答重发）'
+                        : '已开启：六层破甲/防过滤/防拒绝/强制交付'
+                      : '已关闭：点击开启破甲增强'}
+                  </p>
+                </div>
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',
+                    agyArmor ? 'bg-amber-500' : 'bg-muted-foreground/30',
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform',
+                      agyArmor ? 'translate-x-5' : 'translate-x-0.5',
+                    )}
+                  />
+                </span>
+              </button>
+            </section>
+          )}
 
           {/* Section 2: Claude -> agy mode switch */}
           {onToggleAgyUseClaude && (

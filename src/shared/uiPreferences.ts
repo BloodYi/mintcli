@@ -17,6 +17,7 @@ export type UiPreferences = {
   keepProjectsExpanded: boolean;
   voiceEnabled: boolean;
   agyUseClaude: boolean;
+  agyArmor: boolean;
 };
 
 export type UiPreferenceKey = keyof UiPreferences;
@@ -33,6 +34,7 @@ const DEFAULTS: UiPreferences = {
   keepProjectsExpanded: false,
   voiceEnabled: false,
   agyUseClaude: false,
+  agyArmor: false,
 };
 
 const PREFERENCE_KEYS = Object.keys(DEFAULTS) as UiPreferenceKey[];

@@ -6,12 +6,27 @@ import type { AntigravityMessage } from '@/shared/types';
 import { useAntigravity } from '@/modules/antigravity/hooks/useAntigravity';
 import { MarkdownImage, MarkdownVideo, isImagePath, isVideoPath } from '@/modules/chat';
 import { QuotaWindow } from '@/shared/ui/QuotaWindow';
+import { readStoredUiPreferences } from '@/shared/uiPreferences';
+import { subscribeToUserPreferences, writeUserPreference } from '@/shared/userSettings';
 
 const CONTROL = 'min-h-10 rounded-md border border-border bg-background px-3 py-2 text-sm disabled:opacity-50';
 
 /** Rendered by App as the native agy workspace, alongside the existing Codex/Claude/API workspace. */
 export function AntigravityWorkspace() {
   const agent = useAntigravity();
+  const [agyArmor, setAgyArmor] = useState(() => readStoredUiPreferences().agyArmor);
+  const [agyUseClaude, setAgyUseClaude] = useState(() => readStoredUiPreferences().agyUseClaude);
+  useEffect(() => subscribeToUserPreferences(() => {
+    const prefs = readStoredUiPreferences();
+    setAgyArmor(prefs.agyArmor);
+    setAgyUseClaude(prefs.agyUseClaude);
+  }), []);
+  const togglePref = (key: 'agyArmor' | 'agyUseClaude', next: boolean) => {
+    const prefs = { ...readStoredUiPreferences(), [key]: next };
+    if (key === 'agyArmor') setAgyArmor(next);
+    else setAgyUseClaude(next);
+    writeUserPreference('uiPreferences', prefs);
+  };
   // Drafts belong to the current view and are never written over a server-owned conversation.
   const [draft, setDraft] = useState('');
   const [model, setModel] = useState('');
@@ -71,6 +86,24 @@ export function AntigravityWorkspace() {
       <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border p-3">
         <button type="button" className={CONTROL + ' md:hidden'} aria-expanded={historyOpen} aria-label="展开 agy 历史聊天" onClick={() => setHistoryOpen(value => !value)}>☰</button>
         <h1 className="mr-auto font-semibold">Antigravity</h1>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={agyArmor}
+          className={CONTROL + (agyArmor ? ' border-amber-500/50 bg-amber-500/15 text-amber-600 dark:text-amber-400' : '')}
+          onClick={() => togglePref('agyArmor', !agyArmor)}
+        >
+          🛡️ Armor 破甲
+        </button>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={agyUseClaude}
+          className={CONTROL + (agyUseClaude ? ' border-emerald-500/50 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' : '')}
+          onClick={() => togglePref('agyUseClaude', !agyUseClaude)}
+        >
+          Claude → agy
+        </button>
         <button type="button" className={CONTROL} disabled={agent.busy || agent.loading} onClick={() => void agent.sync()}>同步聊天</button>
         <button type="button" className={CONTROL} onClick={() => setManager(true)}>账号管理</button>
       </header>
@@ -145,7 +178,7 @@ export function AntigravityWorkspace() {
         event.preventDefault();
         const text = draft; const files = attachments;
         setDraft(''); setAttachments([]);
-        void agent.send(text, model, cwd, files).then(ok => { if (!ok) { setDraft(text); setAttachments(files); } });
+        void agent.send(text, model, cwd, files, { useArmor: agyArmor, useClaudeAgy: agyUseClaude }).then(ok => { if (!ok) { setDraft(text); setAttachments(files); } });
       }}>
         <label className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">工作目录
           <input className={CONTROL + ' min-w-0 flex-1'} value={cwd} disabled={agent.busy} onChange={event => setCwd(event.target.value)} placeholder="留空使用 agy 默认目录" />

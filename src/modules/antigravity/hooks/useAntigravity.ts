@@ -174,7 +174,13 @@ export function useAntigravity() {
     return () => { mounted.current = false; clearInterval(timer); controller.current?.abort(); };
   }, [openConversation, refreshQuota, reloadAccounts, reloadConversations, resumeTurn]);
 
-  const send = async (content: string, model: string, cwd: string, attachments: AntigravityMessage['attachments']) => {
+  const send = async (
+    content: string,
+    model: string,
+    cwd: string,
+    attachments: AntigravityMessage['attachments'],
+    options?: { useArmor?: boolean; useClaudeAgy?: boolean },
+  ) => {
     if (running.current || !content.trim() && !attachments?.length) return false;
     running.current = true; setBusy(true); setNotice('');
     const abort = new AbortController(); controller.current = abort;
@@ -191,6 +197,8 @@ export function useAntigravity() {
         messages: snapshot, message_snapshot: snapshot, model: model || undefined, cwd: cwd || undefined,
         conversation_id: currentId.current, history_revision: revision.current,
         turn_id: currentTurn.current, model_label: models.find(item => item.id === model)?.name || model,
+        ...(options?.useArmor ? { use_armor: true } : {}),
+        ...(options?.useClaudeAgy ? { use_claude_agy: true } : {}),
       }, abort.signal);
       if (!response.ok) { await readApiJson(response); return false; }
       accepted = true;

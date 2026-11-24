@@ -291,3 +291,80 @@ for line in sys.stdin:
     asyncio.run(run())
 
 
+def test_stream_agy_acp_recovers_from_transient_pre_output_crash_and_shutdown():
+    fake_flaky_server = """
+import json, os, pathlib, sys
+
+marker = pathlib.Path(os.environ["FLAKY_MARKER"])
+attempt = int(marker.read_text() if marker.exists() else "0") + 1
+marker.write_text(str(attempt))
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    mid = msg.get("id")
+    method = msg.get("method")
+    if method == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "sid-flaky-1"}}), flush=True)
+    elif method == "session/resume":
+        print(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": msg["params"]["sessionId"]}}), flush=True)
+    elif method == "session/prompt":
+        if attempt == 1:
+            # Simulate transient crash right before first token!
+            sys.exit(1)
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-flaky-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Recovered cleanly!"}}}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}}), flush=True)
+        break
+"""
+
+    async def run():
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wrapper = tmp_path / "fake_flaky_agy.py"
+            wrapper.write_text(f"#!{sys.executable}\n{fake_flaky_server}", encoding="utf-8")
+            wrapper.chmod(0o755)
+            marker = tmp_path / "attempt.txt"
+
+            events = [
+                ev
+                async for ev in stream_agy_acp(
+                    agy_bin=str(wrapper),
+                    prompt="hello",
+                    model=None,
+                    target_cwd=tmp,
+                    run_env={"PATH": "/usr/bin:/bin", "FLAKY_MARKER": str(marker)},
+                    scratch_dir=tmp_path,
+                )
+            ]
+            kinds = [e["event"] for e in events]
+            assert kinds == ["init", "delta", "result", "metadata"], f"unexpected events: {events}"
+            assert events[0]["conversation_id"] == "sid-flaky-1"
+            assert events[2]["response"] == "Recovered cleanly!"
+            assert marker.read_text() == "2"
+
+            # Verify shutdown flag converts abrupt EOF into clean CancelledError instead of error event
+            marker.write_text("0")
+            cancelled = False
+            emitted_errors = []
+            try:
+                async for ev in stream_agy_acp(
+                    agy_bin=str(wrapper),
+                    prompt="hello",
+                    model=None,
+                    target_cwd=tmp,
+                    run_env={"PATH": "/usr/bin:/bin", "FLAKY_MARKER": str(marker)},
+                    scratch_dir=tmp_path,
+                    is_shutting_down=lambda: True,
+                ):
+                    if ev.get("event") == "error":
+                        emitted_errors.append(ev)
+            except asyncio.CancelledError:
+                cancelled = True
+            assert cancelled is True
+            assert emitted_errors == []
+
+    asyncio.run(run())
+
+
+

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import codecs
+from contextlib import asynccontextmanager
 import hashlib
 import json
 import logging
@@ -45,6 +46,17 @@ from process_lifecycle import reap_cli_process
 from project_updates import ProjectUpdater
 from update_common import UpdateError
 from detached_chat import TurnManager
+from armor_engine import (
+    ARMOR_DELIVERY_SEAT,
+    ARMOR_SYSTEM_DIRECTIVE,
+    ensure_armor_rules,
+    get_armor_system_directive,
+    is_pure_history_refusal,
+    soften_prompt,
+    strip_block_echo,
+    strip_foreign_armor,
+    sync_armor_rules,
+)
 
 logger = logging.getLogger("antigravity-chat")
 
@@ -119,7 +131,16 @@ DEFAULT_SYSTEM = (
     f"{DOWNLOAD_LINK_INSTRUCTION}"
 )
 
-app = FastAPI(title="antigravity-chat", version="1.1.0")
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI):
+    web_turns.shutting_down = False
+    try:
+        yield
+    finally:
+        await web_turns.shutdown(drain_timeout=22.0)
+
+
+app = FastAPI(title="antigravity-chat", version="1.1.0", lifespan=_app_lifespan)
 
 # --------------------------------------------------------------------------- #
 # Conversation persistence layer
@@ -1119,6 +1140,8 @@ async def inspect_route_ep() -> dict:
 
 class InspectRouteRequest(BaseModel):
     model: str | None = None
+    use_armor: StrictBool = False
+    use_claude_agy: StrictBool = False
 
 
 @app.post("/api/inspect-route")
@@ -1128,9 +1151,61 @@ async def inspect_selected_route(req: InspectRouteRequest) -> dict:
     failed = False
     async def collect(folder):
         nonlocal info, failed
+        if req.use_claude_agy:
+            requested_model = (req.model or "").strip()
+            model = requested_model if requested_model and requested_model != "default" else await _default_claude_agy_model()
+            run_env = _agy_environment()
+            agy_home = run_env.get("HOME") or HOME
+            if _is_orchestrator_model(model, None):
+                async for event in stream_agy_acp(
+                    agy_bin=AGY_BIN,
+                    prompt="Reply only OK. Do not use tools or access files.",
+                    model=model,
+                    target_cwd=folder,
+                    run_env=run_env,
+                    scratch_dir=SCRATCH,
+                    persist_conversation=False,
+                    route_info_factory=lambda rid, m: {**_new_route_info(rid, m), "transport": "acp", "prompt_mode": "claude_code_enhanced"},
+                    route_enricher=lambda r, trace: _apply_claude_agy_trace(r, agy_home, trace),
+                    system_append=get_armor_system_directive(agent_tools=True) if req.use_armor else None,
+                    use_armor=req.use_armor,
+                ):
+                    if isinstance(event.get("route_info"), dict):
+                        info = event["route_info"]
+                    if event.get("event") == "error":
+                        failed = True
+                return
+            info["transport"] = "claude_agy"
+            info["cli_config_model"] = model
+            if req.use_armor:
+                info["armor"] = {"enabled": True, "status": "armed", "retries": 0}
+            async for event in stream_claude_agy(
+                agy_bin=AGY_BIN,
+                env=run_env,
+                cwd=folder,
+                scratch=SCRATCH,
+                prompt="Reply only OK. Do not use tools or access files.",
+                model=model,
+                turn_id=info["request_id"],
+                sandbox=AGY_SANDBOX,
+                system_append=get_armor_system_directive(agent_tools=True) if req.use_armor else None,
+                use_armor=req.use_armor,
+            ):
+                if event.get("event") == "armor_status":
+                    info["armor"] = {"enabled": True, "status": event.get("status", "armed"), "retries": int(event.get("retries") or 0)}
+                elif event.get("event") == "agy_trace":
+                    await asyncio.to_thread(_apply_claude_agy_trace, info, agy_home, event)
+                elif event.get("event") == "error":
+                    failed = True
+            return
+
         async for event in _stream_agy(
             prompt="Reply only OK. Do not use tools or access files.",
-            model=req.model, cwd=folder, persist_conversation=False,
+            model=req.model,
+            cwd=folder,
+            persist_conversation=False,
+            system_append=get_armor_system_directive(agent_tools=True) if req.use_armor else None,
+            use_armor=req.use_armor,
         ):
             if isinstance(event.get("route_info"), dict):
                 info = event["route_info"]
@@ -1184,6 +1259,7 @@ class ChatRequest(BaseModel):
     stream_options: dict[str, Any] | None = None
     api_connection: ApiConnection | None = None
     use_claude_agy: StrictBool = False
+    use_armor: StrictBool = False
     account_id: str | None = None
 
 
@@ -1320,6 +1396,60 @@ from egress import egress_environment
 
 
 _active_account_turns: dict[str, int] = {}
+_active_armor_turns: dict[str, int] = {}
+_armor_cleanup_deferred: set[str] = set()
+
+
+def _resolve_home_key(home_path: str | None) -> str:
+    if not home_path:
+        return ""
+    try:
+        return str(Path(home_path).expanduser().resolve())
+    except Exception:
+        return str(home_path)
+
+
+def _sync_armor_rules_concurrency_safe(
+    enabled: bool,
+    *,
+    target_cwd: str | None,
+    agy_home: str | None,
+) -> str:
+    """Sync 00-armor.md without deleting a home rule still used by another active Armor turn."""
+    home_key = _resolve_home_key(agy_home)
+    if enabled:
+        if home_key:
+            _active_armor_turns[home_key] = _active_armor_turns.get(home_key, 0) + 1
+            _armor_cleanup_deferred.discard(home_key)
+        sync_armor_rules(True, target_cwd=target_cwd, agy_home=agy_home)
+        return home_key
+
+    # Always keep target_cwd clean; only clean homes with zero active Armor turns.
+    candidates = [agy_home, *_claude_agy_candidate_homes()]
+    idle_homes: list[str] = []
+    for candidate in candidates:
+        ckey = _resolve_home_key(candidate)
+        if not ckey:
+            continue
+        if _active_armor_turns.get(ckey, 0) > 0:
+            _armor_cleanup_deferred.add(ckey)
+        elif ckey not in idle_homes:
+            idle_homes.append(ckey)
+    sync_armor_rules(False, target_cwd=target_cwd, agy_home=None, extra_homes=idle_homes)
+    return ""
+
+
+def _release_armor_turn_home(home_key: str) -> None:
+    if not home_key:
+        return
+    remaining = _active_armor_turns.get(home_key, 1) - 1
+    if remaining > 0:
+        _active_armor_turns[home_key] = remaining
+        return
+    _active_armor_turns.pop(home_key, None)
+    if home_key in _armor_cleanup_deferred:
+        _armor_cleanup_deferred.discard(home_key)
+        sync_armor_rules(False, target_cwd=None, agy_home=home_key)
 _SHARED_AGY_CLI_DIRS = (
     "conversations",
     "brain",
@@ -1717,6 +1847,7 @@ async def _stream_agy(
     system_append: str | None = None,
     register_injector=None,
     account_id: str | None = None,
+    use_armor: bool = False,
 ):
     """Run agy and yield structured events (dict) as NDJSON or text chunks arrive."""
     turn_timeout = AGY_TIMEOUT if timeout is None else timeout
@@ -1747,15 +1878,21 @@ async def _stream_agy(
             update_lease=update_lease,
             timeout=turn_timeout,
             register_injector=register_injector,
+            use_armor=use_armor,
+            is_shutting_down=lambda: web_turns.shutting_down,
         ):
             yield event
         return
+
+    effective_cli_prompt = prompt
+    if use_armor and effective_cli_prompt and ARMOR_DELIVERY_SEAT not in effective_cli_prompt:
+        effective_cli_prompt = f"{ARMOR_DELIVERY_SEAT}\n\n{effective_cli_prompt}"
 
     argv = _build_argv(
         # The CLI validates its own model id. The relay independently pins the user's
         # actual upstream model; keep the requested model unchanged in turn metadata.
         "gemini-3.1-pro" if api_connection and api_connection.chat_compat else model,
-        prompt=prompt,
+        prompt=effective_cli_prompt,
         conversation_id=conversation_id,
         continue_last=continue_last,
         target_cwd=target_cwd,
@@ -1765,6 +1902,8 @@ async def _stream_agy(
     if api_connection:
         argv[1:1] = ["--settings", json.dumps({"modelProvider": "gemini"})]
     route_info = _new_route_info(uuid.uuid4().hex, model)
+    if use_armor:
+        route_info["armor"] = {"enabled": True, "status": "armed_cli", "retries": 0}
     log_dir = tempfile.TemporaryDirectory(prefix="agy-route-", dir=str(SCRATCH))
     log_path = Path(log_dir.name) / "cli.log"
     argv.extend(["--log-file", str(log_path)])
@@ -3308,7 +3447,30 @@ def _truncate_utf8_head_tail(text: str, max_bytes: int) -> str:
     return f"{head}{_HISTORY_TRUNCATE_MARKER}{tail}"
 
 
-def _recent_saved_messages(history: list[dict], max_bytes: int = _HISTORY_MAX_BYTES) -> list[Message]:
+def _soften_messages_for_outbound(messages: list[Message]) -> tuple[list[Message], list[str]]:
+    """Soften user message text and strip conflicting foreign persona blocks without mutating saved chat snapshots."""
+    out: list[Message] = []
+    all_hits: list[str] = []
+    for m in messages:
+        if m.role == "user" and m.content:
+            cleaned, foreign_removed = strip_foreign_armor(m.content)
+            softened, hits = soften_prompt(cleaned)
+            if foreign_removed > 0:
+                hits = [*hits, "foreign-armor-stripped"]
+            if hits or softened != m.content:
+                all_hits.extend(hits)
+                out.append(m.model_copy(update={"content": softened}))
+                continue
+        out.append(m)
+    return out, all_hits
+
+
+def _recent_saved_messages(
+    history: list[dict],
+    max_bytes: int = _HISTORY_MAX_BYTES,
+    *,
+    soften_user: bool = False,
+) -> list[Message]:
     # Leave room for Claude's system instructions and tool definitions.
     recent: list[Message] = []
     remaining = max_bytes
@@ -3316,6 +3478,14 @@ def _recent_saved_messages(history: list[dict], max_bytes: int = _HISTORY_MAX_BY
         if row.get("role") not in ("user", "assistant") or row.get("status") in ("error", "stopped"):
             continue
         raw_content = row.get("content") if isinstance(row.get("content"), str) else ""
+        if soften_user and raw_content:
+            raw_content, _ = strip_block_echo(raw_content)
+            raw_content, _ = strip_foreign_armor(raw_content)
+            if row.get("role") == "assistant" and is_pure_history_refusal(raw_content):
+                # Prevent prior unarmored refusals or filter blocks from poisoning subsequent turns.
+                continue
+            if row.get("role") == "user":
+                raw_content, _ = soften_prompt(raw_content)
         attachments = row.get("attachments") if isinstance(row.get("attachments"), list) else None
         formatted = _format_message_content(Message(role=row["role"], content=raw_content, attachments=attachments))
         if not formatted.strip():
@@ -3404,8 +3574,14 @@ def _claude_agy_orchestrator_system_append(system: str | None) -> str:
     return "\n\n".join(parts)
 
 
-def _prompt_with_saved_history(req: ChatRequest, history: list[dict], *, claude_agy: bool = False) -> str:
-    recent = _recent_saved_messages(history)
+def _prompt_with_saved_history(
+    req: ChatRequest,
+    history: list[dict],
+    *,
+    claude_agy: bool = False,
+    soften_history: bool = False,
+) -> str:
+    recent = _recent_saved_messages(history, soften_user=soften_history)
     if claude_agy:
         return _render_claude_agy_prompt(recent, req.messages)
     return _render_prompt([*recent, *req.messages], req.system, thinking=req.thinking)
@@ -3468,7 +3644,14 @@ async def chat(req: ChatRequest):
     if not req.messages:
         raise HTTPException(status_code=422, detail="messages must be non-empty")
 
-    prompt, cid, continue_last, user_id = await _resolve_prompt_and_session(req)
+    outbound_req = req
+    armor_hits: list[str] = []
+    if req.use_armor:
+        softened_messages, armor_hits = _soften_messages_for_outbound(req.messages)
+        if armor_hits:
+            outbound_req = req.model_copy(update={"messages": softened_messages})
+
+    prompt, cid, continue_last, user_id = await _resolve_prompt_and_session(outbound_req)
 
     if req.use_claude_agy and req.api_connection:
         raise HTTPException(status_code=400, detail="Claude → agy 模式需要已登录的 agy 账号。")
@@ -3503,12 +3686,28 @@ async def chat(req: ChatRequest):
     async def stream():
         if turn_account_id:
             _active_account_turns[turn_account_id] = _active_account_turns.get(turn_account_id, 0) + 1
+        armor_home_lease = ""
         try:
+            effective_prompt = prompt
+            if req.use_armor and armor_hits:
+                logger.info("Armor: 出站软化改写命中 %d 项: %s", len(armor_hits), armor_hits)
+            effective_cwd = _within_allowed(req.cwd) or str(SCRATCH)
+            run_env: dict[str, str] | None = None
+            if not req.api_connection:
+                run_env = _agy_environment(account_id=turn_account_id) if turn_account_id else _agy_environment()
+            effective_home = (run_env.get("HOME") if run_env else None) or HOME
+            armor_home_lease = _sync_armor_rules_concurrency_safe(
+                req.use_armor,
+                target_cwd=effective_cwd,
+                agy_home=effective_home,
+            )
+
             if req.use_claude_agy:
-                target_cwd = _within_allowed(req.cwd) or str(SCRATCH)
+                target_cwd = effective_cwd
                 requested_model = (req.model or "").strip()
                 model = requested_model if requested_model and requested_model != "default" else await _default_claude_agy_model()
-                run_env = _agy_environment(account_id=turn_account_id) if turn_account_id else _agy_environment()
+                if run_env is None:
+                    run_env = _agy_environment(account_id=turn_account_id) if turn_account_id else _agy_environment()
                 agy_home = run_env.get("HOME") or HOME
                 updater = globals().get("project_updater")
                 if _is_orchestrator_model(model, req.model_label):
@@ -3519,15 +3718,23 @@ async def chat(req: ChatRequest):
                     stable_id = cid if replay_native or native_id != cid else None
                     native_id_for_turn = None if replay_native else native_id
                     if replay_native:
-                        acp_prompt = _prompt_with_saved_history(req, saved, claude_agy=True)
+                        acp_prompt = _prompt_with_saved_history(
+                            outbound_req, saved, claude_agy=True, soften_history=req.use_armor
+                        )
                         fallback_prompt = None
                     elif native_id_for_turn:
-                        acp_prompt = _format_message_content(req.messages[-1]) if req.messages else ""
+                        acp_prompt = _format_message_content(outbound_req.messages[-1]) if outbound_req.messages else ""
                         if req.thinking and acp_prompt:
                             acp_prompt = f"{THINKING_PROMPT_PREFIX}\n\n{acp_prompt}"
-                        fallback_prompt = _prompt_with_saved_history(req, saved, claude_agy=True) if saved else None
+                        fallback_prompt = (
+                            _prompt_with_saved_history(
+                                outbound_req, saved, claude_agy=True, soften_history=req.use_armor
+                            )
+                            if saved
+                            else None
+                        )
                     else:
-                        acp_prompt = _render_claude_agy_prompt([], req.messages)
+                        acp_prompt = _render_claude_agy_prompt([], outbound_req.messages)
                         if req.thinking and acp_prompt:
                             acp_prompt = f"{THINKING_PROMPT_PREFIX}\n\n{acp_prompt}"
                         fallback_prompt = None
@@ -3553,10 +3760,16 @@ async def chat(req: ChatRequest):
                         save_conversation_cb=save_conversation_async if AGY_PERSIST_CONVERSATIONS else None,
                         route_info_factory=_orchestrator_route_factory,
                         route_enricher=lambda info, trace: _apply_claude_agy_trace(info, agy_home, trace),
-                        system_append=_claude_agy_orchestrator_system_append(req.system),
+                        system_append=(
+                            f"{_claude_agy_orchestrator_system_append(req.system)}\n\n{get_armor_system_directive(agent_tools=True)}"
+                            if req.use_armor
+                            else _claude_agy_orchestrator_system_append(req.system)
+                        ),
                         update_lease=lease,
                         timeout=0,
                         register_injector=register_injector,
+                        use_armor=req.use_armor,
+                        is_shutting_down=lambda: web_turns.shutting_down,
                     ):
                         if stable_id:
                             if event.get("event") == "init" and event.get("conversation_id"):
@@ -3574,6 +3787,8 @@ async def chat(req: ChatRequest):
                 route = _new_route_info(uuid.uuid4().hex, model)
                 route["transport"] = "claude_agy"
                 route["cli_config_model"] = model
+                if req.use_armor:
+                    route["armor"] = {"enabled": True, "status": "armed", "retries": 0}
                 lease = updater.acquire_turn() if updater else None
                 last_route_payload = json.dumps(route, sort_keys=True, ensure_ascii=False)
                 saw_trace = False
@@ -3583,11 +3798,31 @@ async def chat(req: ChatRequest):
                     yield {"event": "init", "conversation_id": stable_id, "route_info": json.loads(json.dumps(route))}
                     async for event in stream_claude_agy(
                         agy_bin=AGY_BIN, env=run_env, cwd=target_cwd,
-                        scratch=SCRATCH, prompt=_prompt_with_saved_history(req, saved, claude_agy=True),
+                        scratch=SCRATCH,
+                        prompt=_prompt_with_saved_history(
+                            outbound_req, saved, claude_agy=True, soften_history=req.use_armor
+                        ),
                         model=model, turn_id=route["request_id"], sandbox=AGY_SANDBOX,
-                        system_append=_claude_agy_system_append(req.system),
+                        system_append=(
+                            f"{_claude_agy_system_append(req.system)}\n\n{get_armor_system_directive(agent_tools=True)}"
+                            if req.use_armor
+                            else _claude_agy_system_append(req.system)
+                        ),
                         register_injector=register_injector,
+                        use_armor=req.use_armor,
+                        is_shutting_down=lambda: web_turns.shutting_down,
                     ):
+                        if event.get("event") == "armor_status":
+                            route["armor"] = {
+                                "enabled": True,
+                                "status": event.get("status", "armed"),
+                                "retries": int(event.get("retries") or 0),
+                            }
+                            encoded = json.dumps(route, sort_keys=True, ensure_ascii=False)
+                            if encoded != last_route_payload:
+                                last_route_payload = encoded
+                                yield {"event": "metadata", "route_info": json.loads(json.dumps(route))}
+                            continue
                         if event.get("event") == "agy_trace":
                             saw_trace = True
                             await asyncio.to_thread(_apply_claude_agy_trace, route, agy_home, event)
@@ -3610,19 +3845,37 @@ async def chat(req: ChatRequest):
             stable_id = cid if replay_native or native_id != cid else None
             native_id_for_turn = None if replay_native else native_id
             fallback_prompt = (
-                _prompt_with_saved_history(req, saved, claude_agy=False)
+                _prompt_with_saved_history(
+                    outbound_req, saved, claude_agy=False, soften_history=req.use_armor
+                )
                 if (not req.api_connection and native_id_for_turn and saved and not replay_native)
                 else None
             )
             async for event in _stream_agy(
-                prompt=_prompt_with_saved_history(req, saved, claude_agy=False) if replay_native else prompt,
+                prompt=(
+                    _prompt_with_saved_history(
+                        outbound_req, saved, claude_agy=False, soften_history=req.use_armor
+                    )
+                    if replay_native
+                    else effective_prompt
+                ),
                 model=req.model, cwd=req.cwd,
                 conversation_id=None if replay_native else native_id,
                 continue_last=continue_last and not stable_id, user_id=user_id, timeout=0,
                 persist_conversation=stable_id is None, api_connection=req.api_connection,
                 fallback_prompt=fallback_prompt,
+                system_append=(
+                    (
+                        f"{req.system}\n\n{get_armor_system_directive(agent_tools=not req.api_connection)}"
+                        if req.system
+                        else get_armor_system_directive(agent_tools=not req.api_connection)
+                    )
+                    if req.use_armor
+                    else req.system
+                ),
                 register_injector=register_injector,
                 account_id=turn_account_id,
+                use_armor=req.use_armor,
             ):
                 if stable_id:
                     if event.get("event") == "init" and event.get("conversation_id"):
@@ -3643,6 +3896,7 @@ async def chat(req: ChatRequest):
                 raise RuntimeError("第三方 Gemini API 连接或返回格式异常") from None
             raise
         finally:
+            _release_armor_turn_home(armor_home_lease)
             if turn_account_id:
                 remaining = _active_account_turns.get(turn_account_id, 1) - 1
                 if remaining > 0:
@@ -3741,7 +3995,21 @@ async def openai_chat(req: ChatRequest) -> Response:
     if not req.messages:
         raise HTTPException(status_code=422, detail="messages must be non-empty")
     
-    prompt, cid, continue_last, user_id = await _resolve_prompt_and_session(req)
+    outbound_req = req
+    armor_hits: list[str] = []
+    if req.use_armor:
+        softened_messages, armor_hits = _soften_messages_for_outbound(req.messages)
+        if armor_hits:
+            outbound_req = req.model_copy(update={"messages": softened_messages})
+
+    prompt, cid, continue_last, user_id = await _resolve_prompt_and_session(outbound_req)
+    effective_cwd = _within_allowed(req.cwd) or str(SCRATCH)
+    sync_armor_rules(
+        req.use_armor,
+        target_cwd=effective_cwd,
+        agy_home=HOME,
+        extra_homes=_claude_agy_candidate_homes(),
+    )
 
     parts: list[str] = []
     error_msg: str | None = None
@@ -3753,6 +4021,12 @@ async def openai_chat(req: ChatRequest) -> Response:
         conversation_id=cid,
         continue_last=continue_last,
         user_id=user_id,
+        system_append=(
+            (f"{req.system}\n\n{ARMOR_SYSTEM_DIRECTIVE}" if req.system else ARMOR_SYSTEM_DIRECTIVE)
+            if req.use_armor
+            else req.system
+        ),
+        use_armor=req.use_armor,
     )
     if getattr(req, "stream", False):
         return _openai_stream_response(req, source)

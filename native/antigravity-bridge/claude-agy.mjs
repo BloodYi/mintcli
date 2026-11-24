@@ -7,6 +7,8 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
+import { analyzeDeliverable, analyzeRefusal } from './armor/src/layers/refusal.mjs';
+import { NON_REFUSAL_TAIL, scoreResponse } from './armor/src/layers/scorer3.mjs';
 
 const emit = event => process.stdout.write(JSON.stringify(event) + '\n');
 const tools = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'NotebookEdit', 'Bash'];
@@ -81,6 +83,99 @@ function formatToolLabel(name, input) {
 }
 
 const MAX_TOOL_RESULT_CHARS = 32768;
+const ARMOR_GATE_CHARS = 600;
+const FAST_DELIVERABLE_HEAD_RE = /^\s*(?:#{1,6}\s+\S|```|~~~)/;
+const TAIL_DISCLAIMER_HEADING_RE = /^\s*(?:#{1,6}|>|[-*_]{3,})?\s*(?:\*\*|__)?\s*【?(?:免责声明|安全提示|合规提示|法律声明|合规声明|重要声明|安全与免责(?:提示|声明)|安全与合规(?:提示|声明)|Disclaimer|Safety\s+Notice|Legal\s+Disclaimer)】?\s*(?:\*\*|__)?\s*[：:]?\s*$/i;
+const TAIL_DISCLAIMER_BODY_RE = /(?:(?:以上|上述|本)(?:代码|脚本|内容|方案|实现|示例|工具)[\s\S]{0,60}?(?:仅供|仅用于|只用于)(?:安全研究|学习|教学|学术|授权测试|本地测试)|请(?:勿|切勿|不要)用于(?:任何)?(?:未授权|非法|恶意)|请遵守(?:当地|相关)?法律法规|(?:solely|strictly|only)?\s*for\s+(?:educational|authorized\s+(?:security\s+)?testing|research)\s+purposes|do\s+not\s+use\s+(?:this|it)\s+against\s+unauthorized)/i;
+const TAIL_DISCLAIMER_LINE_RE = /^\s*(?:[>*_\-#]+\s*)*(?:【?(?:免责声明|安全提示|合规提示|法律声明|合规声明|重要声明|安全与免责(?:提示|声明))】?[：:\s]|注[：:]\s*(?:以上|上述|本)(?:代码|脚本|内容|方案|实现|示例)[^\n]{0,24}(?:仅供|仅用于|请勿|切勿)|请注意[：:，,]\s*(?:以上|上述|本)(?:代码|脚本|内容|方案|实现|示例)[^\n]{0,24}(?:仅供|仅用于|请勿|切勿)|(?:以上|上述|本)(?:代码|脚本|内容|方案|实现|示例)(?:仅供|仅用于)(?:安全研究|学习|教学|学术|授权测试|本地测试)[^\n]*(?:请勿|切勿|不得|严禁|遵守)|(?:\*\*)?Disclaimer(?:\*\*)?\s*:\s*(?:The above|This (?:code|script|example|information))[^\n]*(?:educational|authorized|research)|(?:\*\*)?Note(?:\*\*)?\s*:\s*(?:The above|This (?:code|script|example)) is provided (?:solely |strictly |only )?for (?:educational|authorized))/i;
+
+function isSuspectDisclaimerBlock(block, requireComplete = false) {
+  let cleaned = String(block || '').trim();
+  if (!cleaned || cleaned.length >= 420 || cleaned.includes('```') || cleaned.includes('~~~')) return false;
+  cleaned = cleaned.replace(/^(?:---+|\*\*\*+)\s*\n+/, '').trim();
+  if (!cleaned) return false;
+  const lines = cleaned.split('\n').map(l => l.trim()).filter(Boolean);
+  if (!lines.length || lines.length > 6) return false;
+  const first = lines[0];
+  if (TAIL_DISCLAIMER_LINE_RE.test(first)) {
+    if (lines.length === 1) return true;
+    return TAIL_DISCLAIMER_BODY_RE.test(lines.slice(1).join('\n')) || !requireComplete;
+  }
+  if (TAIL_DISCLAIMER_HEADING_RE.test(first)) {
+    if (lines.length === 1) return true;
+    const rest = lines.slice(1).join('\n');
+    return TAIL_DISCLAIMER_BODY_RE.test(rest) || (!requireComplete && rest.length < 80);
+  }
+  return false;
+}
+
+function isArmorRefusal(text) {
+  if (!text) return false;
+  const s3 = scoreResponse(text);
+  if (s3.verdict === 'blocked') return true;
+  const v = analyzeRefusal(text);
+  if (!v.isRefusal) return false;
+  // Exempt pure technical statements exempted by scorer3 NON_REFUSAL_TAIL (e.g. '该接口无法提供此字段')
+  if (s3.verdict === 'pass' && v.effectiveScore <= 3) {
+    const lower = String(text).toLowerCase();
+    if (NON_REFUSAL_TAIL.some(term => lower.includes(term.toLowerCase()))) return false;
+  }
+  return true;
+}
+
+function armorGateDecision(text, force = false) {
+  if (isArmorRefusal(text)) return 'retry';
+  const deliv = analyzeDeliverable(text);
+  if (deliv.hasDeliverable) return 'flush';
+  if (FAST_DELIVERABLE_HEAD_RE.test(text) && analyzeRefusal(text).effectiveScore < 2) return 'flush';
+  if (force || String(text || '').length >= ARMOR_GATE_CHARS) return 'flush';
+  return 'hold';
+}
+
+function splitTailDisclaimer(streamedPrefix, pendingTail) {
+  if (!pendingTail) return ['', ''];
+  if (((streamedPrefix.match(/```/g) || []).length % 2) === 1) return [pendingTail, ''];
+  if (isSuspectDisclaimerBlock(pendingTail, false)) return ['', pendingTail];
+  const candidates = [];
+  const paraIdx = pendingTail.lastIndexOf('\n\n');
+  if (paraIdx >= 0) candidates.push(paraIdx + 2);
+  const lineIdx = pendingTail.lastIndexOf('\n');
+  if (lineIdx >= 0 && !candidates.includes(lineIdx + 1)) candidates.push(lineIdx + 1);
+  for (const splitAt of candidates) {
+    const before = pendingTail.slice(0, splitAt);
+    const after = pendingTail.slice(splitAt);
+    if (after.trim() && isSuspectDisclaimerBlock(after, false)) {
+      return [before, after];
+    }
+  }
+  return [pendingTail, ''];
+}
+
+function stripFinalTailDisclaimer(text) {
+  if (!text || text.trim().length < 80 || ((text.match(/```/g) || []).length % 2) === 1) return [text, false];
+  const r = text.trimEnd();
+  const paraIdx = r.lastIndexOf('\n\n');
+  if (paraIdx > 40) {
+    let head = r.slice(0, paraIdx).trimEnd();
+    const tailBlock = r.slice(paraIdx + 2).trim();
+    if (isSuspectDisclaimerBlock(tailBlock, true)) {
+      head = head.replace(/\n\s*(?:---+|\*\*\*+)\s*$/, '').trimEnd();
+      if (head.length >= 40) return [head, true];
+    }
+  }
+  const lines = r.split('\n');
+  for (const take of [2, 1]) {
+    if (lines.length > take) {
+      const tailCandidate = lines.slice(-take).join('\n').trim();
+      let headCandidate = lines.slice(0, -take).join('\n').trimEnd();
+      if (headCandidate.length >= 40 && isSuspectDisclaimerBlock(tailCandidate, true)) {
+        headCandidate = headCandidate.replace(/\n\s*(?:---+|\*\*\*+)\s*$/, '').trimEnd();
+        if (headCandidate.length >= 40) return [headCandidate, true];
+      }
+    }
+  }
+  return [text, false];
+}
 
 function formatToolResultContent(content) {
   let text = '';
@@ -256,6 +351,10 @@ async function run() {
   const input = JSON.parse(firstLine.value);
   const pendingInjectedUuids = new Set();
   const injectedUuids = new Set();
+  const armorEscalationUuids = new Set();
+  const useArmor = input.useArmor === true;
+  const armorEscalations = Array.isArray(input.armorEscalations) ? input.armorEscalations : [];
+  let armorAttempt = 0;
   let acceptingInput = true;
   let finished = false;
   let terminalError = '';
@@ -459,6 +558,11 @@ async function run() {
   let emittedThinking = false;
   let needsThinkingSeparator = false;
   let toolSeq = 0;
+  let sawSegmentToolUse = false;
+  let armorBuffer = '';
+  let armorTailHold = '';
+  let armorFlushed = !useArmor;
+  let armorRefused = false;
   let accumulatedUsage = null;
   let totalDurationMs = 0;
   let hasDuration = false;
@@ -470,9 +574,14 @@ async function run() {
     needsTextSeparator = false;
     emittedThinking = false;
     needsThinkingSeparator = false;
+    sawSegmentToolUse = false;
+    armorBuffer = '';
+    armorTailHold = '';
+    armorFlushed = !useArmor;
+    armorRefused = false;
   };
 
-  const emitText = text => {
+  const pushVerifiedDelta = text => {
     if (!text) return;
     if (needsTextSeparator && emittedText) {
       let sep = '';
@@ -487,6 +596,45 @@ async function run() {
     }
     emittedText += text;
     emit({ event: 'delta', delta: text });
+  };
+
+  const rawEmitText = text => {
+    if (!text) return;
+    if (!useArmor) {
+      pushVerifiedDelta(text);
+      return;
+    }
+    const [flushNow, keepHold] = splitTailDisclaimer(emittedText, armorTailHold + text);
+    armorTailHold = keepHold;
+    if (flushNow) pushVerifiedDelta(flushNow);
+  };
+
+  const emitText = text => {
+    if (!text) return;
+    if (!armorFlushed) {
+      armorBuffer += text;
+      const action = sawSegmentToolUse ? 'flush' : armorGateDecision(armorBuffer, false);
+      if (action === 'flush') {
+        armorFlushed = true;
+        const flushed = armorBuffer;
+        armorBuffer = '';
+        rawEmitText(flushed);
+      } else if (action === 'retry' && armorAttempt < armorEscalations.length) {
+        armorFlushed = true;
+        armorRefused = true;
+        armorBuffer = '';
+        armorTailHold = '';
+      } else if (action === 'retry') {
+        armorFlushed = true;
+        const flushed = armorBuffer;
+        armorBuffer = '';
+        rawEmitText(flushed);
+      }
+      return;
+    }
+    if (!armorRefused) {
+      rawEmitText(text);
+    }
   };
 
   const emitThinking = thinking => {
@@ -521,6 +669,13 @@ async function run() {
     for await (const item of turn) {
       if (item.type === 'stream_event') {
         if (item.event?.type === 'content_block_start' && item.event.content_block?.type === 'tool_use') {
+          sawSegmentToolUse = true;
+          if (!armorFlushed && armorBuffer) {
+            armorFlushed = true;
+            const flushed = armorBuffer;
+            armorBuffer = '';
+            rawEmitText(flushed);
+          }
           if (emittedText) needsTextSeparator = true;
           if (emittedThinking) needsThinkingSeparator = true;
         } else if (item.event?.type === 'content_block_delta') {
@@ -536,6 +691,13 @@ async function run() {
       } else if (item.type === 'assistant') {
         for (const block of item.message?.content || []) {
           if (block.type === 'tool_use') {
+            sawSegmentToolUse = true;
+            if (!armorFlushed && armorBuffer) {
+              armorFlushed = true;
+              const flushed = armorBuffer;
+              armorBuffer = '';
+              rawEmitText(flushed);
+            }
             if (emittedText) needsTextSeparator = true;
             if (emittedThinking) needsThinkingSeparator = true;
             const toolId = String(block.id || `tool_${++toolSeq}`);
@@ -561,7 +723,11 @@ async function run() {
         hasPartialThinking = false;
       } else if (item.type === 'user') {
         if (item.isReplay === true) {
-          if (typeof item.uuid === 'string' && injectedUuids.has(item.uuid)) {
+          if (typeof item.uuid === 'string' && armorEscalationUuids.has(item.uuid)) {
+            pendingInjectedUuids.delete(item.uuid);
+            armorEscalationUuids.delete(item.uuid);
+            resetSegmentOutput();
+          } else if (typeof item.uuid === 'string' && injectedUuids.has(item.uuid)) {
             pendingInjectedUuids.delete(item.uuid);
             injectedUuids.delete(item.uuid);
             resetSegmentOutput();
@@ -588,6 +754,58 @@ async function run() {
           totalDurationMs += item.duration_ms;
           hasDuration = true;
         }
+        if (!armorFlushed && armorBuffer) {
+          const pendingBuf = armorBuffer;
+          armorBuffer = '';
+          armorFlushed = true;
+          if (!sawSegmentToolUse && armorGateDecision(pendingBuf, true) === 'retry' && armorAttempt < armorEscalations.length) {
+            armorRefused = true;
+            armorTailHold = '';
+          } else {
+            rawEmitText(pendingBuf);
+          }
+        }
+        if (armorTailHold && !armorRefused) {
+          const combined = emittedText + armorTailHold;
+          const [cleaned, stripped] = stripFinalTailDisclaimer(combined);
+          if (stripped) {
+            emittedText = cleaned;
+          } else {
+            pushVerifiedDelta(armorTailHold);
+          }
+          armorTailHold = '';
+        }
+        if (
+          useArmor &&
+          !item.is_error &&
+          !terminalError &&
+          pendingInjectedUuids.size === 0 &&
+          !sawSegmentToolUse &&
+          (armorRefused || (!emittedText && typeof item.result === 'string' && isArmorRefusal(item.result))) &&
+          armorAttempt < armorEscalations.length
+        ) {
+          const escalationUuid = randomUUID();
+          const escalationContent = armorEscalations[armorAttempt];
+          const pushed = heldPrompt.push({
+            type: 'user',
+            uuid: escalationUuid,
+            message: { role: 'user', content: escalationContent },
+            parent_tool_use_id: null,
+            timestamp: new Date().toISOString(),
+          });
+          if (pushed) {
+            pendingInjectedUuids.add(escalationUuid);
+            armorEscalationUuids.add(escalationUuid);
+            armorAttempt += 1;
+            emit({
+              event: 'thinking',
+              thinking: `\n[🛡️ Antigravity Armor] 检测到模型拒答前言，已拦截并启动第 ${armorAttempt}/${armorEscalations.length} 档强制交付...\n`,
+            });
+            emit({ event: 'armor_status', status: 'escalated', retries: armorAttempt });
+            resetSegmentOutput();
+            continue;
+          }
+        }
         if (!item.is_error && !terminalError && pendingInjectedUuids.size > 0) {
           resetSegmentOutput();
           continue;
@@ -602,7 +820,14 @@ async function run() {
           }
           emit({ event: 'error', error: terminalError || lastUpstreamError || 'Claude Code 未能完成这条回复。' });
         } else {
-          const responseText = emittedText || item.result || '';
+          const responseText = emittedText || (armorRefused ? '' : item.result) || '';
+          if (useArmor) {
+            emit({
+              event: 'armor_status',
+              status: armorAttempt > 0 && responseText ? 'recovered' : 'delivered',
+              retries: armorAttempt,
+            });
+          }
           emit({
             event: 'result',
             response: responseText,
