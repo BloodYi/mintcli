@@ -1665,10 +1665,83 @@ export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
 };
 
-//----------------- PER-REPLY MODEL EVIDENCE ------------
+//----------------- PER-REPLY MODEL EVIDENCE & THROUGHPUT ------------
+/** Disjoint token buckets used across Token Monitor; reasoning is already included in output. */
+export type MonitorTokens = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  total: number;
+};
+
 /** Used by Token Monitor's full-file projection and native AGY adapter. IDs identify
  * only the matching reply; requested and response-reported identities stay separate.
  * Contains no reply text, tools, credentials or reasoning. */
 export type ReplyModelEvidence = {
-  messageIds: string[]; timestamp: string; requestedModel: string | null; reportedModel: string | null;
+  messageIds: string[];
+  timestamp: string;
+  requestedModel: string | null;
+  reportedModel: string | null;
+  durationMs?: number | null;
+  tokensPerSec?: number | null;
 };
+
+/** One timed/attributed usage entry from a session transcript or native AGY snapshot. */
+export type MonitorTimedUsageEvent = {
+  kind: string;
+  timestamp: string | number;
+  tokens: MonitorTokens;
+  model: string | null;
+  requestedModel: string | null;
+  durationMs: number | null;
+  tokensPerSec: number | null;
+  tools?: string[];
+};
+
+/** Attribution provenance for per-model token summaries, keeping response evidence distinct from request records. */
+export type MonitorModelAttributionSource = 'reported' | 'mixed' | 'requested' | 'unattributed';
+
+/** Per-model token usage and generation speed within a single session, reconciled to session totals. */
+export type MonitorSessionModelUsage = {
+  model: string;
+  source: MonitorModelAttributionSource;
+  tokens: MonitorTokens;
+  reportedTokens: MonitorTokens;
+  turnCount: number;
+  timedOutputTokens: number;
+  timedDurationMs: number;
+  speed: number | null;
+  share: number;
+};
+
+/** Cross-session per-model token usage and generation speed across all indexed history and archives. */
+export type MonitorGlobalModelUsage = {
+  model: string;
+  providers: string[];
+  source: MonitorModelAttributionSource;
+  tokens: MonitorTokens;
+  reportedTokens: MonitorTokens;
+  sessionCount: number;
+  reportedSessionCount: number;
+  turnCount: number;
+  timedOutputTokens: number;
+  timedDurationMs: number;
+  speed: number | null;
+  share: number;
+};
+
+/** Aggregate token totals and weighted generation speed across all indexed sessions. */
+export type MonitorGlobalSummary = {
+  totalSessions: number;
+  sessionsWithUsage: number;
+  modelCount: number;
+  reportedModelCount: number;
+  tokens: MonitorTokens;
+  reportedTokens: MonitorTokens;
+  timedOutputTokens: number;
+  timedDurationMs: number;
+  speed: number | null;
+};
+// ---------------------------

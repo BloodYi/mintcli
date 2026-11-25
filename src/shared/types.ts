@@ -1968,14 +1968,103 @@ export type OfficialAccountLogin = {
   email?: string;
 };
 
-//----------------- PER-REPLY MODEL EVIDENCE ------------
+//----------------- PER-REPLY MODEL EVIDENCE & THROUGHPUT ------------
+/** Disjoint token counts shared by Token Monitor views; reasoning is already included in output. */
+export type MonitorTokens = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  total: number;
+};
+
 /** Numeric/model-only monitor record for one reply; aliases cover native text blocks.
  * A null reported model must never be replaced by the selected/requested model. */
 export type ReplyModelEvidence = {
-  messageIds: string[]; timestamp: string; requestedModel: string | null; reportedModel: string | null;
+  messageIds: string[];
+  timestamp: string;
+  requestedModel: string | null;
+  reportedModel: string | null;
+  durationMs?: number | null;
+  tokensPerSec?: number | null;
 };
+
 /** Session-scoped model metadata shared by the monitor provider and reply annotations. */
 export type ReplyModelIndex = { sessionId: string; status: string; models: ReplyModelEvidence[] };
+
+/** Provenance label distinguishing response-reported model evidence from request-only history. */
+export type MonitorModelAttributionSource = 'reported' | 'mixed' | 'requested' | 'unattributed';
+
+/** Per-model token totals and tok/s throughput within a single conversation. */
+export type MonitorSessionModelUsage = {
+  model: string;
+  source: MonitorModelAttributionSource;
+  tokens: MonitorTokens;
+  reportedTokens: MonitorTokens;
+  turnCount: number;
+  timedOutputTokens: number;
+  timedDurationMs: number;
+  speed: number | null;
+  share: number;
+};
+
+/** Cross-session per-model token totals and tok/s throughput across all indexed history. */
+export type MonitorGlobalModelUsage = {
+  model: string;
+  providers: string[];
+  source: MonitorModelAttributionSource;
+  tokens: MonitorTokens;
+  reportedTokens: MonitorTokens;
+  sessionCount: number;
+  reportedSessionCount: number;
+  turnCount: number;
+  timedOutputTokens: number;
+  timedDurationMs: number;
+  speed: number | null;
+  share: number;
+};
+
+/** Aggregate token totals and weighted generation speed across all indexed sessions. */
+export type MonitorGlobalSummary = {
+  totalSessions: number;
+  sessionsWithUsage: number;
+  modelCount: number;
+  reportedModelCount: number;
+  tokens: MonitorTokens;
+  reportedTokens: MonitorTokens;
+  timedOutputTokens: number;
+  timedDurationMs: number;
+  speed: number | null;
+};
+
+/** Indexed conversation summary row returned by `/api/token-monitor/sessions`. */
+export type MonitorHistorySession = {
+  sessionId: string;
+  provider: string;
+  title: string;
+  archived: boolean;
+  configuredModel?: string | null;
+  returnedModel?: string | null;
+  recordedModels: string[];
+  reportedModels: string[];
+  status?: string;
+  totals: Partial<MonitorTokens> & { total: number } | null;
+  totalsScope?: string;
+  speed?: number | null;
+  timedOutputTokens?: number;
+  timedDurationMs?: number;
+  modelUsage?: MonitorSessionModelUsage[];
+};
+
+/** Full response payload of `/api/token-monitor/sessions`, shared by history and model overview. */
+export type MonitorSessionsPayload = {
+  sessions: MonitorHistorySession[];
+  models?: MonitorGlobalModelUsage[];
+  summary?: MonitorGlobalSummary;
+  checkedAt?: number;
+};
+// ---------------------------
 
 //----------------- OFFICIAL CODEX RESET CREDITS ------------
 /** Native account-owned reset offers shared by quota bars and the explicit reset confirmation; null detail rows mean only the count is known. */

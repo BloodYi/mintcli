@@ -250,3 +250,47 @@ export const getQuickSettingsTabId = (tab: QuickSettingsTab): string => `quick-s
 
 /** DOM id of the tabpanel a quick settings tab controls; pairs with `getQuickSettingsTabId`. */
 export const getQuickSettingsTabPanelId = (tab: QuickSettingsTab): string => `quick-settings-tabpanel-${tab}`;
+
+// ---------------------------
+
+//----------------- TOKEN MONITOR FORMATTING ------------
+
+/**
+ * Formats a measured model generation speed in `tok/s` (adapted from Javis603/token-monitor).
+ * Returns `null` when duration or output tokens were not reported so callers never show a fake `0 tok/s`.
+ */
+export const formatTokenSpeed = (tokensPerSec: number | null | undefined): string | null => {
+  if (typeof tokensPerSec !== 'number' || !Number.isFinite(tokensPerSec) || tokensPerSec <= 0) {
+    return null;
+  }
+  const formatted =
+    tokensPerSec >= 100
+      ? Math.round(tokensPerSec).toLocaleString()
+      : tokensPerSec.toFixed(1).replace(/\.0$/, '');
+  return `${formatted} tok/s`;
+};
+
+/** Formats a positive generation duration in milliseconds into a compact human-readable string. */
+export const formatMonitorDuration = (durationMs: number | null | undefined): string | null => {
+  if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return null;
+  }
+  if (durationMs < 1000) {
+    return `${Math.round(durationMs)}ms`;
+  }
+  const seconds = durationMs / 1000;
+  if (seconds < 60) {
+    return `${seconds.toFixed(1).replace(/\.0$/, '')}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainSeconds = Math.round(seconds % 60);
+  return remainSeconds > 0 ? `${minutes}m ${remainSeconds}s` : `${minutes}m`;
+};
+
+/** Formats a `[0, 1]` token share ratio as a percentage, preserving `<1%` for non-zero slivers. */
+export const formatMonitorSharePercent = (share: number): string => {
+  if (!Number.isFinite(share) || share <= 0) return '0%';
+  const percent = share * 100;
+  if (percent > 0 && percent < 1) return '<1%';
+  return `${Math.round(Math.min(100, percent))}%`;
+};

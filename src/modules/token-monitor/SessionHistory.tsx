@@ -1,35 +1,47 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, readApiJson } from '@/shared/api';
+import type { MonitorHistorySession, MonitorSessionsPayload } from '@/shared/types';
+import { formatTokenSpeed } from '@/shared/utils';
 
-type HistorySession = {
-  sessionId: string; provider: string; title: string; archived: boolean; configuredModel: string | null;
-  recordedModels: string[]; reportedModels: string[]; status: string; totals: { total: number } | null;
-};
+type HistorySortMode = 'recent' | 'usage' | 'speed';
 
 function sameModels(previous: string[], incoming: string[]) {
   return previous.length === incoming.length && previous.every((model, index) => model === incoming[index]);
 }
 
-function sameHistoryRow(previous: HistorySession, incoming: HistorySession) {
+function sameHistoryRow(previous: MonitorHistorySession, incoming: MonitorHistorySession) {
   return previous.sessionId === incoming.sessionId && previous.provider === incoming.provider
     && previous.title === incoming.title && previous.archived === incoming.archived
     && previous.configuredModel === incoming.configuredModel && previous.status === incoming.status
     && previous.totals?.total === incoming.totals?.total
+    && previous.speed === incoming.speed
     && sameModels(previous.recordedModels, incoming.recordedModels)
     && sameModels(previous.reportedModels, incoming.reportedModels);
 }
 
 /** Used by the monitor dialog to browse every indexed conversation without switching the active chat. */
-export function SessionHistory({ selectedId, onSelect, revision }: { selectedId?: string | null; onSelect: (id: string) => void; revision: number }) {
+export function SessionHistory({
+  selectedId,
+  onSelect,
+  revision,
+  onData,
+}: {
+  selectedId?: string | null;
+  onSelect: (id: string) => void;
+  revision: number;
+  onData?: (payload: MonitorSessionsPayload) => void;
+}) {
   // The history index is loaded only while the inspector is open, independently of reply polling.
-  const [sessions, setSessions] = useState<HistorySession[] | null>(null);
+  const [sessions, setSessions] = useState<MonitorHistorySession[] | null>(null);
   // Search filters the complete returned index locally without triggering repeated disk scans.
   const [query, setQuery] = useState('');
   // Tool selection narrows the same full index and remains active as new sessions arrive.
   const [provider, setProvider] = useState('');
-  // Keep the user's sort choice while search, filters and live usage change.
-  const [sortByUsage, setSortByUsage] = useState(false);
+  // Keep the user's sort choice (recency, total usage, or tok/s speed) while search and live usage change.
+  const [sortMode, setSortMode] = useState<HistorySortMode>('recent');
   const listRef = useRef<HTMLDivElement>(null);
+  const onDataRef = useRef(onData);
+  onDataRef.current = onData;
   // Index failures stay visible without replacing a successfully loaded conversation snapshot.
   const [error, setError] = useState('');
   useEffect(() => {
@@ -37,12 +49,13 @@ export function SessionHistory({ selectedId, onSelect, revision }: { selectedId?
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const data = await readApiJson<{ sessions: HistorySession[] }>(await api.tokenMonitor.sessions(controller.signal));
+        const data = await readApiJson<MonitorSessionsPayload>(await api.tokenMonitor.sessions(controller.signal));
         if (!cancelled) {
           // Reuse the index and search projection when a poll changes no displayed evidence.
           setSessions(previous => previous?.length === data.sessions.length
             && previous.every((row, index) => sameHistoryRow(row, data.sessions[index]))
             ? previous : data.sessions);
+          onDataRef.current?.(data);
           setError('');
         }
       } catch { if (!cancelled) setError('历史会话读取失败，请刷新监控重试。'); }
@@ -57,6 +70,7 @@ export function SessionHistory({ selectedId, onSelect, revision }: { selectedId?
     rows: sessions?.map(session => ({
       session,
       tokenLabel: session.totals?.total.toLocaleString() ?? '未记录',
+      speedLabel: formatTokenSpeed(session.speed),
       searchText: [
         session.sessionId, session.title, session.provider, session.provider === 'antigravity' ? 'AGY' : '',
         session.configuredModel, ...session.recordedModels, ...session.reportedModels,
@@ -67,12 +81,14 @@ export function SessionHistory({ selectedId, onSelect, revision }: { selectedId?
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     const matches = rows?.filter(({ session, searchText }) => (!provider || session.provider === provider)
       && terms.every(term => searchText.includes(term)));
-    if (sortByUsage) {
+    if (sortMode === 'usage') {
       // Stable sorting keeps the index's recency order for ties. Missing usage follows measured zero.
       matches?.sort((a, b) => (b.session.totals?.total ?? -1) - (a.session.totals?.total ?? -1));
+    } else if (sortMode === 'speed') {
+      matches?.sort((a, b) => (b.session.speed ?? -1) - (a.session.speed ?? -1));
     }
     return matches;
-  }, [rows, provider, query, sortByUsage]);
+  }, [rows, provider, query, sortMode]);
   return <details className="my-3 rounded-lg border border-border p-3">
     <summary className="cursor-pointer text-sm font-medium">全部历史会话{sessions ? `（${sessions.length}，含归档）` : ''}</summary>
     <p className="my-2 text-xs text-muted-foreground">可直接查看其他对话；历史请求模型与接口返回模型分别标注。缺失的返回字段无法从所选模型还原。</p>
@@ -84,24 +100,26 @@ export function SessionHistory({ selectedId, onSelect, revision }: { selectedId?
           {providers.map(value => <option key={value} value={value}>{value === 'antigravity' ? 'AGY' : value === 'codex' ? 'Codex' : value === 'claude' ? 'Claude' : value}</option>)}
         </select>
       </label>
-      <label className="flex min-w-0 flex-[1_1_7rem] items-center gap-2 text-xs">排序
-        <select aria-label="历史会话排序" value={sortByUsage ? 'usage' : 'recent'} onChange={event => {
-          setSortByUsage(event.target.value === 'usage');
+      <label className="flex min-w-0 flex-[1_1_8rem] items-center gap-2 text-xs">排序
+        <select aria-label="历史会话排序" value={sortMode} onChange={event => {
+          setSortMode(event.target.value as HistorySortMode);
           if (listRef.current) listRef.current.scrollTop = 0;
         }} className="min-w-0 flex-1 rounded border border-border bg-background p-2 text-sm">
           <option value="recent">最近活动</option>
           <option value="usage">Token 用量最多</option>
+          <option value="speed">输出速度最快</option>
         </select>
       </label>
     </div>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     {!sessions && !error && <p role="status" className="text-xs">正在扫描历史用量…</p>}
     <div ref={listRef} className="max-h-72 space-y-2 overflow-y-auto">
-      {filtered?.map(({ session, tokenLabel }) => <button type="button" key={session.sessionId} onClick={() => onSelect(session.sessionId)} aria-pressed={selectedId === session.sessionId}
+      {filtered?.map(({ session, tokenLabel, speedLabel }) => <button type="button" key={session.sessionId} onClick={() => onSelect(session.sessionId)} aria-pressed={selectedId === session.sessionId}
         className="block w-full rounded border border-border p-2 text-left text-xs hover:bg-muted aria-pressed:bg-muted">
         <span className="block break-all font-medium">{session.title} · {session.provider}{session.archived ? ' · 已归档' : ''}</span>
         <span className="block break-all">返回模型：{session.reportedModels.join('、') || '历史未记录'}</span>
         <span className="block break-all text-muted-foreground">请求模型：{session.recordedModels.join('、') || session.configuredModel || '未记录'}</span>
+        {speedLabel && <span className="block font-mono text-emerald-700 dark:text-emerald-400">速度：⚡ {speedLabel}</span>}
         <span className="block font-mono">Token：{tokenLabel}</span>
       </button>)}
       {filtered?.length === 0 && <p className="text-xs">没有匹配的会话。</p>}

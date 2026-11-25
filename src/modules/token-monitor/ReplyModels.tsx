@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { api, readApiJson } from '@/shared/api';
 import type { ReplyModelEvidence, ReplyModelIndex } from '@/shared/types';
+import { formatMonitorDuration, formatTokenSpeed } from '@/shared/utils';
 
 type Lookup = { index: ReplyModelIndex | null; ids: Map<string, ReplyModelEvidence | null>; times: Map<string, ReplyModelEvidence | null> };
 const ReplyModelsContext = createContext<Lookup>({ index: null, ids: new Map(), times: new Map() });
@@ -64,11 +65,14 @@ export function ReplyModelDetails({ sessionId, messageId, timestamp, model, prov
   const nativeClaudeModel = provider === 'claude' && model && !model.startsWith('<') ? model : null;
   const reported = record ? record.reportedModel : hasId ? null : nativeClaudeModel;
   const real = reported || (index?.sessionId === sessionId && index.status === 'error' ? '读取失败' : !index && sessionId ? '读取中…' : '未报告');
+  const speedLabel = formatTokenSpeed(record?.tokensPerSec);
+  const durationLabel = formatMonitorDuration(record?.durationMs);
   return <details open className="mt-1 w-fit max-w-full text-[11px] text-muted-foreground" aria-label="回复模型信息">
     <summary className="cursor-pointer select-none">模型信息</summary>
     <dl className="mt-1 grid min-w-0 gap-0.5 pl-3">
       <div className="break-all"><dt className="inline">使用模型：</dt><dd className="inline font-mono">{used}</dd></div>
       <div className="break-all"><dt className="inline">真实返回模型：</dt><dd className="inline font-mono">{real}</dd></div>
+      {speedLabel && <div className="break-all"><dt className="inline">生成速度：</dt><dd className="inline font-mono text-emerald-700 dark:text-emerald-400">{speedLabel}{durationLabel ? ` (${durationLabel})` : ''}</dd></div>}
     </dl>
   </details>;
 }
