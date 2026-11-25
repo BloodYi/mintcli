@@ -57,6 +57,12 @@ class TestArmorEngine(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dev_softened, dev_prompt)
         self.assertEqual(dev_hits, [])
 
+        # Cloudflare cloud-infra products and SMS/email OTP dev prompts stay untouched on turn 0
+        infra_prompt = "帮我排查 Cloudflare Tunnel 断连、部署 Cloudflare Workers 与 R2，并修复短信验证码和邮箱验证码倒计时"
+        infra_softened, infra_hits = soften_prompt(infra_prompt)
+        self.assertEqual(infra_softened, infra_prompt)
+        self.assertEqual(infra_hits, [])
+
     def test_sync_armor_rules_cleans_on_disable_and_never_pollutes_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

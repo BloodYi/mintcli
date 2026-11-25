@@ -99,6 +99,50 @@ class ClaudeAgyPromptAndRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("-尾部标记", recent[0].content)
         self.assertIn("内容过长已截断", recent[0].content)
 
+        # Truncating inside a fenced code block repairs unclosed ``` fences on both sides
+        fenced_huge = "前文说明\n```typescript\n" + ("const x = 1;\n" * 5000) + "```\n后文结论"
+        truncated_fenced = app._truncate_utf8_head_tail(fenced_huge, 4096)
+        self.assertLessEqual(len(truncated_fenced.encode("utf-8")), 4096)
+        self.assertIsNone(app._scan_unclosed_fence(truncated_fenced))
+        self.assertTrue(truncated_fenced.endswith("后文结论"))
+
+    def test_claude_agy_history_includes_compact_prior_tool_summary_and_segment_reset(self):
+        history = [
+            {"role": "user", "content": "修改配置", "status": "complete"},
+            {
+                "role": "assistant",
+                "content": "已完成修改",
+                "status": "complete",
+                "steps": [
+                    {"type": "tool_use", "toolName": "Read", "toolLabel": "Read: app.py", "status": "completed"},
+                    {
+                        "type": "tool_use",
+                        "toolName": "mcp__agy-fast_fast__apply_edits",
+                        "toolInput": {"edits": [{"path": "/opt/a.ts"}, {"path": "/opt/b.ts"}]},
+                        "status": "completed",
+                    },
+                ],
+            },
+        ]
+        req = app.ChatRequest(messages=[app.Message(role="user", content="继续测试")], use_claude_agy=True)
+        rendered = app._prompt_with_saved_history(req, history, claude_agy=True)
+        self.assertIn("[Prior tool actions: Read: app.py; apply_edits(a.ts, b.ts)]", rendered)
+
+        # WebTurn segment_reset clears leaked partial text after the last tool while keeping earlier text
+        with tempfile.TemporaryDirectory() as td:
+            mgr = detached_chat.TurnManager(Path(td), app.logger)
+            async def dummy():
+                if False:
+                    yield {}
+            turn = detached_chat.WebTurn(mgr, "t" * 32, dummy, "cid-1", [], "m", "m")
+            turn.absorb({"event": "delta", "delta": "Step 1 kept."})
+            turn.absorb({"event": "tool", "tool": "Read: x.py", "tool_id": "tu1", "status": "completed"})
+            turn.absorb({"event": "delta", "delta": "Leaked refusal fragment"})
+            self.assertIn("Leaked refusal fragment", turn.assistant["content"])
+            turn.absorb({"event": "segment_reset"})
+            self.assertNotIn("Leaked refusal fragment", turn.assistant["content"])
+            self.assertEqual(turn.assistant["content"], "Step 1 kept.")
+
     def test_history_preserves_attachments_and_attachment_only_rows(self):
         history = [
             {
@@ -362,7 +406,11 @@ export async function* query({ options }) {
             ("gemini-4-neon-medium", "512000"),
             ("gemini-4-neon-high", "512000"),
             ("gemini-4-neon-xhigh", "512000"),
+            ("gemini-4-carbon-high", "512000"),
+            ("gemini-3.8-flash-high", "512000"),
+            ("claude-opus-5-5", "200000"),
             ("gemini-pro-orchestrator-neon", None),
+            ("gemini-4-orchestrator", None),
             ("test-model", None),
         ):
             with self.subTest(model=model):
@@ -452,6 +500,36 @@ export async function* query({ prompt, options }) {
         self.assertEqual(results[0]["usage"]["cache_read_tokens"], 1200)
         self.assertEqual(results[0]["usage"]["cache_creation_tokens"], 300)
         self.assertEqual(results[0]["usage"]["total_tokens"], 1515)
+
+    async def test_large_file_tool_use_result_preserves_structured_patch(self):
+        plugin_code = "export default { async server() { return { auth: { async loader() { return {}; } } }; } };"
+        sdk_code = """
+export async function* query() {
+  const hugeOriginal = 'x'.repeat(50000);
+  yield {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'tu_big', name: 'Edit', input: { file_path: '/tmp/big.ts' } }] },
+  };
+  yield {
+    type: 'user',
+    tool_use_result: {
+      type: 'update',
+      filePath: '/tmp/big.ts',
+      originalFile: hugeOriginal,
+      structuredPatch: [{ oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, lines: ['-old', '+new'] }],
+    },
+    message: { content: [{ type: 'tool_result', tool_use_id: 'tu_big', content: 'Updated /tmp/big.ts', is_error: false }] },
+  };
+  yield { type: 'result', is_error: false, result: 'Done' };
+}
+"""
+        self._write_mocks(sdk_code, plugin_code)
+        events = await self._run_stream()
+        tr = next(ev for ev in events if ev.get("event") == "tool_result")
+        self.assertIn("tool_use_result", tr)
+        self.assertEqual(tr["tool_use_result"]["filePath"], "/tmp/big.ts")
+        self.assertEqual(len(tr["tool_use_result"]["structuredPatch"]), 1)
+        self.assertNotIn("originalFile", tr["tool_use_result"])
 
     async def test_stderr_is_captured_and_logged_on_fatal_error(self):
         plugin_code = "export default { async server() { throw new Error('boom-from-plugin'); } };"

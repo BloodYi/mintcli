@@ -273,6 +273,33 @@ export function query({ options }) {
             self.assertEqual(report["verifyBehavior"], "deny")
             self.assertEqual(report["editBehavior"], "allow")
 
+    def test_claude_agy_adaptation_and_snapshot_binding(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plugin_dir = _make_fake_plugin(root, version="0.3.1")
+            (plugin_dir / "dist" / "session-start.mjs").write_text(
+                'process.stdout.write(JSON.stringify({injectSteps:[{systemMessage:"[snapshot-turn1]"}]}));\n',
+                encoding="utf-8",
+            )
+            directive = eng.get_agy_fast_system_directive(
+                mode="claude_agy",
+                target_cwd=str(root),
+                include_snapshot=True,
+                session_key="ephemeral-turn-1",
+                plugin_dir=plugin_dir,
+            )
+            self.assertIn("offset: StartLine, limit: EndLine - StartLine + 1", directive)
+            self.assertIn("omit Antigravity-only `WaitMsBeforeAsync`", directive)
+            self.assertIn("read it directly with `Read`", directive)
+
+            # Bind first-turn ephemeral snapshot to established conversation_id
+            self.assertFalse(eng.has_agy_fast_session_snapshot("conv-real-1", str(root), plugin_dir))
+            eng.bind_agy_fast_session_snapshot("conv-real-1", str(root), "ephemeral-turn-1", plugin_dir)
+            self.assertTrue(eng.has_agy_fast_session_snapshot("conv-real-1", str(root), plugin_dir))
+            snap2 = eng.get_agy_fast_session_snapshot(str(root), plugin_dir, session_key="conv-real-1")
+            self.assertTrue(snap2)
+            self.assertIn(snap2, directive)
+
     def test_real_installed_agy_fast_smoke(self):
         real_dir = eng.get_agy_fast_dir()
         if not (real_dir / "plugin.json").is_file():

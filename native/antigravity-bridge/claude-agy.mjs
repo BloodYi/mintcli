@@ -13,8 +13,10 @@ import { NON_REFUSAL_TAIL, scoreResponse } from './armor/src/layers/scorer3.mjs'
 const emit = event => process.stdout.write(JSON.stringify(event) + '\n');
 const tools = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'NotebookEdit', 'Bash'];
 const limit = 24 * 1024 * 1024;
-const GEMINI_NEON_CONTEXT_WINDOW = '512000';
-const GEMINI_NEON_MODEL_RE = /^gemini-4-neon(?:-(?:low|medium|high|xhigh))?$/;
+const GEMINI_LARGE_CONTEXT_WINDOW = '512000';
+const GEMINI_LARGE_MODEL_RE = /^(?!.*orchestrator)gemini-(?:4|3\.)[a-z0-9.-]*$/i;
+const CLAUDE_LARGE_CONTEXT_WINDOW = '200000';
+const CLAUDE_LARGE_MODEL_RE = /^claude-(?:fable|opus|sonnet|haiku)-5[a-z0-9.-]*$/i;
 const TERMINAL_STATUSES = new Set([400, 401, 403, 404, 422]);
 const TERMINAL_STREAM_RE = /"type"\s*:\s*"(?:permission_error|authentication_error|invalid_request_error)"/;
 const RETRYABLE_STREAM_RE = /"type"\s*:\s*"(?:rate_limit_error|overloaded_error|api_error)"/;
@@ -241,6 +243,29 @@ function sanitizeToolUseResult(value) {
     const serialized = JSON.stringify(value);
     if (serialized && serialized.length <= MAX_TOOL_RESULT_CHARS) {
       return value;
+    }
+    if (typeof value === 'object' && !Array.isArray(value)) {
+      const slim = {};
+      for (const key of ['type', 'mode', 'filePath', 'file_path', 'numFiles', 'truncated']) {
+        if (value[key] !== undefined) slim[key] = value[key];
+      }
+      if (Array.isArray(value.filenames)) {
+        slim.filenames = value.filenames.slice(0, 200);
+      }
+      if (Array.isArray(value.structuredPatch)) {
+        let patch = value.structuredPatch;
+        slim.structuredPatch = patch;
+        let slimJson = JSON.stringify(slim);
+        while (slimJson.length > MAX_TOOL_RESULT_CHARS && patch.length > 1) {
+          patch = patch.slice(0, Math.max(1, Math.floor(patch.length / 2)));
+          slim.structuredPatch = patch;
+          slimJson = JSON.stringify(slim);
+        }
+        if (slimJson.length <= MAX_TOOL_RESULT_CHARS) return slim;
+      } else if (Object.keys(slim).length > 0) {
+        const slimJson = JSON.stringify(slim);
+        if (slimJson.length <= MAX_TOOL_RESULT_CHARS) return slim;
+      }
     }
   } catch {
     return undefined;
@@ -573,10 +598,12 @@ async function run() {
     ANTHROPIC_API_KEY: secret,
     ANTHROPIC_BASE_URL: 'http://127.0.0.1:' + server.address().port,
   };
-  if (GEMINI_NEON_MODEL_RE.test(input.model)) {
-    // Antigravity offers a 512K window for Neon. Declare it to Claude Code
-    // so the fallback window for unknown model IDs doesn't compact early.
-    env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = GEMINI_NEON_CONTEXT_WINDOW;
+  if (GEMINI_LARGE_MODEL_RE.test(input.model)) {
+    // Declare the large context window for Gemini 4 / 3.x family IDs (Neon, Carbon, Argon, Flash)
+    // so Claude Code's fallback window for unknown model IDs doesn't compact early during coding.
+    env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = GEMINI_LARGE_CONTEXT_WINDOW;
+  } else if (CLAUDE_LARGE_MODEL_RE.test(input.model) && !env.CLAUDE_CODE_MAX_CONTEXT_TOKENS) {
+    env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = CLAUDE_LARGE_CONTEXT_WINDOW;
   }
   let hasPartialText = false;
   let hasPartialThinking = false;
@@ -861,6 +888,9 @@ async function run() {
             pendingInjectedUuids.add(escalationUuid);
             armorEscalationUuids.add(escalationUuid);
             armorAttempt += 1;
+            if (emittedText) {
+              emit({ event: 'segment_reset' });
+            }
             emit({
               event: 'thinking',
               thinking: `\n[🛡️ Antigravity Armor] 检测到模型拒答前言，已拦截并启动第 ${armorAttempt}/${armorEscalations.length} 档强制交付...\n`,

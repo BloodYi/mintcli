@@ -444,6 +444,42 @@ def get_agy_fast_session_snapshot(
     return result
 
 
+def has_agy_fast_session_snapshot(
+    session_key: str | None,
+    target_cwd: str | None,
+    plugin_dir: Path | None = None,
+) -> bool:
+    """Return True if a cached startup snapshot already exists for session_key + target_cwd."""
+    if not session_key or not target_cwd:
+        return False
+    base = plugin_dir or get_agy_fast_dir()
+    cache_id = f"{base}::{session_key}::{target_cwd}"
+    with _cache_lock:
+        return cache_id in _snapshot_cache
+
+
+def bind_agy_fast_session_snapshot(
+    session_key: str | None,
+    target_cwd: str | None,
+    source_session_key: str | None,
+    plugin_dir: Path | None = None,
+) -> None:
+    """Alias a first-turn ephemeral snapshot under the newly established conversation_id."""
+    if not session_key or not target_cwd or not source_session_key or session_key == source_session_key:
+        return
+    base = plugin_dir or get_agy_fast_dir()
+    src_id = f"{base}::{source_session_key}::{target_cwd}"
+    dst_id = f"{base}::{session_key}::{target_cwd}"
+    with _cache_lock:
+        snap = _snapshot_cache.get(src_id)
+        if not snap or dst_id in _snapshot_cache:
+            return
+        _snapshot_cache[dst_id] = snap
+        _snapshot_cache.move_to_end(dst_id)
+        while len(_snapshot_cache) > _MAX_SNAPSHOT_CACHE_ENTRIES:
+            _snapshot_cache.popitem(last=False)
+
+
 def get_agy_fast_system_directive(
     *,
     mode: str = "acp",
@@ -470,8 +506,11 @@ def get_agy_fast_system_directive(
         parts.append(
             "## Claude Code Tool Surface Adaptation\n"
             f"- The `agy-fast` MCP server is attached as `{server_name}` with tools: {mcp_list}.\n"
-            "- In the rules below, map Antigravity's built-in `read_file` -> `Read`, `run_command` -> `Bash`, "
+            "- Map Antigravity's built-in tool names & parameters to Claude Code's exact schemas: "
+            "`read_file` -> `Read` (`StartLine`/`EndLine` -> `{ file_path, offset: StartLine, limit: EndLine - StartLine + 1 }`), "
+            "`run_command` -> `Bash` (omit Antigravity-only `WaitMsBeforeAsync`), "
             "`edit_file` -> `Edit`, `write_file` -> `Write`.\n"
+            "- Subagent / swarm worker tools (`Task` / `Agent`) are not mounted in this host: run codebase searches directly via `batch_search` / `Grep` / `Glob`, and when the user provides or references an image that needs visual inspection, read it directly with `Read`.\n"
             f"- Always include a brief `toolSummary` string on every `mcp__{server_name}__*` call "
             "(the underlying Antigravity host injects `toolSummary` as a required schema property), "
             f"and pass explicit absolute `cwd`{cwd_hint}."

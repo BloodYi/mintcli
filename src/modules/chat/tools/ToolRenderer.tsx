@@ -1,7 +1,7 @@
 import React, { memo, useMemo, useCallback } from 'react';
 
 import type { DiffLine, Project,ToolStatus } from '@/shared/types';
-import { formatToolDisplayName, getToolConfig } from '@/modules/chat/tools/configs/toolConfigs';
+import { formatToolDisplayName, getToolConfig, normalizeAgyFastToolKey } from '@/modules/chat/tools/configs/toolConfigs';
 import { OneLineDisplay } from '@/modules/chat/tools/OneLineDisplay';
 import { BashCommandDisplay } from '@/modules/chat/tools/BashCommandDisplay';
 import { BashEditDiff } from '@/modules/chat/tools/BashEditDiff';
@@ -34,9 +34,10 @@ type ToolRendererProps = {
 };
 
 function getToolCategory(toolName: string): string {
-  if (['Edit', 'Write', 'ApplyPatch'].includes(toolName)) return 'edit';
-  if (['Grep', 'Glob'].includes(toolName)) return 'search';
-  if (toolName === 'Bash') return 'bash';
+  const fastKey = normalizeAgyFastToolKey(toolName);
+  if (['Edit', 'Write', 'ApplyPatch'].includes(toolName) || fastKey === 'agy_fast:apply_edits') return 'edit';
+  if (['Grep', 'Glob'].includes(toolName) || (fastKey && ['agy_fast:batch_search', 'agy_fast:quick_outline', 'agy_fast:read_slices'].includes(fastKey))) return 'search';
+  if (toolName === 'Bash' || fastKey === 'agy_fast:run_checks') return 'bash';
   if (['TodoWrite', 'TodoRead'].includes(toolName)) return 'todo';
   if (['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'].includes(toolName)) return 'task';
   if (toolName === 'Task') return 'agent';
@@ -228,11 +229,12 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
     switch (displayConfig.contentType) {
       case 'diff':
         if (createDiff) {
+          const targetOpenPath = contentProps.openFilePath || contentProps.filePath;
           contentComponent = (
             <ToolDiffViewer
               {...contentProps}
               createDiff={createDiff}
-              onFileClick={() => onFileOpen?.(contentProps.filePath)}
+              onFileClick={targetOpenPath && onFileOpen ? () => onFileOpen(targetOpenPath) : undefined}
             />
           );
         }
@@ -299,8 +301,11 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
       }
     }
 
-    const handleTitleClick = (toolName === 'Edit' || toolName === 'Write' || toolName === 'ApplyPatch') && contentProps.filePath && onFileOpen
-      ? () => onFileOpen(contentProps.filePath, {
+    const targetTitleOpenPath = (toolName === 'Edit' || toolName === 'Write' || toolName === 'ApplyPatch')
+      ? contentProps.filePath
+      : contentProps.openFilePath;
+    const handleTitleClick = targetTitleOpenPath && onFileOpen
+      ? () => onFileOpen(targetTitleOpenPath, {
           old_string: contentProps.oldContent,
           new_string: contentProps.newContent
         })

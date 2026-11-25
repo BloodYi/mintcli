@@ -8,7 +8,7 @@ import type { ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, LL
 import { formatUsageLimitText, stripProposedPlanEnvelope } from '@/modules/chat/utils/chatFormatting';
 import { ToolRenderer, ToolErrorDisplay, SubagentPanel, WorkflowPanel, shouldHideToolResult } from '@/modules/chat/tools';
 import { LLMProviderLogo } from '@/shared/ui';
-import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/modules/chat/transcript/Reasoning';
+import { ThinkingTranslateBlock } from '@/modules/chat/transcript/ThinkingTranslateBlock';
 import ChatMessageImages from '@/modules/chat/transcript/ChatMessageImages';
 import ChatMessageFiles from '@/modules/chat/transcript/ChatMessageFiles';
 import { Markdown } from '@/modules/chat/transcript/Markdown';
@@ -362,37 +362,43 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 )}
               </>
             ) : message.isThinking ? (
-              /* Thinking messages — Reasoning component (ai-elements pattern) */
-              <Reasoning
+              /* Thinking messages — Reasoning component with manual & auto translation */
+              <ThinkingTranslateBlock
+                text={String(message.content || '')}
                 isStreaming={Boolean(message.isStreaming)}
                 defaultOpen={isExporting ? true : undefined}
-              >
-                <ReasoningTrigger />
-                <ReasoningContent>
-                  <StreamingMarkdown
-                    content={String(message.content || '')}
-                    isStreaming={Boolean(message.isStreaming)}
-                    className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert"
-                  />
-                  {!isExporting && (
-                    <div className="mt-3 flex items-center text-[11px]">
-                      <MessageCopyControl content={String(message.content || '')} messageType="assistant" />
-                    </div>
-                  )}
-                </ReasoningContent>
-              </Reasoning>
+                isExporting={isExporting}
+                renderContent={(displayText) => (
+                  <>
+                    <StreamingMarkdown
+                      content={displayText}
+                      isStreaming={Boolean(message.isStreaming)}
+                      className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert"
+                    />
+                    {!isExporting && (
+                      <div className="mt-3 flex items-center text-[11px]">
+                        <MessageCopyControl content={displayText} messageType="assistant" />
+                      </div>
+                    )}
+                  </>
+                )}
+              />
             ) : (
               <div dir="auto" className="text-sm text-gray-700 dark:text-gray-300">
                 {/* Reasoning accordion */}
                 {showThinking && message.reasoning && (
-                  <Reasoning className="mb-3" defaultOpen={false}>
-                    <ReasoningTrigger />
-                    <ReasoningContent>
+                  <ThinkingTranslateBlock
+                    text={String(message.reasoning)}
+                    isStreaming={Boolean(message.isStreaming) && !formattedMessageContent.trim()}
+                    className="mb-3"
+                    defaultOpen={false}
+                    isExporting={isExporting}
+                    renderContent={(displayText) => (
                       <div className="whitespace-pre-wrap">
-                        {message.reasoning}
+                        {displayText}
                       </div>
-                    </ReasoningContent>
-                  </Reasoning>
+                    )}
+                  />
                 )}
 
                 {(() => {
@@ -408,11 +414,18 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 
                       return (
                         <div className="my-2">
-                          <div className="mb-2 flex items-center gap-2 text-sm text-muted-foreground">
-                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                            </svg>
-                            <span className="font-medium">{t('json.response')}</span>
+                          <div className="mb-2 flex items-center justify-between gap-2 text-sm text-muted-foreground">
+                            <div className="flex items-center gap-2">
+                              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                              </svg>
+                              <span className="font-medium">{t('json.response')}</span>
+                            </div>
+                            {!isExporting && (
+                              <div className="text-[11px]">
+                                <MessageCopyControl content={formatted} messageType="assistant" />
+                              </div>
+                            )}
                           </div>
                           <div className="overflow-hidden rounded-lg border border-border bg-muted">
                             <pre className="overflow-x-auto p-4">

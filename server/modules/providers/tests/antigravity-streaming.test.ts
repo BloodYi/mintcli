@@ -79,6 +79,22 @@ test('applyAgyStreamEvent and normalizeAgy interleave thinking, tools, tool resu
   assert.equal(rows[2].isStreaming, undefined);
 });
 
+test('applyAgyStreamEvent segment_reset clears trailing text after the last tool while preserving prior steps', () => {
+  const state = { stepSeq: 0 };
+  let message: AnyRecord = { id: 'msg-sr', role: 'assistant', content: '', status: 'streaming', steps: [] };
+  message = applyAgyStreamEvent(message, { event: 'delta', delta: 'Kept intro.', step_id: 'msg-sr:text:1' }, state);
+  message = applyAgyStreamEvent(message, { event: 'tool', step_id: 'msg-sr:tool:1', tool_id: 't1', tool_name: 'Read', status: 'completed' }, state);
+  message = applyAgyStreamEvent(message, { event: 'delta', delta: 'Discarded fragment', step_id: 'msg-sr:text:2' }, state);
+  assert.equal(normalizeAgy(message, 'app-1', { streaming: true }).length, 3);
+
+  message = applyAgyStreamEvent(message, { event: 'segment_reset' }, state);
+  const rows = normalizeAgy(message, 'app-1', { streaming: true });
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].content, 'Kept intro.');
+  assert.equal(rows[1].kind, 'tool_use');
+  assert.equal(message.content, 'Kept intro.');
+});
+
 test('AntigravityProvider.runtime.run streams thinking, tools, and text inline without status-bar tool events or redundant resends', async () => {
   const provider = new AntigravityProvider();
   const originalApiForAgent = connectionService.apiForAgent;

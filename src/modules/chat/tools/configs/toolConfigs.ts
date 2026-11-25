@@ -47,8 +47,68 @@ export type ToolDisplayConfig = {
  */
 const DESCRIPTIVE_INPUT_KEYS = [
   'command', 'cmd', 'file_path', 'path', 'filePath', 'pattern', 'query', 'url',
-  'prompt', 'description', 'summary', 'name', 'selector', 'text', 'skill', 'id',
+  'prompt', 'description', 'toolSummary', 'summary', 'name', 'selector', 'text', 'skill', 'id',
 ] as const;
+
+function parseMaybeJsonArray(raw: unknown): any[] {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string' && raw.trim().startsWith('[')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // ignore malformed JSON string
+    }
+  }
+  return [];
+}
+
+function resolveWithCwd(rawPath: unknown, rawCwd: unknown): string {
+  const p = typeof rawPath === 'string' ? rawPath.trim() : '';
+  if (!p) return '';
+  if (p.startsWith('/')) return p;
+  const cwd = typeof rawCwd === 'string' ? rawCwd.trim().replace(/\/+$/, '') : '';
+  if (!cwd) return p;
+  return `${cwd}/${p.replace(/^\.\//, '')}`;
+}
+
+function shortBasename(rawPath: unknown): string {
+  const p = typeof rawPath === 'string' ? rawPath.trim() : '';
+  if (!p) return '';
+  const parts = p.replace(/\/+$/, '').split('/');
+  return parts[parts.length - 1] || p;
+}
+
+export function normalizeAgyFastToolKey(toolName: string): string | null {
+  const stripped = String(toolName || '').replace(/^mcp_ide-tools_/, '');
+  const match = /^(?:mcp__agy-fast_[^_]+__|mcp_agy-fast_[^_]+_|agy-fast_[^/:]+[:/]|agy-fast:)(apply_edits|batch_search|quick_outline|read_slices|run_checks)$/i.exec(stripped);
+  return match ? `agy_fast:${match[1].toLowerCase()}` : null;
+}
+
+function extractMcpTextResult(result: any): string {
+  let content = result?.content || '';
+  if (typeof content === 'string') {
+    try {
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        const textParts = parsed
+          .filter((p: any) => p.type === 'text' && p.text)
+          .map((p: any) => p.text);
+        if (textParts.length > 0) content = textParts.join('\n');
+      }
+    } catch {
+      // keep raw string
+    }
+  } else if (Array.isArray(content)) {
+    const textParts = content
+      .filter((p: any) => p.type === 'text' && p.text)
+      .map((p: any) => p.text);
+    content = textParts.length > 0 ? textParts.join('\n') : JSON.stringify(content, null, 2);
+  } else if (typeof content === 'object' && content !== null) {
+    content = JSON.stringify(content, null, 2);
+  }
+  return String(content);
+}
 
 /** Builds a one-line summary of an unmapped tool's input. */
 function summarizeToolInput(input: unknown): string {
@@ -796,14 +856,241 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
         };
       }
     }
-  }
+  },
+  'agy_fast:apply_edits': {
+    input: {
+      type: 'collapsible',
+      label: 'Apply Edits',
+      icon: '✎',
+      title: (input) => {
+        const edits = parseMaybeJsonArray(input?.edits);
+        const names = edits.map((e) => shortBasename(e?.path)).filter(Boolean);
+        const summary = typeof input?.toolSummary === 'string' ? input.toolSummary.trim() : '';
+        if (names.length === 1) {
+          return summary ? `${names[0]} — ${summary}` : names[0];
+        }
+        if (names.length > 1) {
+          const head = `${names[0]} +${names.length - 1} files`;
+          return summary ? `${head} — ${summary}` : head;
+        }
+        return summary || 'Atomic edits';
+      },
+      defaultOpen: false,
+      contentType: 'diff',
+      actionButton: 'none',
+      getContentProps: (input) => {
+        const edits = parseMaybeJsonArray(input?.edits);
+        const cwd = input?.cwd;
+        if (edits.length === 1) {
+          const item = edits[0] || {};
+          const resolvedPath = resolveWithCwd(item.path, cwd) || 'file';
+          if (typeof item.create === 'string') {
+            return {
+              oldContent: '',
+              newContent: item.create,
+              filePath: resolvedPath,
+              openFilePath: resolvedPath,
+              badge: 'New',
+              badgeColor: 'green',
+            };
+          }
+          const hunks = parseMaybeJsonArray(item.hunks);
+          return {
+            oldContent: hunks.map((h) => String(h?.target ?? '')).join('\n\n⋯\n\n'),
+            newContent: hunks.map((h) => String(h?.replacement ?? '')).join('\n\n⋯\n\n'),
+            filePath: resolvedPath,
+            openFilePath: resolvedPath,
+            badge: hunks.length > 1 ? `Edit (${hunks.length} hunks)` : 'Edit',
+            badgeColor: 'gray',
+          };
+        }
+        const oldParts: string[] = [];
+        const newParts: string[] = [];
+        let firstResolved = '';
+        for (const item of edits) {
+          const resolvedPath = resolveWithCwd(item?.path, cwd) || String(item?.path || 'file');
+          if (!firstResolved && resolvedPath) firstResolved = resolvedPath;
+          const header = `// ── ${item?.path || resolvedPath} ──`;
+          if (typeof item?.create === 'string') {
+            oldParts.push(header);
+            newParts.push(`${header}\n${item.create}`);
+          } else {
+            const hunks = parseMaybeJsonArray(item?.hunks);
+            oldParts.push(`${header}\n${hunks.map((h) => String(h?.target ?? '')).join('\n⋯\n')}`);
+            newParts.push(`${header}\n${hunks.map((h) => String(h?.replacement ?? '')).join('\n⋯\n')}`);
+          }
+        }
+        return {
+          oldContent: oldParts.join('\n\n'),
+          newContent: newParts.join('\n\n'),
+          filePath: firstResolved ? `${firstResolved} (+${Math.max(0, edits.length - 1)} files)` : `${edits.length} files`,
+          openFilePath: firstResolved || undefined,
+          badge: `${edits.length} files`,
+          badgeColor: 'gray',
+        };
+      },
+    },
+    result: {
+      hideOnSuccess: true,
+      type: 'collapsible',
+      title: 'Verify & Apply Output',
+      contentType: 'text',
+      getContentProps: (result) => ({
+        content: extractMcpTextResult(result),
+        format: 'plain',
+      }),
+    },
+  },
+
+  'agy_fast:batch_search': {
+    input: {
+      type: 'collapsible',
+      label: 'Batch Search',
+      icon: '⌕',
+      title: (input) => {
+        const queries = parseMaybeJsonArray(input?.queries);
+        const patterns = queries
+          .map((q) => (typeof q?.pattern === 'string' ? q.pattern.trim() : ''))
+          .filter(Boolean);
+        if (patterns.length > 0) {
+          const joined = patterns.slice(0, 3).join(', ') + (patterns.length > 3 ? ` (+${patterns.length - 3})` : '');
+          return `${queries.length} ${queries.length === 1 ? 'query' : 'queries'}: ${joined.length > 72 ? `${joined.slice(0, 72)}…` : joined}`;
+        }
+        return summarizeToolInput(input);
+      },
+      defaultOpen: false,
+      contentType: 'text',
+      getContentProps: (input) => ({
+        content: typeof input === 'string' ? input : JSON.stringify(input, null, 2),
+        format: 'code',
+      }),
+    },
+    result: {
+      type: 'collapsible',
+      defaultOpen: false,
+      title: 'Search Results',
+      contentType: 'text',
+      getContentProps: (result) => ({
+        content: extractMcpTextResult(result),
+        format: 'plain',
+      }),
+    },
+  },
+
+  'agy_fast:quick_outline': {
+    input: {
+      type: 'collapsible',
+      label: 'Quick Outline',
+      icon: '≡',
+      title: (input) => {
+        const paths = parseMaybeJsonArray(input?.paths).map(shortBasename).filter(Boolean);
+        if (paths.length === 1) return paths[0];
+        if (paths.length > 1) {
+          const shown = paths.slice(0, 3).join(', ');
+          return `${paths.length} files: ${shown}${paths.length > 3 ? ` (+${paths.length - 3})` : ''}`;
+        }
+        return summarizeToolInput(input);
+      },
+      defaultOpen: false,
+      contentType: 'text',
+      getContentProps: (input) => {
+        const rawPaths = parseMaybeJsonArray(input?.paths);
+        const singlePath = rawPaths.length === 1 ? resolveWithCwd(rawPaths[0], input?.cwd) : undefined;
+        return {
+          content: typeof input === 'string' ? input : JSON.stringify(input, null, 2),
+          format: 'code',
+          openFilePath: singlePath,
+        };
+      },
+    },
+    result: {
+      type: 'collapsible',
+      defaultOpen: false,
+      title: 'Symbol Outlines',
+      contentType: 'text',
+      getContentProps: (result) => ({
+        content: extractMcpTextResult(result),
+        format: 'plain',
+      }),
+    },
+  },
+
+  'agy_fast:read_slices': {
+    input: {
+      type: 'collapsible',
+      label: 'Read Slices',
+      icon: '§',
+      title: (input) => {
+        const slices = parseMaybeJsonArray(input?.slices).map((s) => shortBasename(s?.path)).filter(Boolean);
+        const outlines = parseMaybeJsonArray(input?.outlines).map(shortBasename).filter(Boolean);
+        const ranges = parseMaybeJsonArray(input?.lineRanges).map((r) => shortBasename(String(r).split(':')[0])).filter(Boolean);
+        const names = [...new Set([...slices, ...ranges, ...outlines])];
+        if (names.length === 1) return names[0];
+        if (names.length > 1) return `${names.length} files: ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` (+${names.length - 3})` : ''}`;
+        return summarizeToolInput(input);
+      },
+      defaultOpen: false,
+      contentType: 'text',
+      getContentProps: (input) => ({
+        content: typeof input === 'string' ? input : JSON.stringify(input, null, 2),
+        format: 'code',
+      }),
+    },
+    result: {
+      type: 'collapsible',
+      defaultOpen: false,
+      title: 'File Slices',
+      contentType: 'text',
+      getContentProps: (result) => ({
+        content: extractMcpTextResult(result),
+        format: 'plain',
+      }),
+    },
+  },
+
+  'agy_fast:run_checks': {
+    input: {
+      type: 'collapsible',
+      label: 'Run Checks',
+      icon: 'terminal',
+      title: (input) => {
+        const cmds = parseMaybeJsonArray(input?.commands)
+          .map((c) => (typeof c?.name === 'string' && c.name.trim() ? c.name.trim() : typeof c?.command === 'string' ? c.command.trim() : ''))
+          .filter(Boolean);
+        if (cmds.length > 0) {
+          const joined = cmds.slice(0, 2).join(' · ') + (cmds.length > 2 ? ` (+${cmds.length - 2})` : '');
+          return `${cmds.length} ${cmds.length === 1 ? 'check' : 'checks'}: ${joined.length > 72 ? `${joined.slice(0, 72)}…` : joined}`;
+        }
+        return summarizeToolInput(input);
+      },
+      defaultOpen: false,
+      contentType: 'text',
+      getContentProps: (input) => ({
+        content: typeof input === 'string' ? input : JSON.stringify(input, null, 2),
+        format: 'code',
+      }),
+    },
+    result: {
+      type: 'collapsible',
+      defaultOpen: false,
+      title: 'Check Output',
+      contentType: 'text',
+      getContentProps: (result) => ({
+        content: extractMcpTextResult(result),
+        format: 'plain',
+      }),
+    },
+  },
 };
 
 /**
  * Get configuration for a tool, with fallback to default
  */
 export function getToolConfig(toolName: string): ToolDisplayConfig {
-  return TOOL_CONFIGS[toolName] || TOOL_CONFIGS.Default;
+  if (TOOL_CONFIGS[toolName]) return TOOL_CONFIGS[toolName];
+  const fastKey = normalizeAgyFastToolKey(toolName);
+  if (fastKey && TOOL_CONFIGS[fastKey]) return TOOL_CONFIGS[fastKey];
+  return TOOL_CONFIGS.Default;
 }
 
 /**
@@ -817,6 +1104,14 @@ export function shouldHideToolResult(toolName: string, toolResult: any): boolean
   // Hidden/success-only configs suppress noisy successful output, but errors
   // still need to be visible so failed tool calls are diagnosable.
   if (toolResult?.isError) return false;
+
+  // Surface apply_edits results when an inline verify command produced output or bestEffort noted skipped files.
+  if (normalizeAgyFastToolKey(toolName) === 'agy_fast:apply_edits' && toolResult) {
+    const text = extractMcpTextResult(toolResult);
+    if (/verify|failed|skipped|mismatch/i.test(text)) {
+      return false;
+    }
+  }
 
   // Always hidden
   if (config.result.hidden) return true;

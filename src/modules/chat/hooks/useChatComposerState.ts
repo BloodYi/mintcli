@@ -52,7 +52,6 @@ type UseChatComposerStateArgs = {
   agyArmor?: boolean;
   agyTransam?: boolean;
   agyFast?: boolean;
-  agyThinkLang?: boolean;
   isLoading: boolean;
   processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
@@ -218,7 +217,6 @@ export function useChatComposerState({
   agyArmor,
   agyTransam,
   agyFast,
-  agyThinkLang,
   isLoading,
   processingSessions,
   canAbortSession,
@@ -712,7 +710,6 @@ export function useChatComposerState({
       ...(provider === 'antigravity' && agyArmor ? { useArmor: true } : {}),
       ...(provider === 'antigravity' && agyTransam ? { useTransam: true } : {}),
       ...(provider === 'antigravity' && agyFast ? { useAgyFast: true } : {}),
-      ...(provider === 'antigravity' && agyThinkLang ? { useThinkLang: true } : {}),
       permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
       toolsSettings,
       skipPermissions: toolsSettings?.skipPermissions || false,
@@ -721,7 +718,6 @@ export function useChatComposerState({
   }, [
     agyArmor,
     agyFast,
-    agyThinkLang,
     agyTransam,
     agyUseClaude,
     connectionId,

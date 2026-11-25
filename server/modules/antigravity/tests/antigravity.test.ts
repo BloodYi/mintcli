@@ -143,3 +143,28 @@ test('allows authenticated agy-fast plugin endpoints and rejects unknown agy-fas
   ]);
   await assert.rejects(bridge.request('POST', '/api/agy-fast/unknown'));
 });
+
+test('allows authenticated think-translate endpoints and rejects unknown think-translate paths', async () => {
+  const seen: string[] = [];
+  const bridge = createAntigravityBridge({ credentialsFile: '/not-present', fetch: async (url) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname === '/api/login') {
+      return new Response('{}', { headers: { 'set-cookie': 'agy_session=fixture' } });
+    }
+    seen.push(parsed.pathname);
+    return Response.json({ ok: true });
+  } });
+  for (const [method, endpoint] of [
+    ['GET', '/api/think-translate/config'],
+    ['POST', '/api/think-translate/config'],
+    ['POST', '/api/think-translate/translate'],
+  ] as const) {
+    assert.equal((await bridge.request(method, endpoint, method === 'POST' ? {} : undefined)).status, 200);
+  }
+  assert.deepEqual(seen, [
+    '/api/think-translate/config',
+    '/api/think-translate/config',
+    '/api/think-translate/translate',
+  ]);
+  await assert.rejects(bridge.request('POST', '/api/think-translate/unknown'));
+});

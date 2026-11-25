@@ -21,7 +21,7 @@ import {
 import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useAgyFastStatus } from '@/modules/antigravity';
+import { formatThinkTranslateAccountLabel, useAgyFastStatus, useThinkTranslateConfig } from '@/modules/antigravity';
 
 import { PluginIcon, usePlugins } from '@/modules/plugins';
 import type { AppTab, Project, ProjectSession, SettingsMainTab } from '@/shared/types';
@@ -91,8 +91,8 @@ type MobileWorkspaceSheetProps = {
   agyFast?: boolean;
   agyFastDisabled?: boolean;
   onToggleAgyFast?: () => void;
-  agyThinkLang?: boolean;
-  onToggleAgyThinkLang?: () => void;
+  agyThinkTranslate?: boolean;
+  onToggleAgyThinkTranslate?: () => void;
   onStartNewSession?: () => void;
   onShowSettings?: (tab?: SettingsMainTab) => void;
   onOpenQuickSettings?: () => void;
@@ -124,8 +124,8 @@ export default function MobileWorkspaceSheet({
   agyFast = false,
   agyFastDisabled = false,
   onToggleAgyFast,
-  agyThinkLang = false,
-  onToggleAgyThinkLang,
+  agyThinkTranslate = false,
+  onToggleAgyThinkTranslate,
   onStartNewSession,
   onShowSettings,
   onOpenQuickSettings,
@@ -135,6 +135,7 @@ export default function MobileWorkspaceSheet({
   const { t } = useTranslation();
   const { plugins } = usePlugins();
   const agyFastPlugin = useAgyFastStatus(Boolean(open && onToggleAgyFast));
+  const thinkTranslateCfg = useThinkTranslateConfig(Boolean(open && onToggleAgyThinkTranslate), true);
 
   const builtInTabs: BuiltInTab[] = [
     ...BASE_TABS,
@@ -433,48 +434,94 @@ export default function MobileWorkspaceSheet({
             </section>
           )}
 
-          {/* Section: Think language follow switch */}
-          {onToggleAgyThinkLang && (
+          {/* Section: Think auto-translate switch + account/model selector */}
+          {onToggleAgyThinkTranslate && (
             <section className="space-y-2">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={agyThinkLang}
-                aria-label="切换思考语言跟随"
-                onClick={onToggleAgyThinkLang}
+              <div
                 className={cn(
-                  'flex w-full items-center justify-between gap-3 rounded-2xl border px-3.5 py-3 text-left transition-colors',
-                  agyThinkLang
+                  'rounded-2xl border px-3.5 py-3 transition-colors',
+                  agyThinkTranslate
                     ? 'border-violet-500/35 bg-violet-500/10'
-                    : 'border-border/50 bg-muted/35 active:bg-muted/60',
+                    : 'border-border/50 bg-muted/35',
                 )}
               >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <Languages className={cn('h-3.5 w-3.5 shrink-0', agyThinkLang ? 'text-violet-500' : 'text-muted-foreground')} />
-                    <span className="text-[13px] font-semibold text-foreground">思考语言跟随</span>
-                  </div>
-                  <p className="mt-0.5 truncate text-[11.5px] text-muted-foreground">
-                    {agyThinkLang
-                      ? '已开启：内部思考过程跟随用户语言输出'
-                      : '已关闭：点击开启思考随用户语言输出'}
-                  </p>
-                </div>
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',
-                    agyThinkLang ? 'bg-violet-500' : 'bg-muted-foreground/30',
-                  )}
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={agyThinkTranslate}
+                  aria-label="切换思考自动翻译"
+                  onClick={onToggleAgyThinkTranslate}
+                  className="flex w-full items-center justify-between gap-3 text-left"
                 >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <Languages className={cn('h-3.5 w-3.5 shrink-0', agyThinkTranslate ? 'text-violet-500' : 'text-muted-foreground')} />
+                      <span className="text-[13px] font-semibold text-foreground">思考自动翻译</span>
+                    </div>
+                    <p className="mt-0.5 truncate text-[11.5px] text-muted-foreground">
+                      {agyThinkTranslate
+                        ? '已开启：自动翻译思考内容'
+                        : '已关闭：可点击每条思考旁的「翻译」手动翻译'}
+                    </p>
+                  </div>
                   <span
+                    aria-hidden="true"
                     className={cn(
-                      'inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform',
-                      agyThinkLang ? 'translate-x-5' : 'translate-x-0.5',
+                      'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',
+                      agyThinkTranslate ? 'bg-violet-500' : 'bg-muted-foreground/30',
                     )}
-                  />
-                </span>
-              </button>
+                  >
+                    <span
+                      className={cn(
+                        'inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform',
+                        agyThinkTranslate ? 'translate-x-5' : 'translate-x-0.5',
+                      )}
+                    />
+                  </span>
+                </button>
+                <div className="mt-2.5 grid grid-cols-1 gap-2 border-t border-border/50 pt-2.5">
+                  <label className="block space-y-1">
+                    <span className="text-[11px] text-muted-foreground">固定翻译账号</span>
+                    <select
+                      value={thinkTranslateCfg.config.account_id}
+                      disabled={thinkTranslateCfg.saving}
+                      onChange={(e) => void thinkTranslateCfg.saveConfig({ account_id: e.target.value })}
+                      className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground"
+                    >
+                      <option value="">跟随当前活跃账号</option>
+                      {thinkTranslateCfg.accounts.map((acc) => (
+                        <option key={acc.id} value={acc.id}>
+                          {formatThinkTranslateAccountLabel(acc)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block space-y-1">
+                    <span className="text-[11px] text-muted-foreground">
+                      固定翻译模型{thinkTranslateCfg.saving || thinkTranslateCfg.loading ? '（加载中…）' : ''}
+                    </span>
+                    <select
+                      value={thinkTranslateCfg.config.model}
+                      disabled={thinkTranslateCfg.saving || thinkTranslateCfg.loading}
+                      onChange={(e) => void thinkTranslateCfg.saveConfig({ model: e.target.value })}
+                      className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground disabled:opacity-60"
+                    >
+                      <option value="">默认模型</option>
+                      {thinkTranslateCfg.models.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name || m.id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                {thinkTranslateCfg.message && (
+                  <p className="mt-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">{thinkTranslateCfg.message}</p>
+                )}
+                {thinkTranslateCfg.error && (
+                  <p className="mt-1.5 text-[11px] text-red-500">{thinkTranslateCfg.error}</p>
+                )}
+              </div>
             </section>
           )}
 

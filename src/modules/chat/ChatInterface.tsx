@@ -65,7 +65,6 @@ type ChatInterfaceProps = {
   agyArmor?: boolean;
   agyTransam?: boolean;
   agyFast?: boolean;
-  agyThinkLang?: boolean;
   onAgyApiConnectionChange?: (usingApi: boolean) => void;
   externalMessageUpdate?: number;
   newSessionTrigger?: number;
@@ -102,7 +101,6 @@ function ChatInterface({
   agyArmor = false,
   agyTransam = false,
   agyFast = false,
-  agyThinkLang = false,
   onAgyApiConnectionChange,
   externalMessageUpdate,
   newSessionTrigger,
@@ -325,7 +323,6 @@ function ChatInterface({
     agyArmor: agyArmor,
     agyTransam: agyTransam,
     agyFast: agyFast,
-    agyThinkLang: agyThinkLang,
     isLoading: isProcessing,
     processingSessions,
     canAbortSession,
@@ -570,13 +567,12 @@ function ChatInterface({
         ...(provider === 'antigravity' && effectiveAgyUseClaude ? { useClaudeAgy: true } : {}),
         ...(provider === 'antigravity' && agyArmor ? { useArmor: true } : {}),
         ...(provider === 'antigravity' && agyTransam ? { useTransam: true } : {}),
-        ...(provider === 'antigravity' && agyFast ? { useAgyFast: true } : {}),
-        ...(provider === 'antigravity' && agyThinkLang ? { useThinkLang: true } : {}) },
+        ...(provider === 'antigravity' && agyFast ? { useAgyFast: true } : {}) },
     });
     if (scheduled) {
       setInput('');
     }
-  }, [effectiveAgyUseClaude, agyArmor, agyTransam, agyFast, agyThinkLang, currentProviderEffort, currentProviderModel, input, permissionMode, provider, scheduleMessage, setInput, supportsFastMode, fastMode]);
+  }, [effectiveAgyUseClaude, agyArmor, agyTransam, agyFast, currentProviderEffort, currentProviderModel, input, permissionMode, provider, scheduleMessage, setInput, supportsFastMode, fastMode]);
 
   const permissionContextValue = useMemo(() => ({
     pendingPermissionRequests,

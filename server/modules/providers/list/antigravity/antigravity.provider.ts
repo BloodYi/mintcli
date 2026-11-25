@@ -179,6 +179,23 @@ export function applyAgyStreamEvent(
 
   const steps = ensureSteps(message);
 
+  if (event.event === 'segment_reset') {
+    let lastToolIdx = -1;
+    for (let i = steps.length - 1; i >= 0; i--) {
+      if (steps[i]?.type === 'tool_use') {
+        lastToolIdx = i;
+        break;
+      }
+    }
+    const keptSteps = steps.filter((step, idx) => !(idx > lastToolIdx && step?.type === 'text'));
+    message.steps = keptSteps;
+    const preservedText = keptSteps
+      .filter((step) => step?.type === 'text' && String(step.content || ''))
+      .map((step) => String(step.content || ''));
+    message.content = preservedText.join('\n\n');
+    return message;
+  }
+
   if (event.event === 'delta') {
     const chunk = String(event.delta ?? event.text ?? '');
     message.content = String(message.content || '') + chunk;
@@ -433,7 +450,6 @@ const runtime: IProviderRuntime = {
         ...(options.useArmor === true || options.armor === true ? { use_armor: true } : {}),
         ...(options.useTransam === true || options.transam === true ? { use_transam: true } : {}),
         ...(options.useAgyFast === true || options.agyFast === true ? { use_agy_fast: true } : {}),
-        ...(options.useThinkLang === true || options.thinkLang === true ? { use_think_lang: true } : {}),
         ...(api ? { api_connection: { base_url: relay?.baseUrl || api.baseUrl!.replace(/\/v1(?:beta)?$/, ''), api_key: relay?.apiKey || api.apiKey,
           proxy_port: relay ? 0 : Number(api.env.MINTCLI_SELECTED_EGRESS_PORT || 0), chat_compat: Boolean(relay) } } : {}),
       };
@@ -463,6 +479,36 @@ const runtime: IProviderRuntime = {
             turnAssistants.set(String(message.id), message);
             streamState.stepSeq = Math.max(0, (message.steps as AnyRecord[]).length);
           }
+          return;
+        }
+        if (event.event === 'segment_reset') {
+          const currentSteps = Array.isArray(message.steps) ? (message.steps as AnyRecord[]) : [];
+          let lastToolIdx = -1;
+          for (let i = currentSteps.length - 1; i >= 0; i--) {
+            if (currentSteps[i]?.type === 'tool_use') {
+              lastToolIdx = i;
+              break;
+            }
+          }
+          for (let i = lastToolIdx + 1; i < currentSteps.length; i++) {
+            const st = currentSteps[i];
+            const stId = st?.type === 'text' && typeof st.id === 'string' ? st.id : '';
+            if (stId && emittedSignatures.has(stId)) {
+              const cleared = createNormalizedMessage({
+                sessionId: appId,
+                provider,
+                timestamp: new Date().toISOString(),
+                id: stId,
+                kind: 'text',
+                role: 'assistant',
+                content: '',
+              });
+              emittedSignatures.delete(stId);
+              send(cleared);
+            }
+          }
+          message = applyAgyStreamEvent(message, event, streamState);
+          turnAssistants.set(String(message.id), message);
           return;
         }
         if (event.event === 'tool' || event.event === 'tool_result') {

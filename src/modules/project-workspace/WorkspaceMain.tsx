@@ -68,7 +68,7 @@ function WorkspaceMain({
   const handleStartNewSession = useCallback(() => {
     if (selectedProject) onProjectSelect(selectedProject);
   }, [onProjectSelect, selectedProject]);
-  const { showRawParameters, showThinking, sendByCtrlEnter, agyUseClaude, agyArmor, agyTransam, agyFast, agyThinkLang } = preferences;
+  const { showRawParameters, showThinking, sendByCtrlEnter, agyUseClaude, agyArmor, agyTransam, agyFast, agyThinkTranslate } = preferences;
   const [storedProvider, setStoredProvider] = useState<LLMProvider>(readSelectedProvider);
   const [activeConnection, setActiveConnection] = useState<AgentConnectionChoice | null>(null);
   const [agyUsingApiConnection, setAgyUsingApiConnection] = useState(false);
@@ -126,9 +126,13 @@ function WorkspaceMain({
     setUiPreference('agyFast', !agyFast);
   }, [agyFast, setUiPreference]);
 
-  const handleToggleAgyThinkLang = useCallback(() => {
-    setUiPreference('agyThinkLang', !agyThinkLang);
-  }, [agyThinkLang, setUiPreference]);
+  const handleToggleAgyThinkTranslate = useCallback(() => {
+    const next = !agyThinkTranslate;
+    setUiPreference('agyThinkTranslate', next);
+    if (next && !showThinking) {
+      setUiPreference('showThinking', true);
+    }
+  }, [agyThinkTranslate, setUiPreference, showThinking]);
 
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const browserUseEnabled = useBrowserUseEnabled();
@@ -238,8 +242,8 @@ function WorkspaceMain({
         agyFast={agyFast}
         agyFastDisabled={agyUsingApiConnection}
         onToggleAgyFast={showAgyClaudeToggle ? handleToggleAgyFast : undefined}
-        agyThinkLang={agyThinkLang}
-        onToggleAgyThinkLang={showAgyClaudeToggle ? handleToggleAgyThinkLang : undefined}
+        agyThinkTranslate={agyThinkTranslate}
+        onToggleAgyThinkTranslate={activeTab === 'chat' ? handleToggleAgyThinkTranslate : undefined}
       />
 
       {isMobile && (
@@ -268,8 +272,8 @@ function WorkspaceMain({
             agyFast={agyFast}
             agyFastDisabled={agyUsingApiConnection}
             onToggleAgyFast={showAgyClaudeToggle ? handleToggleAgyFast : undefined}
-            agyThinkLang={agyThinkLang}
-            onToggleAgyThinkLang={showAgyClaudeToggle ? handleToggleAgyThinkLang : undefined}
+            agyThinkTranslate={agyThinkTranslate}
+            onToggleAgyThinkTranslate={activeTab === 'chat' ? handleToggleAgyThinkTranslate : undefined}
             onStartNewSession={handleStartNewSession}
             onShowSettings={onShowSettings}
             onOpenQuickSettings={handleOpenQuickSettings}
@@ -308,7 +312,6 @@ function WorkspaceMain({
                 agyArmor={agyArmor}
                 agyTransam={agyTransam}
                 agyFast={agyUsingApiConnection ? false : agyFast}
-                agyThinkLang={agyThinkLang}
                 onAgyApiConnectionChange={setAgyUsingApiConnection}
                 externalMessageUpdate={externalMessageUpdate}
                 newSessionTrigger={newSessionTrigger}

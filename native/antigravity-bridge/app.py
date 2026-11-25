@@ -67,19 +67,19 @@ from transam_engine import (
     sync_transam_rules,
 )
 from agy_fast_engine import (
+    bind_agy_fast_session_snapshot,
     check_agy_fast_update,
     get_agy_fast_mcp_config,
     get_agy_fast_status,
     get_agy_fast_system_directive,
+    has_agy_fast_session_snapshot,
     set_agy_fast_config,
     update_agy_fast_plugin,
 )
-from think_lang_engine import (
-    THINK_LANG_SYSTEM_DIRECTIVE,
-    append_think_lang_reminder,
-    collect_user_history_texts,
-    detect_think_target_lang,
-    get_think_lang_system_directive,
+from think_translate_engine import (
+    load_think_translate_config,
+    save_think_translate_config,
+    translate_thinking_text,
 )
 
 logger = logging.getLogger("antigravity-chat")
@@ -1111,6 +1111,7 @@ async def api_download(path: str) -> FileResponse:
 
 
 _models_cache: tuple[float, list[dict[str, str]]] | None = None
+_account_models_cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
 _MODELS_TTL = 300
 
 _models_label_map: dict[str, str] = {
@@ -1325,8 +1326,20 @@ class InspectRouteRequest(BaseModel):
     use_armor: StrictBool = False
     use_transam: StrictBool = False
     use_agy_fast: StrictBool = False
-    use_think_lang: StrictBool = False
     use_claude_agy: StrictBool = False
+
+
+class ThinkTranslateConfigRequest(BaseModel):
+    account_id: str | None = None
+    model: str | None = None
+    target_lang: str | None = None
+
+
+class ThinkTranslateRequest(BaseModel):
+    text: str
+    target_lang: str | None = None
+    account_id: str | None = None
+    model: str | None = None
 
 
 class AgyFastConfigRequest(BaseModel):
@@ -1360,6 +1373,118 @@ async def api_agy_fast_config(req: AgyFastConfigRequest) -> dict:
     return await asyncio.to_thread(set_agy_fast_config, auto_update_enabled=req.auto_update_enabled)
 
 
+def _think_translate_config_path() -> Path:
+    return MESSAGES_DIR.parent / "think_translate_config.json"
+
+
+def _strip_agy_account_prefix(account_id: str | None) -> str:
+    cleaned = (account_id or "").strip()
+    if cleaned.startswith("agy:"):
+        return cleaned[4:].strip()
+    return cleaned
+
+
+def _pick_cached_fast_translate_model(account_id: str) -> str:
+    """When user leaves translation model blank, prefer a cached lightweight Flash model if known."""
+    candidates: list[dict[str, str]] = []
+    if account_id:
+        entry = _account_models_cache.get(account_id)
+        if entry and entry[1]:
+            candidates = entry[1]
+    if not candidates and _models_cache and _models_cache[1]:
+        candidates = _models_cache[1]
+    if not candidates:
+        return ""
+    ids = [str(item.get("id") or "").strip() for item in candidates if isinstance(item, dict) and item.get("id")]
+    non_orch = [mid for mid in ids if mid and not _is_orchestrator_model(mid, None)]
+    for pattern in (r"^gemini-[a-z0-9.]*-flash-low$", r"^gemini-[a-z0-9.]*-flash-medium$", r"^gemini-[a-z0-9.]*-flash"):
+        rx = re.compile(pattern, re.IGNORECASE)
+        for mid in non_orch:
+            if rx.search(mid):
+                return mid
+    return ""
+
+
+@app.get("/api/think-translate/config")
+async def api_think_translate_config(account_id: str | None = None, lite: bool = False) -> dict:
+    cfg = load_think_translate_config(_think_translate_config_path())
+    if lite:
+        return {
+            **cfg,
+            "accounts": [],
+            "models": [],
+        }
+    raw_accounts = _list_stored_accounts()
+    accounts = [
+        {
+            **acc,
+            "platform": "agy",
+            "label": f"agy:{acc.get('email') or acc.get('name') or acc.get('id')}",
+        }
+        for acc in raw_accounts
+    ]
+    target_account = _strip_agy_account_prefix(account_id if account_id is not None else cfg.get("account_id"))
+    try:
+        model_list = await _fetch_account_models(target_account or None)
+    except Exception:
+        model_list = []
+    return {
+        **cfg,
+        "accounts": accounts,
+        "models": model_list,
+    }
+
+
+@app.post("/api/think-translate/config")
+async def api_think_translate_save_config(req: ThinkTranslateConfigRequest) -> dict:
+    clean_acc = _strip_agy_account_prefix(req.account_id) if req.account_id is not None else None
+    if clean_acc:
+        if _resolve_account_file(clean_acc) is None:
+            raise HTTPException(status_code=404, detail="所选翻译账号不存在，请刷新账号列表后重试。")
+    cfg = save_think_translate_config(
+        _think_translate_config_path(),
+        account_id=clean_acc if req.account_id is not None else None,
+        model=req.model,
+        target_lang=req.target_lang,
+    )
+    return {"ok": True, **cfg}
+
+
+@app.post("/api/think-translate/translate")
+async def api_think_translate(req: ThinkTranslateRequest) -> dict:
+    cfg = load_think_translate_config(_think_translate_config_path())
+    selected_account = _strip_agy_account_prefix(
+        req.account_id if req.account_id is not None else cfg.get("account_id")
+    )
+    selected_model = (req.model if req.model is not None else cfg.get("model") or "").strip()
+    target_lang = (req.target_lang if req.target_lang is not None else cfg.get("target_lang") or "zh-CN").strip() or "zh-CN"
+
+    if selected_account and _resolve_account_file(selected_account) is None:
+        raise HTTPException(status_code=404, detail="配置的翻译账号不存在，请重新选择翻译账号。")
+
+    effective_model = selected_model
+    if not effective_model or effective_model == "default":
+        effective_model = _pick_cached_fast_translate_model(selected_account)
+
+    run_env = _agy_environment(account_id=selected_account) if selected_account else _agy_environment()
+    try:
+        result = await translate_thinking_text(
+            text=req.text,
+            target_lang=target_lang,
+            account_id=selected_account,
+            model=effective_model,
+            agy_bin=AGY_BIN,
+            run_env=run_env,
+            scratch_dir=SCRATCH,
+        )
+        return result
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    finally:
+        if selected_account:
+            _sync_account_home_token_to_storage(selected_account)
+
+
 def _resolve_agy_fast_turn() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     cfg = get_agy_fast_mcp_config()
     if not cfg.get("installed"):
@@ -1380,7 +1505,6 @@ def _compose_system_append(
     use_armor: bool = False,
     use_transam: bool = False,
     use_agy_fast: bool = False,
-    use_think_lang: bool = False,
     agy_fast_mode: str = "acp",
     target_cwd: str | None = None,
     include_agy_fast_snapshot: bool = True,
@@ -1406,8 +1530,6 @@ def _compose_system_append(
         )
         if fast_dir:
             parts.append(fast_dir)
-    if use_think_lang:
-        parts.append(get_think_lang_system_directive())
     return "\n\n".join(parts) if parts else None
 
 
@@ -1435,8 +1557,6 @@ async def inspect_selected_route(req: InspectRouteRequest) -> dict:
             target["transam"] = {"enabled": True, "tier": resolve_transam_tier(effective_model, None)}
         if agy_fast_probe_meta is not None:
             target["agy_fast"] = dict(agy_fast_probe_meta)
-        if req.use_think_lang:
-            target["think_lang"] = {"enabled": True}
 
     _StampProbeFlags(info, req.model)
     failed = False
@@ -1462,7 +1582,6 @@ async def inspect_selected_route(req: InspectRouteRequest) -> dict:
                         None,
                         use_armor=req.use_armor,
                         use_transam=False,
-                        use_think_lang=req.use_think_lang,
                         agent_tools=True,
                         model=model,
                     ),
@@ -1492,7 +1611,6 @@ async def inspect_selected_route(req: InspectRouteRequest) -> dict:
                     None,
                     use_armor=req.use_armor,
                     use_transam=False,
-                    use_think_lang=req.use_think_lang,
                     agent_tools=True,
                     model=model,
                 ),
@@ -1515,12 +1633,10 @@ async def inspect_selected_route(req: InspectRouteRequest) -> dict:
                 None,
                 use_armor=req.use_armor,
                 use_transam=False,
-                use_think_lang=req.use_think_lang,
                 agent_tools=True,
                 model=req.model,
             ),
             use_armor=req.use_armor,
-            use_think_lang=req.use_think_lang,
         ):
             if isinstance(event.get("route_info"), dict):
                 info = event["route_info"]
@@ -1578,7 +1694,6 @@ class ChatRequest(BaseModel):
     use_armor: StrictBool = False
     use_transam: StrictBool = False
     use_agy_fast: StrictBool = False
-    use_think_lang: StrictBool = False
     account_id: str | None = None
 
 
@@ -2221,9 +2336,6 @@ async def _stream_agy(
     register_injector=None,
     account_id: str | None = None,
     use_armor: bool = False,
-    use_think_lang: bool = False,
-    think_lang_user_text: str | None = None,
-    think_lang_history: list[str] | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
     agy_fast_info: dict[str, Any] | None = None,
 ):
@@ -2258,9 +2370,6 @@ async def _stream_agy(
                 timeout=turn_timeout,
                 register_injector=register_injector,
                 use_armor=use_armor,
-                use_think_lang=use_think_lang,
-                think_lang_user_text=think_lang_user_text,
-                think_lang_history=think_lang_history,
                 mcp_servers=mcp_servers,
                 agy_fast_info=agy_fast_info,
                 is_shutting_down=lambda: web_turns.shutting_down,
@@ -2272,17 +2381,8 @@ async def _stream_agy(
         return
 
     effective_cli_prompt = prompt
-    resolved_cli_think_lang: str | None = None
-    if use_think_lang and effective_cli_prompt and THINK_LANG_SYSTEM_DIRECTIVE not in effective_cli_prompt:
-        effective_cli_prompt = f"{THINK_LANG_SYSTEM_DIRECTIVE}\n\n{effective_cli_prompt}"
     if use_armor and effective_cli_prompt and ARMOR_DELIVERY_SEAT not in effective_cli_prompt:
         effective_cli_prompt = f"{ARMOR_DELIVERY_SEAT}\n\n{effective_cli_prompt}"
-    if use_think_lang and effective_cli_prompt:
-        effective_cli_prompt, resolved_cli_think_lang = append_think_lang_reminder(
-            effective_cli_prompt,
-            user_text=think_lang_user_text if think_lang_user_text is not None else prompt,
-            history_user_texts=think_lang_history,
-        )
 
     argv = _build_argv(
         # The CLI validates its own model id. The relay independently pins the user's
@@ -2300,12 +2400,6 @@ async def _stream_agy(
     route_info = _new_route_info(uuid.uuid4().hex, model)
     if use_armor:
         route_info["armor"] = {"enabled": True, "status": "armed_cli", "retries": 0}
-    if use_think_lang:
-        route_info["think_lang"] = (
-            {"enabled": True, "lang": resolved_cli_think_lang}
-            if resolved_cli_think_lang
-            else {"enabled": True}
-        )
     log_dir = tempfile.TemporaryDirectory(prefix="agy-route-", dir=str(SCRATCH))
     log_path = Path(log_dir.name) / "cli.log"
     argv.extend(["--log-file", str(log_path)])
@@ -2976,8 +3070,38 @@ async def _fetch_profile_models(run_env: dict[str, str], profile: str) -> list[d
     return []
 
 
+async def _fetch_account_models(account_id: str | None = None) -> list[dict[str, str]]:
+    """Fetch the exact models available to a specific agy account (or active account if None)."""
+    resolved_id = (account_id or "").strip()
+    if resolved_id == "__active__":
+        resolved_id = ""
+    if resolved_id:
+        if _resolve_account_file(resolved_id) is None:
+            raise HTTPException(status_code=404, detail=f"账号 '{resolved_id}' 不存在")
+        cache_key = resolved_id
+    else:
+        active_id = _active_account_id()
+        cache_key = active_id or "__active__"
+
+    now = time.monotonic()
+    cached = _account_models_cache.get(cache_key)
+    if cached and now - cached[0] < _MODELS_TTL:
+        return cached[1]
+
+    run_env = _agy_environment(account_id=resolved_id) if resolved_id else _agy_environment()
+    names = await _fetch_profile_models(run_env, "native")
+    if names:
+        _account_models_cache[cache_key] = (time.monotonic(), names)
+        for m in names:
+            _models_label_map[m["id"]] = m["name"]
+    return names
+
+
 @app.get("/api/models")
-async def models() -> dict:
+async def models(account_id: str | None = None) -> dict:
+    if account_id is not None and account_id.strip():
+        return {"models": await _fetch_account_models(account_id.strip())}
+
     global _models_cache
     now = time.monotonic()
     if _models_cache and now - _models_cache[0] < _MODELS_TTL:
@@ -3496,6 +3620,7 @@ def _clear_quota_cache() -> None:
     _quota_cache["timestamp"] = 0.0
     _quota_cache["retry_at"] = 0.0
     _models_cache = None
+    _account_models_cache.clear()
 
 
 def _switch_to_account(account_id: str) -> dict:
@@ -3831,7 +3956,23 @@ async def inject_web_turn_message(turn_id: str, req: InjectTurnMessageRequest):
 
 _HISTORY_TRUNCATE_MARKER = "\n... [内容过长已截断] ...\n"
 _HISTORY_MAX_BYTES = 48 * 1024
+_CLAUDE_AGY_HISTORY_MAX_BYTES = 96 * 1024
 _HISTORY_MIN_EXCERPT_BYTES = 512
+_FENCE_LINE_RE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})")
+
+
+def _scan_unclosed_fence(chunk: str) -> str | None:
+    open_fence: str | None = None
+    for line in chunk.splitlines():
+        m = _FENCE_LINE_RE.match(line)
+        if not m:
+            continue
+        token = m.group(1)
+        if open_fence is None:
+            open_fence = token
+        elif token[0] == open_fence[0] and len(token) >= len(open_fence) and not line[m.end() :].strip():
+            open_fence = None
+    return open_fence[:3] if open_fence else None
 
 
 def _truncate_utf8_head_tail(text: str, max_bytes: int) -> str:
@@ -3839,14 +3980,61 @@ def _truncate_utf8_head_tail(text: str, max_bytes: int) -> str:
     if len(encoded) <= max_bytes:
         return text
     marker_bytes = _HISTORY_TRUNCATE_MARKER.encode("utf-8")
-    if max_bytes <= len(marker_bytes) + 16:
+    fence_slack = 10
+    if max_bytes <= len(marker_bytes) + fence_slack + 16:
         return encoded[:max(0, max_bytes)].decode("utf-8", errors="ignore")
-    budget = max_bytes - len(marker_bytes)
+    budget = max_bytes - len(marker_bytes) - fence_slack
     head_budget = budget // 2
     tail_budget = budget - head_budget
     head = encoded[:head_budget].decode("utf-8", errors="ignore").rstrip()
     tail = encoded[-tail_budget:].decode("utf-8", errors="ignore").lstrip()
-    return f"{head}{_HISTORY_TRUNCATE_MARKER}{tail}"
+    head_fence = _scan_unclosed_fence(head)
+    tail_fence = _scan_unclosed_fence(tail)
+    close_head = f"\n{head_fence}" if head_fence else ""
+    open_tail = f"{tail_fence}\n" if tail_fence else ""
+    return f"{head}{close_head}{_HISTORY_TRUNCATE_MARKER}{open_tail}{tail}"
+
+
+def _summarize_assistant_tool_steps(row: dict) -> str:
+    """Build a compact single-line summary of prior tool calls so stateless Claude->agy turns retain file/command context."""
+    steps = row.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return ""
+    items: list[str] = []
+    for step in steps:
+        if not isinstance(step, dict) or step.get("type") != "tool_use":
+            continue
+        label = str(step.get("toolLabel") or step.get("toolName") or "").strip()
+        inp = step.get("toolInput")
+        if isinstance(inp, dict):
+            raw_name = str(step.get("toolName") or label)
+            short_fast = re.sub(r"^(?:mcp_ide-tools_)?(?:mcp__agy-fast_[^_]+__|mcp_agy-fast_[^_]+_|agy-fast:)", "", raw_name)
+            if short_fast in ("apply_edits", "batch_search", "quick_outline", "read_slices", "run_checks"):
+                edits = inp.get("edits")
+                if isinstance(edits, list) and edits:
+                    paths = [Path(str(e.get("path"))).name for e in edits[:3] if isinstance(e, dict) and e.get("path")]
+                    suffix = f" +{len(edits) - 3}" if len(edits) > 3 else ""
+                    label = f"{short_fast}({', '.join(paths)}{suffix})" if paths else f"{short_fast}({len(edits)} files)"
+                elif isinstance(inp.get("paths"), list) and inp["paths"]:
+                    paths = [Path(str(p)).name for p in inp["paths"][:3] if p]
+                    suffix = f" +{len(inp['paths']) - 3}" if len(inp["paths"]) > 3 else ""
+                    label = f"{short_fast}({', '.join(paths)}{suffix})"
+                elif isinstance(inp.get("toolSummary"), str) and inp["toolSummary"].strip():
+                    label = f"{short_fast}: {inp['toolSummary'].strip()[:48]}"
+        if not label:
+            continue
+        label = re.sub(r"\s+", " ", label)[:72]
+        if step.get("status") in ("error", "failed"):
+            label += " [err]"
+        if not items or items[-1] != label:
+            items.append(label)
+    if not items:
+        return ""
+    omitted = max(0, len(items) - 10)
+    shown = items[-10:]
+    prefix = f"+{omitted} earlier, " if omitted else ""
+    summary = f"[Prior tool actions: {prefix}{'; '.join(shown)}]"
+    return summary[:520]
 
 
 def _soften_messages_for_outbound(messages: list[Message]) -> tuple[list[Message], list[str]]:
@@ -3873,6 +4061,7 @@ def _recent_saved_messages(
     *,
     soften_user: bool = False,
     sanitize_transam: bool = False,
+    include_tool_summary: bool = False,
 ) -> list[Message]:
     # Leave room for Claude's system instructions and tool definitions.
     recent: list[Message] = []
@@ -3896,6 +4085,10 @@ def _recent_saved_messages(
                 continue
             if row.get("role") == "user":
                 raw_content, _ = soften_prompt(raw_content)
+        if include_tool_summary and row.get("role") == "assistant":
+            tool_summary = _summarize_assistant_tool_steps(row)
+            if tool_summary:
+                raw_content = f"{tool_summary}\n{raw_content}" if raw_content.strip() else tool_summary
         attachments = row.get("attachments") if isinstance(row.get("attachments"), list) else None
         formatted = _format_message_content(Message(role=row["role"], content=raw_content, attachments=attachments))
         if not formatted.strip():
@@ -3994,8 +4187,10 @@ def _prompt_with_saved_history(
 ) -> str:
     recent = _recent_saved_messages(
         history,
+        max_bytes=_CLAUDE_AGY_HISTORY_MAX_BYTES if claude_agy else _HISTORY_MAX_BYTES,
         soften_user=soften_history,
         sanitize_transam=sanitize_transam,
+        include_tool_summary=claude_agy,
     )
     if claude_agy:
         return _render_claude_agy_prompt(recent, req.messages)
@@ -4105,13 +4300,7 @@ async def chat(req: ChatRequest):
         transam_home_lease = ""
         try:
             effective_prompt = prompt
-            raw_last_user_text = req.messages[-1].content if req.messages else prompt
             last_user_text = outbound_req.messages[-1].content if outbound_req.messages else prompt
-            think_lang_history = (
-                collect_user_history_texts(saved, req.messages[:-1])
-                if req.use_think_lang
-                else None
-            )
             transam_continue = (
                 is_continue_prompt(last_user_text) and has_transam_history_tags(saved)
                 if req.use_transam
@@ -4122,6 +4311,7 @@ async def chat(req: ChatRequest):
             agy_fast_meta: dict[str, Any] | None = None
             if req.use_agy_fast and not req.api_connection:
                 agy_fast_cfg, agy_fast_meta = await asyncio.to_thread(_resolve_agy_fast_turn)
+            fast_turn_key = cid or f"turn-{uuid.uuid4().hex}"
             include_fast_snapshot = bool(cid) or not (saved or continue_last)
             if req.use_armor and armor_hits:
                 logger.info("Armor: 出站软化改写命中 %d 项: %s", len(armor_hits), armor_hits)
@@ -4136,13 +4326,13 @@ async def chat(req: ChatRequest):
                 if (not req.use_claude_agy or (requested_model and requested_model != "default"))
                 else await _default_claude_agy_model()
             )
+            # ACP and Claude->agy inject Armor & TRANS-AM per-request via system_append;
+            # only sync 00-armor.md / 01-transam.md on disk for non-ACP CLI fallback (api_connection).
             armor_home_lease = _sync_armor_rules_concurrency_safe(
-                req.use_armor,
+                bool(req.use_armor and req.api_connection),
                 target_cwd=effective_cwd,
                 agy_home=effective_home,
             )
-            # ACP and Claude->agy inject TRANS-AM per-request via system_append;
-            # only sync 01-transam.md on disk for non-ACP CLI fallback (api_connection).
             transam_home_lease = _sync_transam_rules_concurrency_safe(
                 bool(req.use_transam and req.api_connection),
                 target_cwd=effective_cwd,
@@ -4217,20 +4407,22 @@ async def chat(req: ChatRequest):
                         info["prompt_mode"] = "claude_code_enhanced"
                         if transam_meta:
                             info["transam"] = dict(transam_meta)
-                        if req.use_think_lang:
-                            info["think_lang"] = {"enabled": True}
                         return info
 
+                    orch_include_snapshot = (
+                        not native_id_for_turn
+                        or bool(fallback_prompt)
+                        or has_agy_fast_session_snapshot(cid, target_cwd)
+                    )
                     orch_system_append = await _compose_system_append_async(
                         _claude_agy_orchestrator_system_append(req.system),
                         use_armor=req.use_armor,
                         use_transam=req.use_transam,
                         use_agy_fast=bool(agy_fast_meta),
-                        use_think_lang=req.use_think_lang,
                         agy_fast_mode="acp",
                         target_cwd=target_cwd,
-                        include_agy_fast_snapshot=include_fast_snapshot,
-                        agy_fast_session_key=cid,
+                        include_agy_fast_snapshot=orch_include_snapshot,
+                        agy_fast_session_key=fast_turn_key,
                         agent_tools=True,
                         model=model,
                         model_label=req.model_label,
@@ -4256,13 +4448,16 @@ async def chat(req: ChatRequest):
                             timeout=0,
                             register_injector=register_injector,
                             use_armor=req.use_armor,
-                            use_think_lang=req.use_think_lang,
-                            think_lang_user_text=raw_last_user_text,
-                            think_lang_history=think_lang_history,
                             mcp_servers=(agy_fast_cfg["acp_mcp_servers"] if agy_fast_cfg and agy_fast_meta else None),
                             agy_fast_info=agy_fast_meta,
                             is_shutting_down=lambda: web_turns.shutting_down,
                         ):
+                            if event.get("event") == "init" and event.get("conversation_id") and agy_fast_meta:
+                                bind_agy_fast_session_snapshot(
+                                    stable_id or event["conversation_id"],
+                                    target_cwd,
+                                    fast_turn_key,
+                                )
                             if stable_id:
                                 if event.get("event") == "init" and event.get("conversation_id"):
                                     native_id_for_turn = event["conversation_id"]
@@ -4274,8 +4469,6 @@ async def chat(req: ChatRequest):
                                     event["route_info"]["native_conversation_id"] = native_id_for_turn
                             if transam_meta and isinstance(event.get("route_info"), dict):
                                 event["route_info"]["transam"] = dict(transam_meta)
-                            if req.use_think_lang and isinstance(event.get("route_info"), dict):
-                                event["route_info"].setdefault("think_lang", {})["enabled"] = True
                             yield event
                     finally:
                         if lease:
@@ -4290,9 +4483,6 @@ async def chat(req: ChatRequest):
                     route["armor"] = {"enabled": True, "status": "armed", "retries": 0}
                 if agy_fast_meta:
                     route["agy_fast"] = dict(agy_fast_meta)
-                if req.use_think_lang:
-                    detected_tl, _ = detect_think_target_lang(raw_last_user_text, think_lang_history)
-                    route["think_lang"] = {"enabled": True, "lang": detected_tl} if detected_tl else {"enabled": True}
                 claude_prompt = _prompt_with_saved_history(
                     outbound_req,
                     saved,
@@ -4313,7 +4503,6 @@ async def chat(req: ChatRequest):
                     use_armor=req.use_armor,
                     use_transam=req.use_transam,
                     use_agy_fast=bool(agy_fast_meta),
-                    use_think_lang=req.use_think_lang,
                     agy_fast_mode="claude_agy",
                     target_cwd=target_cwd,
                     include_agy_fast_snapshot=include_fast_snapshot,
@@ -4338,9 +4527,6 @@ async def chat(req: ChatRequest):
                         system_append=claude_system_append,
                         register_injector=register_injector,
                         use_armor=req.use_armor,
-                        use_think_lang=req.use_think_lang,
-                        think_lang_user_text=raw_last_user_text,
-                        think_lang_history=think_lang_history,
                         use_agy_fast=bool(agy_fast_meta),
                         agy_fast_mcp_servers=(agy_fast_cfg["claude_mcp_servers"] if agy_fast_cfg and agy_fast_meta else None),
                         agy_fast_allowed_tools=(agy_fast_cfg["claude_allowed_tools"] if agy_fast_cfg and agy_fast_meta else None),
@@ -4415,16 +4601,20 @@ async def chat(req: ChatRequest):
                         is_continue=transam_continue,
                         dice=transam_meta["dice"],
                     )
+            acp_include_snapshot = (
+                (not native_id_for_turn and not continue_last)
+                or bool(fallback_prompt)
+                or has_agy_fast_session_snapshot(cid, effective_cwd)
+            )
             acp_system_append = await _compose_system_append_async(
                 req.system,
                 use_armor=req.use_armor,
                 use_transam=req.use_transam,
                 use_agy_fast=bool(agy_fast_meta),
-                use_think_lang=req.use_think_lang,
                 agy_fast_mode="acp",
                 target_cwd=effective_cwd,
-                include_agy_fast_snapshot=include_fast_snapshot,
-                agy_fast_session_key=cid,
+                include_agy_fast_snapshot=acp_include_snapshot,
+                agy_fast_session_key=fast_turn_key,
                 agent_tools=not req.api_connection,
                 model=req.model,
                 model_label=req.model_label,
@@ -4441,12 +4631,15 @@ async def chat(req: ChatRequest):
                 register_injector=register_injector,
                 account_id=turn_account_id,
                 use_armor=req.use_armor,
-                use_think_lang=req.use_think_lang,
-                think_lang_user_text=raw_last_user_text,
-                think_lang_history=think_lang_history,
                 mcp_servers=(agy_fast_cfg["acp_mcp_servers"] if agy_fast_cfg and agy_fast_meta else None),
                 agy_fast_info=agy_fast_meta,
             ):
+                if event.get("event") == "init" and event.get("conversation_id") and agy_fast_meta:
+                    bind_agy_fast_session_snapshot(
+                        stable_id or event["conversation_id"],
+                        effective_cwd,
+                        fast_turn_key,
+                    )
                 if stable_id:
                     if event.get("event") == "init" and event.get("conversation_id"):
                         native_id_for_turn = event["conversation_id"]
@@ -4458,8 +4651,6 @@ async def chat(req: ChatRequest):
                         event["route_info"]["native_conversation_id"] = native_id_for_turn
                 if transam_meta and isinstance(event.get("route_info"), dict):
                     event["route_info"]["transam"] = dict(transam_meta)
-                if req.use_think_lang and isinstance(event.get("route_info"), dict):
-                    event["route_info"].setdefault("think_lang", {})["enabled"] = True
                 if req.api_connection:
                     # Redact before WebTurn persists events or makes them available to reconnecting readers.
                     secret = req.api_connection.api_key.get_secret_value()
@@ -4527,8 +4718,8 @@ def _openai_stream_response(req: ChatRequest, source):
                 kind = event.get("event")
                 if isinstance(event.get("route_info"), dict):
                     metadata = event["route_info"]
-                    if req.use_think_lang:
-                        metadata.setdefault("think_lang", {})["enabled"] = True
+                    if isinstance(metadata, dict):
+                        pass
                 if kind == "error":
                     yield f'data: {json.dumps({"error": {"message": str(event.get("error") or "agy generation failed"), "type": "upstream_error", "code": "AGY_ERROR"}}, ensure_ascii=False)}\n\n'
                     return  # An error must not be followed by a successful stop chunk.
@@ -4581,17 +4772,15 @@ async def openai_chat(req: ChatRequest) -> Response:
 
     prompt, cid, continue_last, user_id = await _resolve_prompt_and_session(outbound_req)
     effective_cwd = _within_allowed(req.cwd) or str(SCRATCH)
-    sync_armor_rules(
-        req.use_armor,
+    armor_compat_lease = _sync_armor_rules_concurrency_safe(
+        bool(req.use_armor and req.api_connection),
         target_cwd=effective_cwd,
         agy_home=HOME,
-        extra_homes=_claude_agy_candidate_homes(),
     )
-    sync_transam_rules(
-        False,
+    transam_compat_lease = _sync_transam_rules_concurrency_safe(
+        bool(req.use_transam and req.api_connection),
         target_cwd=effective_cwd,
         agy_home=HOME,
-        extra_homes=_claude_agy_candidate_homes(),
         model=req.model,
         model_label=req.model_label,
     )
@@ -4606,54 +4795,55 @@ async def openai_chat(req: ChatRequest) -> Response:
     agy_fast_meta: dict[str, Any] | None = None
     if req.use_agy_fast and not req.api_connection:
         agy_fast_cfg, agy_fast_meta = await asyncio.to_thread(_resolve_agy_fast_turn)
+    compat_fast_key = cid or f"compat-{uuid.uuid4().hex}"
     compat_system_append = await _compose_system_append_async(
         req.system,
         use_armor=req.use_armor,
         use_transam=req.use_transam,
         use_agy_fast=bool(agy_fast_meta),
-        use_think_lang=req.use_think_lang,
         agy_fast_mode="acp",
         target_cwd=effective_cwd,
-        include_agy_fast_snapshot=bool(cid) or not continue_last,
-        agy_fast_session_key=cid,
+        include_agy_fast_snapshot=not continue_last or has_agy_fast_session_snapshot(cid, effective_cwd),
+        agy_fast_session_key=compat_fast_key,
         agent_tools=not req.api_connection,
         model=req.model,
         model_label=req.model_label,
     )
 
+    async def _guarded_compat_source():
+        try:
+            async for ev in _stream_agy(
+                prompt=prompt,
+                model=req.model,
+                cwd=req.cwd,
+                conversation_id=cid,
+                continue_last=continue_last,
+                user_id=user_id,
+                api_connection=req.api_connection,
+                system_append=compat_system_append,
+                use_armor=req.use_armor,
+                mcp_servers=(agy_fast_cfg["acp_mcp_servers"] if agy_fast_cfg and agy_fast_meta else None),
+                agy_fast_info=agy_fast_meta,
+            ):
+                if ev.get("event") == "init" and ev.get("conversation_id") and agy_fast_meta:
+                    bind_agy_fast_session_snapshot(ev["conversation_id"], effective_cwd, compat_fast_key)
+                yield ev
+        finally:
+            _release_transam_turn_home(transam_compat_lease)
+            _release_armor_turn_home(armor_compat_lease)
+
+    source = _guarded_compat_source()
+    if getattr(req, "stream", False):
+        return _openai_stream_response(req, source)
     parts: list[str] = []
     error_msg: str | None = None
     response_metadata = _new_route_info(requested_model=req.model)
-    compat_last_user_text = req.messages[-1].content if req.messages else prompt
-    compat_think_history = (
-        collect_user_history_texts(None, req.messages[:-1])
-        if req.use_think_lang
-        else None
-    )
-    source = _stream_agy(
-        prompt=prompt,
-        model=req.model,
-        cwd=req.cwd,
-        conversation_id=cid,
-        continue_last=continue_last,
-        user_id=user_id,
-        api_connection=req.api_connection,
-        system_append=compat_system_append,
-        use_armor=req.use_armor,
-        use_think_lang=req.use_think_lang,
-        think_lang_user_text=compat_last_user_text,
-        think_lang_history=compat_think_history,
-        mcp_servers=(agy_fast_cfg["acp_mcp_servers"] if agy_fast_cfg and agy_fast_meta else None),
-        agy_fast_info=agy_fast_meta,
-    )
-    if getattr(req, "stream", False):
-        return _openai_stream_response(req, source)
     async for ev in source:
         if isinstance(ev.get("route_info"), dict):
             response_metadata = ev["route_info"]
-            if req.use_think_lang:
-                response_metadata.setdefault("think_lang", {})["enabled"] = True
-        if ev.get("event") == "delta" and ev.get("delta"):
+        if ev.get("event") == "segment_reset":
+            parts.clear()
+        elif ev.get("event") == "delta" and ev.get("delta"):
             parts.append(ev["delta"])
         elif ev.get("event") == "result" and not parts and ev.get("response"):
             parts.append(ev["response"])

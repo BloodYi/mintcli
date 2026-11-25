@@ -32,6 +32,7 @@ export type ReasoningProps = {
   isStreaming?: boolean;
   open?: boolean;
   defaultOpen?: boolean;
+  disableAutoClose?: boolean;
   onOpenChange?: (open: boolean) => void;
   duration?: number;
 } & React.HTMLAttributes<HTMLDivElement>;
@@ -43,6 +44,7 @@ export const Reasoning = React.memo<ReasoningProps>(
     isStreaming = false,
     open: controlledOpen,
     defaultOpen,
+    disableAutoClose = false,
     onOpenChange,
     duration: durationProp,
     children,
@@ -94,8 +96,9 @@ export const Reasoning = React.memo<ReasoningProps>(
       }
     }, [isStreaming, isOpen, setIsOpen, isExplicitlyClosed]);
 
-    // Auto-close after streaming ends
+    // Auto-close after streaming ends (unless auto-translate or active translation keeps it open)
     React.useEffect(() => {
+      if (disableAutoClose) return;
       if (hasEverStreamedRef.current && !isStreaming && isOpen && !hasAutoClosed) {
         const timer = setTimeout(() => {
           setIsOpen(false);
@@ -103,7 +106,7 @@ export const Reasoning = React.memo<ReasoningProps>(
         }, AUTO_CLOSE_DELAY);
         return () => clearTimeout(timer);
       }
-    }, [isStreaming, isOpen, setIsOpen, hasAutoClosed]);
+    }, [disableAutoClose, isStreaming, isOpen, setIsOpen, hasAutoClosed]);
 
     const contextValue = React.useMemo(
       () => ({ duration, isOpen, isStreaming, setIsOpen }),

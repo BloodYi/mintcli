@@ -5,7 +5,8 @@ import { api, readApiJson } from '@/shared/api';
 import type { AntigravityMessage } from '@/shared/types';
 import { useAntigravity } from '@/modules/antigravity/hooks/useAntigravity';
 import { useAgyFastStatus } from '@/modules/antigravity/hooks/useAgyFastStatus';
-import { MarkdownImage, MarkdownVideo, formatTransAmMarkdown, isImagePath, isVideoPath } from '@/modules/chat';
+import { formatThinkTranslateAccountLabel, useThinkTranslateConfig } from '@/modules/antigravity/hooks/useThinkTranslate';
+import { MarkdownImage, MarkdownVideo, ThinkingTranslateBlock, formatTransAmMarkdown, isImagePath, isVideoPath } from '@/modules/chat';
 import { QuotaWindow } from '@/shared/ui/QuotaWindow';
 import { readStoredUiPreferences } from '@/shared/uiPreferences';
 import { subscribeToUserPreferences, writeUserPreference } from '@/shared/userSettings';
@@ -16,25 +17,27 @@ const CONTROL = 'min-h-10 rounded-md border border-border bg-background px-3 py-
 export function AntigravityWorkspace() {
   const agent = useAntigravity();
   const agyFastPlugin = useAgyFastStatus(true);
+  const thinkTranslateCfg = useThinkTranslateConfig(true);
+  const [thinkCfgOpen, setThinkCfgOpen] = useState(false);
   const [agyArmor, setAgyArmor] = useState(() => readStoredUiPreferences().agyArmor);
   const [agyTransam, setAgyTransam] = useState(() => readStoredUiPreferences().agyTransam);
   const [agyFast, setAgyFast] = useState(() => readStoredUiPreferences().agyFast);
-  const [agyThinkLang, setAgyThinkLang] = useState(() => readStoredUiPreferences().agyThinkLang);
+  const [agyThinkTranslate, setAgyThinkTranslate] = useState(() => readStoredUiPreferences().agyThinkTranslate);
   const [agyUseClaude, setAgyUseClaude] = useState(() => readStoredUiPreferences().agyUseClaude);
   useEffect(() => subscribeToUserPreferences(() => {
     const prefs = readStoredUiPreferences();
     setAgyArmor(prefs.agyArmor);
     setAgyTransam(prefs.agyTransam);
     setAgyFast(prefs.agyFast);
-    setAgyThinkLang(prefs.agyThinkLang);
+    setAgyThinkTranslate(prefs.agyThinkTranslate);
     setAgyUseClaude(prefs.agyUseClaude);
   }), []);
-  const togglePref = (key: 'agyArmor' | 'agyTransam' | 'agyFast' | 'agyThinkLang' | 'agyUseClaude', next: boolean) => {
+  const togglePref = (key: 'agyArmor' | 'agyTransam' | 'agyFast' | 'agyThinkTranslate' | 'agyUseClaude', next: boolean) => {
     const prefs = { ...readStoredUiPreferences(), [key]: next };
     if (key === 'agyArmor') setAgyArmor(next);
     else if (key === 'agyTransam') setAgyTransam(next);
     else if (key === 'agyFast') setAgyFast(next);
-    else if (key === 'agyThinkLang') setAgyThinkLang(next);
+    else if (key === 'agyThinkTranslate') setAgyThinkTranslate(next);
     else setAgyUseClaude(next);
     writeUserPreference('uiPreferences', prefs);
   };
@@ -52,9 +55,27 @@ export function AntigravityWorkspace() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const end = useRef<HTMLDivElement | null>(null);
   const managerRef = useRef<HTMLDialogElement | null>(null);
+  const thinkMenuRef = useRef<HTMLDivElement | null>(null);
   const active = agent.accounts.find(item => item.active);
   const visibleQuota = agent.quota && (!active?.email || active.email === 'unknown' || agent.quota.email === active.email) ? agent.quota : null;
   useEffect(() => { end.current?.scrollIntoView?.({ block: 'end' }); }, [agent.messages]);
+  useEffect(() => {
+    if (!thinkCfgOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (thinkMenuRef.current && !thinkMenuRef.current.contains(event.target as Node)) {
+        setThinkCfgOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setThinkCfgOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [thinkCfgOpen]);
   useEffect(() => {
     const dialog = managerRef.current;
     if (manager && dialog && !dialog.open) dialog.showModal();
@@ -139,15 +160,73 @@ export function AntigravityWorkspace() {
             {agyFastPlugin.checking || agyFastPlugin.updating ? '⟳' : agyFastPlugin.status?.update_available ? '↑ 更新' : '↻'}
           </button>
         </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={agyThinkLang}
-          className={CONTROL + (agyThinkLang ? ' border-violet-500/50 bg-violet-500/15 text-violet-600 dark:text-violet-400' : '')}
-          onClick={() => togglePref('agyThinkLang', !agyThinkLang)}
-        >
-          🌐 思考跟随
-        </button>
+        <div ref={thinkMenuRef} className="relative inline-flex items-center">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={agyThinkTranslate}
+            className={CONTROL + ' rounded-r-none border-r-0' + (agyThinkTranslate ? ' border-violet-500/50 bg-violet-500/15 text-violet-600 dark:text-violet-400' : '')}
+            onClick={() => togglePref('agyThinkTranslate', !agyThinkTranslate)}
+          >
+            🌐 思考翻译
+          </button>
+          <button
+            type="button"
+            aria-label="配置思考翻译账号与模型"
+            className={CONTROL + ' rounded-l-none px-2.5' + (agyThinkTranslate ? ' border-violet-500/50 bg-violet-500/15 text-violet-600 dark:text-violet-400' : '')}
+            onClick={() => {
+              setThinkCfgOpen((prev) => {
+                const next = !prev;
+                if (next) void thinkTranslateCfg.refresh();
+                return next;
+              });
+            }}
+          >
+            ⚙
+          </button>
+          {thinkCfgOpen && (
+            <div className="absolute right-0 top-12 z-50 w-72 rounded-xl border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="font-semibold">思考翻译账号与模型</span>
+                <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setThinkCfgOpen(false)}>✕</button>
+              </div>
+              <div className="space-y-2">
+                <label className="block space-y-1">
+                  <span className="text-[11px] text-muted-foreground">翻译账号</span>
+                  <select
+                    className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs"
+                    value={thinkTranslateCfg.config.account_id}
+                    disabled={thinkTranslateCfg.saving}
+                    onChange={(e) => void thinkTranslateCfg.saveConfig({ account_id: e.target.value })}
+                  >
+                    <option value="">跟随当前活跃账号</option>
+                    {thinkTranslateCfg.accounts.map((acc) => (
+                      <option key={acc.id} value={acc.id}>{formatThinkTranslateAccountLabel(acc)}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-[11px] text-muted-foreground">
+                    翻译模型{thinkTranslateCfg.saving || thinkTranslateCfg.loading ? '（加载中…）' : ''}
+                  </span>
+                  <select
+                    className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs disabled:opacity-60"
+                    value={thinkTranslateCfg.config.model}
+                    disabled={thinkTranslateCfg.saving || thinkTranslateCfg.loading}
+                    onChange={(e) => void thinkTranslateCfg.saveConfig({ model: e.target.value })}
+                  >
+                    <option value="">默认模型</option>
+                    {thinkTranslateCfg.models.map((m) => (
+                      <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                    ))}
+                  </select>
+                </label>
+                {thinkTranslateCfg.message && <p className="text-[11px] text-emerald-600 dark:text-emerald-400">{thinkTranslateCfg.message}</p>}
+                {thinkTranslateCfg.error && <p className="text-[11px] text-red-500">{thinkTranslateCfg.error}</p>}
+              </div>
+            </div>
+          )}
+        </div>
         <button
           type="button"
           role="switch"
@@ -190,7 +269,16 @@ export function AntigravityWorkspace() {
           {!agent.messages.length && <div className="py-10 text-center text-muted-foreground"><h2 className="mb-2 text-lg font-medium">继续你的 agy 项目</h2><p className="text-sm">选择左侧旧聊天，或在这里新建一段对话。</p></div>}
           {agent.messages.map((message, index) => <article key={message.id || index} className="min-w-0 rounded-xl border border-border p-4">
             <p className="mb-2 text-xs font-semibold text-muted-foreground">{message.role === 'user' ? '你' : 'Antigravity'}</p>
-            {message.thinking && <details className="mb-3 text-sm text-muted-foreground"><summary className="cursor-pointer">查看 agy 返回的思考</summary><div className="mt-2 whitespace-pre-wrap break-words">{message.thinking}</div></details>}
+            {message.thinking && (
+              <ThinkingTranslateBlock
+                text={message.thinking}
+                isStreaming={message.status === 'streaming' && !message.content?.trim()}
+                className="mb-3"
+                renderContent={(displayText) => (
+                  <div className="whitespace-pre-wrap break-words">{displayText}</div>
+                )}
+              />
+            )}
             <div className="prose prose-sm max-w-none break-words dark:prose-invert prose-pre:overflow-x-auto">
               <ReactMarkdown
                 urlTransform={url => (url.startsWith('file://') ? url.replace(/^file:\/\/+/, '/') : defaultUrlTransform(url))}
@@ -231,7 +319,7 @@ export function AntigravityWorkspace() {
         event.preventDefault();
         const text = draft; const files = attachments;
         setDraft(''); setAttachments([]);
-        void agent.send(text, model, cwd, files, { useArmor: agyArmor, useTransam: agyTransam, useAgyFast: agyFast, useThinkLang: agyThinkLang, useClaudeAgy: agyUseClaude }).then(ok => { if (!ok) { setDraft(text); setAttachments(files); } });
+        void agent.send(text, model, cwd, files, { useArmor: agyArmor, useTransam: agyTransam, useAgyFast: agyFast, useClaudeAgy: agyUseClaude }).then(ok => { if (!ok) { setDraft(text); setAttachments(files); } });
       }}>
         <label className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">工作目录
           <input className={CONTROL + ' min-w-0 flex-1'} value={cwd} disabled={agent.busy} onChange={event => setCwd(event.target.value)} placeholder="留空使用 agy 默认目录" />

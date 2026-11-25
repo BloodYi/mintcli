@@ -4,6 +4,7 @@ import { ChevronRight } from 'lucide-react';
 import type { ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, LLMProvider,DiffLine,DiffStats,Project,ToolGroupItem } from '@/shared/types';
 import { getToolConfig } from '@/modules/chat/tools';
 import MessageComponent from '@/modules/chat/transcript/MessageComponent';
+import { ToolGroupExpandedContext } from '@/modules/chat/transcript/ThinkingTranslateBlock';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { DiffStatsBadge } from '@/modules/chat/tools/DiffStatsBadge';
 import { ToolStatusBadge } from '@/modules/chat/tools/ToolStatusBadge';
@@ -153,23 +154,25 @@ function ToolGroupContainer({
       </button>
 
       {showChildren && (
-        <div className="mt-2 space-y-3 sm:space-y-4">
-          {group.messages.map((message, index) => (
-            <MessageComponent
-              key={messageKeys[index]}
-              message={message}
-              prevMessage={index > 0 ? group.messages[index - 1] : prevMessage}
-              createDiff={createDiff}
-              onFileOpen={onFileOpen}
-              onShowSettings={onShowSettings}
-              onGrantToolPermission={onGrantToolPermission}
-              showRawParameters={showRawParameters}
-              showThinking={showThinking}
-              selectedProject={selectedProject}
-              provider={provider}
-            />
-          ))}
-        </div>
+        <ToolGroupExpandedContext.Provider value={isExpanded}>
+          <div className="mt-2 space-y-3 sm:space-y-4">
+            {group.messages.map((message, index) => (
+              <MessageComponent
+                key={messageKeys[index]}
+                message={message}
+                prevMessage={index > 0 ? group.messages[index - 1] : prevMessage}
+                createDiff={createDiff}
+                onFileOpen={onFileOpen}
+                onShowSettings={onShowSettings}
+                onGrantToolPermission={onGrantToolPermission}
+                showRawParameters={showRawParameters}
+                showThinking={showThinking}
+                selectedProject={selectedProject}
+                provider={provider}
+              />
+            ))}
+          </div>
+        </ToolGroupExpandedContext.Provider>
       )}
     </div>
   );

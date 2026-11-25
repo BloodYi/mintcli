@@ -32,6 +32,7 @@ export async function readAntigravityEvents(response: Response, receive: (event:
 /** Used by the live message view and fixtures; final server snapshots replace partial text. */
 export function applyAntigravityEvent(message: AntigravityMessage, event: AntigravityStreamEvent): AntigravityMessage {
   if (event.event === 'snapshot' && event.message) return { ...message, ...event.message };
+  if (event.event === 'segment_reset') return { ...message, content: '' };
   if (event.event === 'delta') return { ...message, content: message.content + String(event.delta ?? event.text ?? '') };
   if (event.event === 'thinking') return { ...message, thinking: event.mode === 'snapshot'
     ? String(event.thinking ?? '') : (message.thinking || '') + String(event.thinking ?? event.delta ?? '') };

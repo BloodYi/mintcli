@@ -2,9 +2,50 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { once } from 'node:events';
 import { antigravityBridge } from './antigravity.service.js';
+import { thinkTranslateService } from './think-translate.service.js';
 import { AppError } from '@/shared/index.js';
 
 const router = express.Router();
+
+router.get('/think-translate/config', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const accountId = typeof req.query.account_id === 'string' ? req.query.account_id : undefined;
+    const lite = req.query.lite === '1' || req.query.lite === 'true';
+    res.setHeader('Cache-Control', 'no-store, no-transform');
+    res.json(await thinkTranslateService.getConfig(accountId, { lite }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/think-translate/config', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+    res.setHeader('Cache-Control', 'no-store, no-transform');
+    res.json(await thinkTranslateService.saveConfig({
+      ...(body.account_id !== undefined ? { account_id: String(body.account_id ?? '') } : {}),
+      ...(body.model !== undefined ? { model: String(body.model ?? '') } : {}),
+      ...(body.target_lang !== undefined ? { target_lang: String(body.target_lang ?? '') } : {}),
+    }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/think-translate/translate', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+    res.setHeader('Cache-Control', 'no-store, no-transform');
+    res.json(await thinkTranslateService.translate({
+      text: typeof body.text === 'string' ? body.text : '',
+      ...(body.target_lang !== undefined ? { target_lang: String(body.target_lang ?? '') } : {}),
+      ...(body.account_id !== undefined ? { account_id: String(body.account_id ?? '') } : {}),
+      ...(body.model !== undefined ? { model: String(body.model ?? '') } : {}),
+    }));
+  } catch (error) {
+    next(error);
+  }
+});
 
 async function forward(req: Request, res: Response, next: NextFunction) {
   const controller = new AbortController();

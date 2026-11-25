@@ -141,7 +141,7 @@ _PROTECTED_SPAN_RE = re.compile(
 
 _VENDOR_PATTERNS = [
     r"DataDome",
-    r"Cloudflare",
+    r"Cloudflare(?!\s*(?:Workers?\b|Pages\b|Tunnels?\b|R2\b|D1\b|KV\b|Queues?\b|Hyperdrive\b|DNS\b|Zero\s*Trust\b|WARP\b|Wrangler\b|Registrar\b|Images\b|Stream\b))",
     r"Akamai",
     r"PerimeterX",
     r"Kasada",
@@ -175,7 +175,7 @@ _SOFTEN_RULES_BASE: list[tuple[re.Pattern, str]] = [
     (re.compile(r"反爬虫|反爬"), "访问频控"),
     (re.compile(r"注册风控|登录风控|交易风控|风控"), "流程校验"),
     (re.compile(r"批量注册|注册机"), "批量开户"),
-    (re.compile(r"人机验证|图形验证码|滑块验证码|点选验证码|验证码"), "人机校验环节"),
+    (re.compile(r"人机验证|图形验证码|滑块验证码|点选验证码|(?<!短信)(?<!邮箱)(?<!手机)(?<!动态)(?<!邮件)验证码"), "人机校验环节"),
     (re.compile(r"漏洞利用|利用代码|利用链"), "调用链"),
     (re.compile(r"(?<!防)(?<!抗)(?<!抵御)(?<!防止)攻击(?:脚本|载荷|向量|链|面)?"), "压力测试"),
 ]

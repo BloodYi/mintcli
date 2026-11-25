@@ -1,8 +1,8 @@
-import { ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Languages, Loader2, RefreshCw, Rocket, Shield, SlidersHorizontal, SquarePen, Zap } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Languages, Loader2, RefreshCw, Rocket, Settings2, Shield, SlidersHorizontal, SquarePen, Zap } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useAgyFastStatus } from '@/modules/antigravity';
+import { formatThinkTranslateAccountLabel, useAgyFastStatus, useThinkTranslateConfig } from '@/modules/antigravity';
 
 import type { AgentConnectionChoice, AppTab, LLMProvider, Project, ProjectSession } from '@/shared/types';
 import { LLMProviderLogo } from '@/shared/ui';
@@ -58,8 +58,8 @@ type WorkspaceHeaderProps = {
   agyFast?: boolean;
   agyFastDisabled?: boolean;
   onToggleAgyFast?: () => void;
-  agyThinkLang?: boolean;
-  onToggleAgyThinkLang?: () => void;
+  agyThinkTranslate?: boolean;
+  onToggleAgyThinkTranslate?: () => void;
 };
 
 /** Rendered by WorkspaceMain to show the workspace title and chat connection status alongside the scrollable tab bar. */
@@ -90,28 +90,35 @@ export default function WorkspaceHeader({
   agyFast = false,
   agyFastDisabled = false,
   onToggleAgyFast,
-  agyThinkLang = false,
-  onToggleAgyThinkLang,
+  agyThinkTranslate = false,
+  onToggleAgyThinkTranslate,
 }: WorkspaceHeaderProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const agyFastMenuRef = useRef<HTMLDivElement>(null);
+  const thinkTranslateMenuRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const [agyFastMenuOpen, setAgyFastMenuOpen] = useState(false);
+  const [thinkTranslateMenuOpen, setThinkTranslateMenuOpen] = useState(false);
   const agyFastPlugin = useAgyFastStatus(Boolean(onToggleAgyFast) && !isMobile);
+  const thinkTranslateCfg = useThinkTranslateConfig(Boolean(onToggleAgyThinkTranslate) && !isMobile);
   const hasOverflow = canScrollLeft || canScrollRight;
 
   useEffect(() => {
-    if (!agyFastMenuOpen) return;
+    if (!agyFastMenuOpen && !thinkTranslateMenuOpen) return;
     const onPointerDown = (event: MouseEvent) => {
-      if (agyFastMenuRef.current && !agyFastMenuRef.current.contains(event.target as Node)) {
+      if (agyFastMenuOpen && agyFastMenuRef.current && !agyFastMenuRef.current.contains(event.target as Node)) {
         setAgyFastMenuOpen(false);
+      }
+      if (thinkTranslateMenuOpen && thinkTranslateMenuRef.current && !thinkTranslateMenuRef.current.contains(event.target as Node)) {
+        setThinkTranslateMenuOpen(false);
       }
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setAgyFastMenuOpen(false);
+        setThinkTranslateMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', onPointerDown);
@@ -120,7 +127,7 @@ export default function WorkspaceHeader({
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [agyFastMenuOpen]);
+  }, [agyFastMenuOpen, thinkTranslateMenuOpen]);
 
   const updateScrollState = useCallback(() => {
     const el = scrollRef.current;
@@ -183,7 +190,7 @@ export default function WorkspaceHeader({
     const hasActiveAgyArmor = Boolean(onToggleAgyArmor && agyArmor);
     const hasActiveAgyTransam = Boolean(onToggleAgyTransam && agyTransam);
     const hasActiveAgyFast = Boolean(onToggleAgyFast && agyFast);
-    const hasActiveAgyThinkLang = Boolean(onToggleAgyThinkLang && agyThinkLang);
+    const hasActiveAgyThinkTranslate = Boolean(onToggleAgyThinkTranslate && agyThinkTranslate);
     const showAccountPill = isFloatingChatHeader && Boolean(onOpenMobileAccount);
     const pillProvider = activeAccount?.provider ?? selectedSession?.__provider ?? activeProvider;
     const accountLabel = formatCompactAccountLabel(activeAccount);
@@ -308,7 +315,7 @@ export default function WorkspaceHeader({
                 )}
               >
                 <SlidersHorizontal className="h-4 w-4" />
-                {(hasActiveAgyArmor || hasActiveAgyTransam || hasActiveAgyFast || hasActiveAgyThinkLang || hasActiveAgyClaude) && (
+                {(hasActiveAgyArmor || hasActiveAgyTransam || hasActiveAgyFast || hasActiveAgyThinkTranslate || hasActiveAgyClaude) && (
                   <span
                     aria-hidden="true"
                     className="absolute right-1 top-1 flex items-center gap-0.5"
@@ -322,7 +329,7 @@ export default function WorkspaceHeader({
                     {hasActiveAgyFast && (
                       <span className="h-2 w-2 rounded-full bg-sky-500 ring-2 ring-background" />
                     )}
-                    {hasActiveAgyThinkLang && (
+                    {hasActiveAgyThinkTranslate && (
                       <span className="h-2 w-2 rounded-full bg-violet-500 ring-2 ring-background" />
                     )}
                     {hasActiveAgyClaude && (
@@ -582,28 +589,115 @@ export default function WorkspaceHeader({
             </div>
           )}
 
-          {onToggleAgyThinkLang && (
-            <button
-              type="button"
-              role="switch"
-              aria-checked={agyThinkLang}
-              aria-label="切换思考语言跟随"
-              title={
-                agyThinkLang
-                  ? '已开启：内部思考过程（thinking）跟随用户语言输出（零延迟规则约束）'
-                  : '已关闭：点击开启思考过程跟随用户语言输出'
-              }
-              onClick={onToggleAgyThinkLang}
-              className={cn(
-                'mr-2 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
-                agyThinkLang
-                  ? 'border-violet-500/50 bg-violet-500/15 text-violet-600 hover:bg-violet-500/20 dark:text-violet-400'
-                  : 'border-border/70 bg-muted/40 text-muted-foreground hover:bg-accent hover:text-foreground',
+          {onToggleAgyThinkTranslate && (
+            <div ref={thinkTranslateMenuRef} className="relative mr-2 inline-flex shrink-0 items-center">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={agyThinkTranslate}
+                aria-label="切换思考自动翻译"
+                title={
+                  agyThinkTranslate
+                    ? '已开启：自动翻译思考内容（关闭时仍可点击每条思考旁的「翻译」按钮手动翻译）'
+                    : '已关闭：点击开启自动翻译思考内容（未开启时也可点击思考旁的「翻译」按钮手动翻译）'
+                }
+                onClick={onToggleAgyThinkTranslate}
+                className={cn(
+                  'inline-flex h-8 items-center gap-1.5 rounded-l-full border border-r-0 px-2.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                  agyThinkTranslate
+                    ? 'border-violet-500/50 bg-violet-500/15 text-violet-600 hover:bg-violet-500/20 dark:text-violet-400'
+                    : 'border-border/70 bg-muted/40 text-muted-foreground hover:bg-accent hover:text-foreground',
+                )}
+              >
+                <Languages className={cn('h-3.5 w-3.5', agyThinkTranslate ? 'text-violet-500' : 'text-muted-foreground')} />
+                <span>思考翻译</span>
+              </button>
+              <button
+                type="button"
+                aria-label="配置思考翻译账号与模型"
+                aria-expanded={thinkTranslateMenuOpen}
+                title="选择固定用于思考翻译的账号和模型"
+                onClick={() => {
+                  setThinkTranslateMenuOpen((open) => {
+                    const next = !open;
+                    if (next) void thinkTranslateCfg.refresh();
+                    return next;
+                  });
+                }}
+                className={cn(
+                  'inline-flex h-8 items-center justify-center rounded-r-full border px-2 text-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                  agyThinkTranslate
+                    ? 'border-violet-500/50 bg-violet-500/15 text-violet-600 hover:bg-violet-500/25 dark:text-violet-400'
+                    : 'border-border/70 bg-muted/40 text-muted-foreground hover:bg-accent hover:text-foreground',
+                )}
+              >
+                <Settings2 className="h-3 w-3" />
+              </button>
+              {thinkTranslateMenuOpen && (
+                <div className="absolute right-0 top-10 z-50 w-72 rounded-xl border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 font-semibold">
+                      <Languages className="h-3.5 w-3.5 text-violet-500" />
+                      <span>思考翻译设置</span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={thinkTranslateCfg.loading}
+                      onClick={() => void thinkTranslateCfg.refresh()}
+                      className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+                    >
+                      <RefreshCw className={cn('h-3 w-3', thinkTranslateCfg.loading && 'animate-spin')} />
+                      刷新
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-muted-foreground">
+                    选定账号与模型后，自动翻译和手动点击「翻译」都将固定使用该账号的模型。
+                  </p>
+                  <div className="mt-2.5 space-y-2">
+                    <label className="block space-y-1">
+                      <span className="text-[11px] font-medium text-muted-foreground">翻译账号</span>
+                      <select
+                        value={thinkTranslateCfg.config.account_id}
+                        disabled={thinkTranslateCfg.saving}
+                        onChange={(e) => void thinkTranslateCfg.saveConfig({ account_id: e.target.value })}
+                        className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-violet-500"
+                      >
+                        <option value="">跟随当前活跃账号</option>
+                        {thinkTranslateCfg.accounts.map((acc) => (
+                          <option key={acc.id} value={acc.id}>
+                            {formatThinkTranslateAccountLabel(acc)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block space-y-1">
+                      <span className="text-[11px] font-medium text-muted-foreground">
+                        翻译模型{thinkTranslateCfg.saving || thinkTranslateCfg.loading ? '（加载中…）' : ''}
+                      </span>
+                      <select
+                        value={thinkTranslateCfg.config.model}
+                        disabled={thinkTranslateCfg.saving || thinkTranslateCfg.loading}
+                        onChange={(e) => void thinkTranslateCfg.saveConfig({ model: e.target.value })}
+                        className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-violet-500 disabled:opacity-60"
+                      >
+                        <option value="">默认模型</option>
+                        {thinkTranslateCfg.models.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name || m.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  {thinkTranslateCfg.message && (
+                    <p className="mt-2 text-[11px] text-emerald-600 dark:text-emerald-400">{thinkTranslateCfg.message}</p>
+                  )}
+                  {thinkTranslateCfg.error && (
+                    <p className="mt-2 text-[11px] text-red-600 dark:text-red-400">{thinkTranslateCfg.error}</p>
+                  )}
+                </div>
               )}
-            >
-              <Languages className={cn('h-3.5 w-3.5', agyThinkLang ? 'text-violet-500' : 'text-muted-foreground')} />
-              <span>思考跟随</span>
-            </button>
+            </div>
           )}
 
           {onToggleAgyUseClaude && (

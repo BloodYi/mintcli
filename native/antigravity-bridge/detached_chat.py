@@ -392,6 +392,25 @@ class WebTurn:
             return meta
         if event.get('route_info'):
             message['routeInfo'] = copy.deepcopy(event['route_info'])
+        if kind == 'segment_reset':
+            steps = message.setdefault('steps', [])
+            last_tool_idx = -1
+            for idx in range(len(steps) - 1, -1, -1):
+                if steps[idx].get('type') == 'tool_use':
+                    last_tool_idx = idx
+                    break
+            kept_steps = []
+            for idx, st in enumerate(steps):
+                if idx > last_tool_idx and st.get('type') == 'text':
+                    self._step_raw.pop(st.get('id', ''), None)
+                else:
+                    kept_steps.append(st)
+            steps[:] = kept_steps
+            preserved_text = [str(st.get('content') or '') for st in steps if st.get('type') == 'text' and str(st.get('content') or '')]
+            message['rawText'] = '\n\n'.join(preserved_text)
+            message['finalResponse'] = ''
+            self.text()
+            return meta
         if kind == 'delta':
             chunk = str(event.get('delta') or event.get('text') or '')
             message['rawText'] += chunk

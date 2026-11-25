@@ -20,7 +20,7 @@ export type UiPreferences = {
   agyArmor: boolean;
   agyTransam: boolean;
   agyFast: boolean;
-  agyThinkLang: boolean;
+  agyThinkTranslate: boolean;
 };
 
 export type UiPreferenceKey = keyof UiPreferences;
@@ -40,7 +40,7 @@ const DEFAULTS: UiPreferences = {
   agyArmor: false,
   agyTransam: false,
   agyFast: false,
-  agyThinkLang: false,
+  agyThinkTranslate: false,
 };
 
 const PREFERENCE_KEYS = Object.keys(DEFAULTS) as UiPreferenceKey[];

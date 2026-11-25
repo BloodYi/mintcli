@@ -42,7 +42,7 @@ test('a fresh install gets the documented defaults', () => {
     agyArmor: false,
     agyTransam: false,
     agyFast: false,
-    agyThinkLang: false,
+    agyThinkTranslate: false,
   });
 });
 

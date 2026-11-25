@@ -274,6 +274,12 @@ export const api = {
     agyFastCheckUpdate: () => post('/api/antigravity/agy-fast/check-update', {}),
     agyFastUpdate: (body: { force?: boolean; only_if_auto_enabled?: boolean } = {}) => post('/api/antigravity/agy-fast/update', body),
     agyFastConfig: (body: { auto_update_enabled: boolean }) => post('/api/antigravity/agy-fast/config', body),
+    thinkTranslateConfig: (opts?: { lite?: boolean }) =>
+      get('/api/antigravity/think-translate/config' + (opts?.lite ? '?lite=1' : '')),
+    saveThinkTranslateConfig: (body: { account_id?: string; model?: string; target_lang?: string }) =>
+      post('/api/antigravity/think-translate/config', body),
+    translateThinking: (body: { text: string; target_lang?: string; account_id?: string; model?: string }) =>
+      post('/api/antigravity/think-translate/translate', body),
     conversations: () => get('/api/antigravity/conversations'),
     messages: (id: string, signal?: AbortSignal) => get('/api/antigravity/conversations/' + encodeURIComponent(id) + '/messages', { signal }),
     chat: (body: Record<string, unknown>, signal: AbortSignal) => post('/api/antigravity/chat', body, { signal }),

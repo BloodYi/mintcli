@@ -16,7 +16,6 @@ import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 from process_lifecycle import reap_cli_process
-from think_lang_engine import append_think_lang_reminder, detect_think_target_lang
 from armor_engine import (
     ARMOR_DELIVERY_SEAT,
     ARMOR_EXEC_SEAT,
@@ -168,9 +167,6 @@ async def stream_agy_acp(
     timeout: int = 0,
     register_injector: Callable[[Callable[[str, str], Awaitable[bool]] | None], None] | None = None,
     use_armor: bool = False,
-    use_think_lang: bool = False,
-    think_lang_user_text: str | None = None,
-    think_lang_history: Sequence[str] | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
     agy_fast_info: dict[str, Any] | None = None,
     is_shutting_down: Callable[[], bool] | None = None,
@@ -188,13 +184,6 @@ async def stream_agy_acp(
         route_info["cli_config_model"] = model
     if use_armor:
         route_info["armor"] = {"enabled": True, "status": "armed"}
-    if use_think_lang:
-        initial_seed = think_lang_user_text if think_lang_user_text is not None else prompt
-        detected_init_lang, _ = detect_think_target_lang(initial_seed, think_lang_history)
-        tl_entry = route_info.setdefault("think_lang", {})
-        tl_entry["enabled"] = True
-        if detected_init_lang:
-            tl_entry["lang"] = detected_init_lang
     if agy_fast_info:
         route_info["agy_fast"] = dict(agy_fast_info)
 
@@ -202,8 +191,6 @@ async def stream_agy_acp(
     log_path = Path(log_dir.name) / "acp.log"
     init_emitted_session_id: str | None = None
     recovery_attempt = 0
-    turn_lang_history: list[str] = list(think_lang_history or [])
-    recorded_initial_lang_seed = False
 
     try:
         while True:
@@ -259,14 +246,6 @@ async def stream_agy_acp(
                 if use_armor and content:
                     content, _ = soften_prompt(content)
                 outbound_content = content
-                if use_think_lang and outbound_content:
-                    outbound_content, _ = append_think_lang_reminder(
-                        outbound_content,
-                        user_text=content,
-                        history_user_texts=turn_lang_history,
-                    )
-                if content and content.strip():
-                    turn_lang_history.append(content)
                 req_id = next_id
                 next_id += 1
                 pending_prompt_ids[req_id] = message_uuid
@@ -497,18 +476,6 @@ async def stream_agy_acp(
                         seat_head = ARMOR_EXEC_SEAT.strip()
                         effective_prompt = f"{seat_head}\n\n{effective_prompt}" if effective_prompt else seat_head
                 outbound_prompt = effective_prompt
-                seed_user_text = think_lang_user_text if think_lang_user_text is not None else prompt
-                if use_think_lang and outbound_prompt:
-                    outbound_prompt, resolved_think_lang = append_think_lang_reminder(
-                        outbound_prompt,
-                        user_text=seed_user_text,
-                        history_user_texts=think_lang_history,
-                    )
-                    if resolved_think_lang:
-                        route_info.setdefault("think_lang", {"enabled": True})["lang"] = resolved_think_lang
-                if not recorded_initial_lang_seed and seed_user_text and seed_user_text.strip():
-                    turn_lang_history.append(seed_user_text)
-                    recorded_initial_lang_seed = True
                 pending_prompt_ids[prompt_req_id] = None
                 ordered_prompt_ids.append(prompt_req_id)
                 await _send(
@@ -613,6 +580,8 @@ async def stream_agy_acp(
                                             original_prompt=prompt,
                                         )
                                         if await _send_armor_retry(escalation_prompt):
+                                            if accumulated_text:
+                                                yield {"event": "segment_reset"}
                                             armor_refusal_intercepted = True
                                             accumulated_text.clear()
                                             armor_attempt += 1
@@ -745,6 +714,8 @@ async def stream_agy_acp(
                                     original_prompt=prompt,
                                 )
                                 if await _send_armor_retry(escalation_prompt):
+                                    if accumulated_text:
+                                        yield {"event": "segment_reset"}
                                     armor_refusal_intercepted = True
                                     accumulated_text.clear()
                                     armor_tail_hold = ""

@@ -394,7 +394,7 @@
     #armor-toggle,
     #transam-toggle,
     #agy-fast-toggle,
-    #think-lang-toggle {
+    #think-translate-toggle {
       font-size: 13px;
       width: 35px;
       padding: 5px;
@@ -405,7 +405,7 @@
     body[data-armor="off"] #armor-toggle,
     body[data-transam="off"] #transam-toggle,
     body[data-agy-fast="off"] #agy-fast-toggle,
-    body[data-think-lang="off"] #think-lang-toggle {
+    body[data-think-translate="off"] #think-translate-toggle {
       opacity: .5;
       filter: grayscale(1);
     }
@@ -430,12 +430,25 @@
       color: #38bdf8;
       opacity: 1;
     }
-    body[data-think-lang="on"] #think-lang-toggle {
-      border-color: rgba(139, 92, 246, 0.55);
-      background: rgba(139, 92, 246, 0.16);
-      color: #a78bfa;
+    body[data-think-translate="on"] #think-translate-toggle {
+      border-color: rgba(168, 85, 247, 0.55);
+      background: rgba(168, 85, 247, 0.16);
+      color: #c084fc;
       opacity: 1;
     }
+    .thought-translate-btn {
+      margin-left: auto;
+      margin-right: 6px;
+      padding: 1px 7px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: rgba(168, 85, 247, 0.10);
+      color: var(--muted);
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .thought-translate-btn:hover { color: var(--text); border-color: rgba(168, 85, 247, 0.55); }
+    .thought-translate-btn.active { color: #c084fc; border-color: rgba(168, 85, 247, 0.55); background: rgba(168, 85, 247, 0.18); }
     #claude-agy-toggle {
       transition: opacity .15s, border-color .15s, color .15s, background .15s;
     }
@@ -1157,7 +1170,7 @@
         <button id="armor-toggle" type="button" role="switch" aria-checked="false" title="Armor 破甲：已关闭（点击开启六层破甲增强）" aria-label="Armor 破甲开关">🛡️</button>
         <button id="transam-toggle" type="button" role="switch" aria-checked="false" title="TRANS-AM 叙事引擎：已关闭（点击开启 4A/4H/4N 自适应预设）" aria-label="TRANS-AM 开关">⚡</button>
         <button id="agy-fast-toggle" type="button" role="switch" aria-checked="false" title="agy-fast 加速插件：已关闭（点击开启 MCP 批量工具与启动快照）" aria-label="agy-fast 开关">🚀</button>
-        <button id="think-lang-toggle" type="button" role="switch" aria-checked="false" title="思考语言跟随：已关闭（点击开启内部思考跟随用户语言输出）" aria-label="思考语言跟随开关">🌐</button>
+        <button id="think-translate-toggle" type="button" role="switch" aria-checked="false" title="思考自动翻译：已关闭（点击开启自动翻译思考内容）" aria-label="思考翻译开关">🌐</button>
         <button id="thinking-toggle" title="思维链开关：显示/隐藏思考过程" aria-label="思维链开关">💭</button>
         <button id="theme-toggle" title="切换深浅主题" aria-label="切换深浅主题">☀️</button>
         <button id="bg-toggle" title="切换聊天背景" aria-label="切换聊天背景">🖼️</button>
@@ -1340,7 +1353,7 @@
           <div class="route-val" id="route-armor-val">未启用</div>
         </div>
         <div class="route-item">
-          <span class="route-label">🚀 插件与思考跟随状态</span>
+          <span class="route-label">🚀 插件状态</span>
           <div class="route-val" id="route-plugins-val">未启用</div>
         </div>
         <div class="route-item">
@@ -1495,25 +1508,80 @@
       applyAgyFastMode(cur === "on" ? "off" : "on");
     }
 
-    function applyThinkLangMode(val) {
+    const _nativeThoughtTranslateCache = new Map();
+    function applyThinkTranslateMode(val) {
       const mode = val === "on" ? "on" : "off";
-      document.body.setAttribute("data-think-lang", mode);
-      const btn = $("#think-lang-toggle");
+      document.body.setAttribute("data-think-translate", mode);
+      const btn = $("#think-translate-toggle");
       if (btn) {
         btn.setAttribute("aria-checked", mode === "on" ? "true" : "false");
         btn.title = mode === "on"
-          ? "思考语言跟随：已开启（内部思考过程跟随用户语言输出）"
-          : "思考语言跟随：已关闭（点击开启内部思考跟随用户语言输出）";
-        btn.style.borderColor = mode === "on" ? "rgba(139, 92, 246, 0.55)" : "";
-        btn.style.background = mode === "on" ? "rgba(139, 92, 246, 0.16)" : "";
-        btn.style.opacity = mode === "on" ? "1" : "0.5";
+          ? "思考自动翻译：已开启（流式思考完成后自动翻译为中文，也可点击思考框旁「翻译」切换）"
+          : "思考自动翻译：已关闭（点击开启自动翻译思考过程；关闭时仍可手动点击「翻译」）";
       }
-      try { localStorage.setItem("agy_think_lang", mode); } catch (e) {}
+      if (mode === "on" && document.body.getAttribute("data-thinking") === "off") {
+        applyThinkingMode("on");
+      }
+      try { localStorage.setItem("agy_think_translate", mode); } catch (e) {}
     }
 
-    function toggleThinkLangMode() {
-      const cur = document.body.getAttribute("data-think-lang") || "off";
-      applyThinkLangMode(cur === "on" ? "off" : "on");
+    function toggleThinkTranslateMode() {
+      const cur = document.body.getAttribute("data-think-translate") || "off";
+      applyThinkTranslateMode(cur === "on" ? "off" : "on");
+    }
+
+    function shouldAutoTranslateNativeThought(text) {
+      const s = String(text || "").trim();
+      if (s.length < 4) return false;
+      const cjk = (s.match(/[一-鿿]/g) || []).length;
+      const lat = (s.match(/[A-Za-z]/g) || []).length;
+      if (lat < 8) return false;
+      return !(cjk >= 12 && cjk * 3 >= lat);
+    }
+
+    async function translateNativeMessageThought(msgId, manual = true) {
+      const msg = messages.find(m => m._id === msgId);
+      if (!msg || !msg.thinking || msg._translatingThought) return;
+      const raw = msg.thinking.trim();
+      if (!raw) return;
+      if (manual && msg._translatedThought) {
+        msg._showTranslatedThought = !msg._showTranslatedThought;
+        msg.thoughtOpen = true;
+        const row = document.querySelector(`[data-message-id="${CSS.escape(msgId)}"] .bubble`);
+        if (row) refreshAssistantBody(msg, row);
+        return;
+      }
+      const cached = _nativeThoughtTranslateCache.get(raw);
+      if (cached) {
+        msg._translatedThought = cached;
+        msg._showTranslatedThought = true;
+        const row = document.querySelector(`[data-message-id="${CSS.escape(msgId)}"] .bubble`);
+        if (row) refreshAssistantBody(msg, row);
+        return;
+      }
+      msg._translatingThought = true;
+      msg._translateThoughtErr = "";
+      if (manual) msg.thoughtOpen = true;
+      const rowBefore = document.querySelector(`[data-message-id="${CSS.escape(msgId)}"] .bubble`);
+      if (rowBefore) refreshAssistantBody(msg, rowBefore);
+      try {
+        const res = await apiFetch("/api/think-translate/translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: raw }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.translated) throw new Error(data.detail || "翻译失败");
+        _nativeThoughtTranslateCache.set(raw, data.translated);
+        msg._translatedThought = data.translated;
+        msg._showTranslatedThought = true;
+      } catch (err) {
+        msg._translateThoughtErr = err.message || "翻译失败";
+      } finally {
+        msg._translatingThought = false;
+        const rowAfter = document.querySelector(`[data-message-id="${CSS.escape(msgId)}"] .bubble`);
+        if (rowAfter) refreshAssistantBody(msg, rowAfter);
+      }
     }
 
     /* ---------- Claude -> agy ---------- */
@@ -1647,18 +1715,29 @@
       const isThinking = isStreaming && message.isThinking;
       const isOpen = message.thoughtOpen !== undefined ? message.thoughtOpen : true;
       const badgeClass = isThinking ? "thought-badge active" : "thought-badge";
-      const badgeText = isThinking ? "正在思考…" : "已完成思考";
+      const badgeText = isThinking ? "正在思考…" : (message._showTranslatedThought && message._translatedThought ? "已译中文" : "已完成思考");
       const bodyCursorClass = isThinking ? "thought-body thought-cursor" : "thought-body";
-      const renderedThought = md(message.thinking);
+      const displayThought = (message._showTranslatedThought && message._translatedThought) ? message._translatedThought : message.thinking;
+      const renderedThought = md(displayThought);
+      const translateBtnLabel = message._translatingThought
+        ? "⟳ 翻译中"
+        : message._translatedThought
+          ? (message._showTranslatedThought ? "🌐 原文" : "🌐 译文")
+          : (message._translateThoughtErr ? "🌐 重试" : "🌐 翻译");
+      const translateBtn = (!isStreaming && message._id)
+        ? `<button type="button" class="thought-translate-btn${message._showTranslatedThought && message._translatedThought ? " active" : ""}" data-translate-msg="${escapeHtml(message._id)}" onclick="event.preventDefault();event.stopPropagation();translateNativeMessageThought(this.dataset.translateMsg,true)">${translateBtnLabel}</button>`
+        : "";
+      const errHtml = message._translateThoughtErr ? `<div style="color:#f87171;font-size:11px;margin-bottom:6px;">${escapeHtml(message._translateThoughtErr)}</div>` : "";
 
       return `<details class="thought-box"${isOpen ? " open" : ""}>`
         + `<summary class="thought-summary">`
         + `<span class="thought-icon">💭</span>`
         + `<span class="thought-label">思考过程</span>`
         + `<span class="thought-badge ${badgeClass}">${badgeText}</span>`
+        + translateBtn
         + `<span class="thought-arrow">▼</span>`
         + `</summary>`
-        + `<div class="${bodyCursorClass}">${renderedThought}</div>`
+        + `<div class="${bodyCursorClass}">${errHtml}${renderedThought}</div>`
         + `</details>`;
     }
 
@@ -2193,7 +2272,6 @@
             use_armor: (document.body.getAttribute("data-armor") || "off") === "on",
             use_transam: (document.body.getAttribute("data-transam") || "off") === "on",
             use_agy_fast: (document.body.getAttribute("data-agy-fast") || "off") === "on",
-            use_think_lang: (document.body.getAttribute("data-think-lang") || "off") === "on",
             use_claude_agy: (document.body.getAttribute("data-claude-agy") || "off") === "on",
           }),
         });
@@ -2242,7 +2320,6 @@
         const pluginLines = [];
         if (d.transam?.enabled) pluginLines.push(`⚡ TRANS-AM (${d.transam.tier || "已启用"})`);
         if (d.agy_fast?.enabled) pluginLines.push(`🚀 agy-fast${d.agy_fast.version ? ` v${d.agy_fast.version}` : ""}`);
-        if (d.think_lang?.enabled) pluginLines.push("🌐 思考语言跟随");
         $("#route-plugins-val").textContent = pluginLines.length ? pluginLines.join(" · ") : "未启用";
       }
       const sources = { agy_session_db: "本次 CLI 响应记录", cli_init: "CLI 配置", cli_result: "CLI 结果字段", cli_step_update: "CLI 步骤字段", request_log: "本次请求日志" };
@@ -2268,10 +2345,7 @@
       const agyFastBadge = d.agy_fast?.enabled
         ? `<span class="meta-item" title="agy-fast 加速插件已生效">🚀 agy-fast${d.agy_fast.version ? ` v${escapeHtml(String(d.agy_fast.version))}` : ""}</span>`
         : "";
-      const thinkLangBadge = d.think_lang?.enabled
-        ? `<span class="meta-item" title="思考语言跟随已开启">🌐 思考跟随</span>`
-        : "";
-      return `<span class="meta-item meta-model clickable" data-message-id="${escapeHtml(message._id)}" title="查看本条回复的返回证据" onclick="openRouteModal(this.dataset.messageId)">🤖 ${escapeHtml(label)} <span class="inspect-hint">🔍</span></span>${armorBadge}${transamBadge}${agyFastBadge}${thinkLangBadge}`;
+      return `<span class="meta-item meta-model clickable" data-message-id="${escapeHtml(message._id)}" title="查看本条回复的返回证据" onclick="openRouteModal(this.dataset.messageId)">🤖 ${escapeHtml(label)} <span class="inspect-hint">🔍</span></span>${armorBadge}${transamBadge}${agyFastBadge}`;
     }
 
     if ($("#route-inspect-btn")) {
@@ -3157,7 +3231,16 @@
         if (!snapshot) setStatus("Thinking…", "busy");
         else if (assistant.status === "streaming") setStatus("Finishing…", "busy");
         scrollToBottom();
+      } else if (data.event === "segment_reset") {
+        assistant.rawText = "";
+        assistant.finalResponse = "";
+        syncAssistantText(assistant, true);
+        refreshAssistantBody(assistant, bodyEl);
       } else if (data.event === "delta" || (!data.event && data.delta !== undefined)) {
+        if (assistant.isThinking && assistant.thinking && document.body.getAttribute("data-think-translate") === "on" && !assistant._autoTranslatedOnce && shouldAutoTranslateNativeThought(assistant.thinking)) {
+          assistant._autoTranslatedOnce = true;
+          void translateNativeMessageThought(assistant._id, false);
+        }
         const chunk = data.delta || data.text || "";
         if (!chunk) return;
         assistant.rawText = (assistant.rawText || "") + String(chunk);
@@ -3214,6 +3297,10 @@
         const data = JSON.parse(payload);
         if (data.event === "done") {
           if (["complete", "error", "stopped"].includes(data.status)) assistant.status = data.status;
+          if (assistant.thinking && document.body.getAttribute("data-think-translate") === "on" && !assistant._autoTranslatedOnce && shouldAutoTranslateNativeThought(assistant.thinking)) {
+            assistant._autoTranslatedOnce = true;
+            void translateNativeMessageThought(assistant._id, false);
+          }
           return true;
         }
         const ownsView = !turn || (activeController === turn.controller && messages === turn.messages && currentConversationId === turn.cid);
@@ -3551,7 +3638,6 @@
       const isArmorOn = (document.body.getAttribute("data-armor") || "off") === "on";
       const isTransamOn = (document.body.getAttribute("data-transam") || "off") === "on";
       const isAgyFastOn = (document.body.getAttribute("data-agy-fast") || "off") === "on";
-      const isThinkLangOn = (document.body.getAttribute("data-think-lang") || "off") === "on";
       const isClaudeAgyOn = (document.body.getAttribute("data-claude-agy") || "off") === "on";
       let streamCompleted = false;
       try {
@@ -3568,7 +3654,6 @@
             use_armor: isArmorOn,
             use_transam: isTransamOn,
             use_agy_fast: isAgyFastOn,
-            use_think_lang: isThinkLangOn,
             use_claude_agy: isClaudeAgyOn,
             turn_id: turn.id,
             model_label: selectedModelLabel,
@@ -3675,7 +3760,7 @@
     if ($("#armor-toggle")) $("#armor-toggle").onclick = toggleArmorMode;
     if ($("#transam-toggle")) $("#transam-toggle").onclick = toggleTransamMode;
     if ($("#agy-fast-toggle")) $("#agy-fast-toggle").onclick = toggleAgyFastMode;
-    if ($("#think-lang-toggle")) $("#think-lang-toggle").onclick = toggleThinkLangMode;
+    if ($("#think-translate-toggle")) $("#think-translate-toggle").onclick = toggleThinkTranslateMode;
     $("#thinking-toggle").onclick = toggleThinkingMode;
     $("#theme-toggle").onclick = toggleTheme;
     $("#bg-toggle").onclick = toggleChatBg;
@@ -3701,7 +3786,7 @@
     applyArmorMode(localStorage.getItem("agy_armor") || "off");
     applyTransamMode(localStorage.getItem("agy_transam") || "off");
     applyAgyFastMode(localStorage.getItem("agy_fast") || "off");
-    applyThinkLangMode(localStorage.getItem("agy_think_lang") || "off");
+    applyThinkTranslateMode(localStorage.getItem("agy_think_translate") || "off");
     applyClaudeAgyMode(localStorage.getItem("agy_claude_agy") || "off");
     applyTheme(localStorage.getItem("agy_theme") || "dark");
     applyChatBg(localStorage.getItem("agy_chatbg") === "on");

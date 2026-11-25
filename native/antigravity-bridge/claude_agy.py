@@ -15,7 +15,6 @@ from armor_engine import (
     soften_prompt,
 )
 from process_lifecycle import reap_cli_process
-from think_lang_engine import append_think_lang_reminder
 
 
 logger = logging.getLogger("antigravity-chat")
@@ -118,7 +117,6 @@ def _worker_environment(source, agy_bin, temporary):
 async def stream_claude_agy(
     *, agy_bin, env, cwd, scratch, prompt, model, turn_id, sandbox, system_append=None,
     register_injector=None, use_armor: bool = False,
-    use_think_lang: bool = False, think_lang_user_text: str | None = None, think_lang_history=None,
     use_agy_fast: bool = False, agy_fast_mcp_servers=None, agy_fast_allowed_tools=None,
     is_shutting_down=None,
 ):
@@ -149,16 +147,6 @@ async def stream_claude_agy(
                     get_escalation_prompt(attempt=idx, lang=lang, original_prompt=prompt)
                     for idx in range(MAX_ARMOR_RETRIES)
                 ]
-            turn_lang_history = list(think_lang_history or [])
-            seed_user_text = think_lang_user_text if think_lang_user_text is not None else prompt
-            if use_think_lang and payload.get("prompt"):
-                payload["prompt"], _ = append_think_lang_reminder(
-                    payload["prompt"],
-                    user_text=seed_user_text,
-                    history_user_texts=turn_lang_history,
-                )
-            if seed_user_text and str(seed_user_text).strip():
-                turn_lang_history.append(str(seed_user_text))
             argv = [
                 os.getenv("MINTCLI_NODE_BIN", "/opt/mintcli-node/bin/node"),
                 str(_bridge / "claude-agy.mjs"),
@@ -198,14 +186,6 @@ async def stream_claude_agy(
                 if use_armor and content:
                     content, _ = soften_prompt(content)
                 outbound_content = content
-                if use_think_lang and outbound_content:
-                    outbound_content, _ = append_think_lang_reminder(
-                        outbound_content,
-                        user_text=content,
-                        history_user_texts=turn_lang_history,
-                    )
-                if content and content.strip():
-                    turn_lang_history.append(content)
                 try:
                     await asyncio.wait_for(ready_event.wait(), timeout=15)
                 except asyncio.TimeoutError:
