@@ -112,3 +112,66 @@ test('cost and status commands report the same resolved model as /models', async
   assert.equal((cost.data as { model: string }).model, 'haiku');
   assert.equal((status.data as { model: string }).model, 'haiku');
 });
+
+test('models command includes Antigravity provider label and execute rejects Object.prototype keys and symlink escapes', async () => {
+  const antigravityModels = await executeCommand('/models', { provider: 'antigravity', model: 'gemini-2.5-pro' });
+  const data = antigravityModels.data as { current: { provider: string; providerLabel: string } };
+  assert.equal(data.current.provider, 'antigravity');
+  assert.equal(data.current.providerLabel, 'Antigravity');
+
+  const router = createCommandsRouter({
+    fileSystem: {
+      readFile: async () => {
+        throw new Error('readFile should not be reached');
+      },
+      realpath: async (target: string) => {
+        if (target.endsWith('escape.md')) {
+          return '/etc/secret.md';
+        }
+        return target;
+      },
+    } as unknown as typeof import('node:fs/promises'),
+    homeDirectory: () => '/home/test',
+    appRoot: '/app',
+    models: createModelsService() as never,
+    runtime: {
+      uptime: () => 0,
+      memoryUsage: () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }),
+      version: 'v22', platform: 'linux', pid: 1,
+    },
+  });
+  const app = express().use(express.json()).use('/api/commands', router);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const address = server.address() as AddressInfo;
+    const baseUrl = `http://127.0.0.1:${address.port}/api/commands/execute`;
+
+    // Prototype keys like "toString" or "constructor" must not invoke Object.prototype methods.
+    const protoResponse = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ commandName: 'toString' }),
+    });
+    assert.equal(protoResponse.status, 400);
+
+    // Non-markdown files inside .claude/commands must be rejected.
+    const nonMdResponse = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ commandName: '/raw', commandPath: '/home/test/.claude/commands/secret.json' }),
+    });
+    assert.equal(nonMdResponse.status, 403);
+
+    // Symlink inside .claude/commands pointing outside allowed directories must be rejected.
+    const symlinkEscapeResponse = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ commandName: '/escape', commandPath: '/home/test/.claude/commands/escape.md' }),
+    });
+    assert.equal(symlinkEscapeResponse.status, 403);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+

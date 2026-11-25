@@ -62,4 +62,23 @@ describe('readApiJson', () => {
     expect((error as ApiRequestError).message).toBe('Request failed (502)');
     expect((error as ApiRequestError).code).toBeUndefined();
   });
+
+  it('wraps HTML gateway error pages and empty error bodies as codeless ApiRequestErrors', async () => {
+    const htmlGateway = new Response('<html><body>504 Gateway Time-out</body></html>', {
+      status: 504,
+      statusText: 'Gateway Time-out',
+      headers: { 'Content-Type': 'text/html' },
+    });
+    const error = await failure(readApiJson(htmlGateway));
+    expect(error).toBeInstanceOf(ApiRequestError);
+    const apiError = error as ApiRequestError;
+    expect(apiError.status).toBe(504);
+    expect(apiError.code).toBeUndefined();
+    expect(apiError.message).toBe('HTTP 504 Gateway Time-out');
+
+    const emptyError = await failure(readApiJson(new Response('', { status: 502 })));
+    expect(emptyError).toBeInstanceOf(ApiRequestError);
+    expect((emptyError as ApiRequestError).status).toBe(502);
+    expect((emptyError as ApiRequestError).code).toBeUndefined();
+  });
 });

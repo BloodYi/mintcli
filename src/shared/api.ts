@@ -109,14 +109,52 @@ export class ApiRequestError extends Error {
  * the structured AppError envelope (`error: { code, message, details }`).
  */
 export async function readApiJson<T>(response: Response): Promise<T> {
-  const data = await response.json();
-  if (!response.ok || data.success === false) {
-    const raw = data.error ?? data.details ?? data.detail;
+  const formatStatusMessage = () => {
+    const status = response.status ?? 500;
+    const statusText = response.statusText ? ` ${response.statusText}` : '';
+    return statusText ? `HTTP ${status}${statusText}` : `Request failed (${status})`;
+  };
+
+  let data: any;
+  if (typeof response.text === 'function') {
+    const rawText = await response.text();
+    if (!rawText.trim()) {
+      if (!response.ok) {
+        throw new ApiRequestError(formatStatusMessage(), {
+          status: response.status,
+        });
+      }
+      return {} as T;
+    }
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      throw new ApiRequestError(formatStatusMessage(), {
+        details: rawText.slice(0, 500),
+        status: response.status,
+      });
+    }
+  } else {
+    try {
+      data = await response.json();
+    } catch {
+      throw new ApiRequestError(formatStatusMessage(), {
+        status: response.status ?? 500,
+      });
+    }
+  }
+
+  if (!response.ok || (data && typeof data === 'object' && data.success === false)) {
+    const record = data && typeof data === 'object' ? data : {};
+    const raw = record.error ?? record.details ?? record.detail;
     const payload = raw && typeof raw === 'object' ? raw : {};
-    const message = (typeof raw === 'string' ? raw : payload?.message) || data.details || `Request failed (${response.status})`;
+    const message = (typeof raw === 'string' ? raw : payload?.message)
+      || (typeof record.details === 'string' ? record.details : undefined)
+      || (typeof record.message === 'string' ? record.message : undefined)
+      || `Request failed (${response.status})`;
     throw new ApiRequestError(message, {
       code: typeof payload?.code === 'string' ? payload.code : undefined,
-      details: payload?.details ?? data.details,
+      details: payload?.details ?? record.details,
       status: response.status,
     });
   }
@@ -232,6 +270,10 @@ export const api = {
     addAccount: (body: { alias: string; token_json: string; switch_now: boolean }) => post('/api/antigravity/accounts/add', body),
     quota: (force = false) => get('/api/antigravity/quota' + query({ force })),
     models: () => get('/api/antigravity/models'),
+    agyFastStatus: () => get('/api/antigravity/agy-fast/status'),
+    agyFastCheckUpdate: () => post('/api/antigravity/agy-fast/check-update', {}),
+    agyFastUpdate: (body: { force?: boolean; only_if_auto_enabled?: boolean } = {}) => post('/api/antigravity/agy-fast/update', body),
+    agyFastConfig: (body: { auto_update_enabled: boolean }) => post('/api/antigravity/agy-fast/config', body),
     conversations: () => get('/api/antigravity/conversations'),
     messages: (id: string, signal?: AbortSignal) => get('/api/antigravity/conversations/' + encodeURIComponent(id) + '/messages', { signal }),
     chat: (body: Record<string, unknown>, signal: AbortSignal) => post('/api/antigravity/chat', body, { signal }),

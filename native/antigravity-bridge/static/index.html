@@ -391,7 +391,10 @@
       margin-left: 2px;
     }
     #thinking-toggle,
-    #armor-toggle {
+    #armor-toggle,
+    #transam-toggle,
+    #agy-fast-toggle,
+    #think-lang-toggle {
       font-size: 13px;
       width: 35px;
       padding: 5px;
@@ -399,7 +402,10 @@
       transition: opacity .15s, border-color .15s, color .15s, background .15s;
     }
     body[data-thinking="off"] #thinking-toggle,
-    body[data-armor="off"] #armor-toggle {
+    body[data-armor="off"] #armor-toggle,
+    body[data-transam="off"] #transam-toggle,
+    body[data-agy-fast="off"] #agy-fast-toggle,
+    body[data-think-lang="off"] #think-lang-toggle {
       opacity: .5;
       filter: grayscale(1);
     }
@@ -410,6 +416,24 @@
     body[data-armor="on"] #armor-toggle {
       border-color: rgba(245, 158, 11, 0.55);
       background: rgba(245, 158, 11, 0.14);
+      opacity: 1;
+    }
+    body[data-transam="on"] #transam-toggle {
+      border-color: rgba(244, 63, 94, 0.55);
+      background: rgba(244, 63, 94, 0.16);
+      color: #fb7185;
+      opacity: 1;
+    }
+    body[data-agy-fast="on"] #agy-fast-toggle {
+      border-color: rgba(14, 165, 233, 0.55);
+      background: rgba(14, 165, 233, 0.16);
+      color: #38bdf8;
+      opacity: 1;
+    }
+    body[data-think-lang="on"] #think-lang-toggle {
+      border-color: rgba(139, 92, 246, 0.55);
+      background: rgba(139, 92, 246, 0.16);
+      color: #a78bfa;
       opacity: 1;
     }
     #claude-agy-toggle {
@@ -1131,6 +1155,9 @@
         <button id="route-inspect-btn" title="查看回复记录或检测当前选择的模型" aria-label="模型返回信息">🔍 <span>验真</span></button>
         <button id="claude-agy-toggle" type="button" role="switch" aria-checked="false" title="Claude → agy：已关闭（点击开启 Claude Code 工具执行 + agy 模型）" aria-label="Claude → agy 开关">🧩 <span>Claude→agy</span></button>
         <button id="armor-toggle" type="button" role="switch" aria-checked="false" title="Armor 破甲：已关闭（点击开启六层破甲增强）" aria-label="Armor 破甲开关">🛡️</button>
+        <button id="transam-toggle" type="button" role="switch" aria-checked="false" title="TRANS-AM 叙事引擎：已关闭（点击开启 4A/4H/4N 自适应预设）" aria-label="TRANS-AM 开关">⚡</button>
+        <button id="agy-fast-toggle" type="button" role="switch" aria-checked="false" title="agy-fast 加速插件：已关闭（点击开启 MCP 批量工具与启动快照）" aria-label="agy-fast 开关">🚀</button>
+        <button id="think-lang-toggle" type="button" role="switch" aria-checked="false" title="思考语言跟随：已关闭（点击开启内部思考跟随用户语言输出）" aria-label="思考语言跟随开关">🌐</button>
         <button id="thinking-toggle" title="思维链开关：显示/隐藏思考过程" aria-label="思维链开关">💭</button>
         <button id="theme-toggle" title="切换深浅主题" aria-label="切换深浅主题">☀️</button>
         <button id="bg-toggle" title="切换聊天背景" aria-label="切换聊天背景">🖼️</button>
@@ -1313,6 +1340,10 @@
           <div class="route-val" id="route-armor-val">未启用</div>
         </div>
         <div class="route-item">
+          <span class="route-label">🚀 插件与思考跟随状态</span>
+          <div class="route-val" id="route-plugins-val">未启用</div>
+        </div>
+        <div class="route-item">
           <span class="route-label">📜 字段来源与本次请求编号</span>
           <pre class="route-raw-logs" id="route-logs-val">尚无返回记录</pre>
         </div>
@@ -1418,6 +1449,71 @@
     function toggleArmorMode() {
       const cur = document.body.getAttribute("data-armor") || "off";
       applyArmorMode(cur === "on" ? "off" : "on");
+    }
+
+    /* ---------- TRANS-AM (4A / 4H / 4N) ---------- */
+    function applyTransamMode(val) {
+      const mode = val === "on" ? "on" : "off";
+      document.body.setAttribute("data-transam", mode);
+      const btn = $("#transam-toggle");
+      if (btn) {
+        btn.setAttribute("aria-checked", mode === "on" ? "true" : "false");
+        btn.title = mode === "on"
+          ? "TRANS-AM 叙事引擎：已开启（自动按模型加载 4A v1.2.4 / 4H v1.1.4 / 4N v1.0.1 预设 + D100×4 判定池）"
+          : "TRANS-AM 叙事引擎：已关闭（点击开启 4A / 4H / 4N 叙事增强）";
+        btn.style.borderColor = mode === "on" ? "rgba(244, 63, 94, 0.55)" : "";
+        btn.style.background = mode === "on" ? "rgba(244, 63, 94, 0.16)" : "";
+        btn.style.opacity = mode === "on" ? "1" : "0.5";
+      }
+      try { localStorage.setItem("agy_transam", mode); } catch (e) {}
+    }
+
+    function toggleTransamMode() {
+      const cur = document.body.getAttribute("data-transam") || "off";
+      applyTransamMode(cur === "on" ? "off" : "on");
+    }
+
+    /* ---------- agy-fast & Think Language Follow ---------- */
+    function applyAgyFastMode(val) {
+      const mode = val === "on" ? "on" : "off";
+      document.body.setAttribute("data-agy-fast", mode);
+      const btn = $("#agy-fast-toggle");
+      if (btn) {
+        btn.setAttribute("aria-checked", mode === "on" ? "true" : "false");
+        btn.title = mode === "on"
+          ? "agy-fast 加速插件：已开启（MCP 批量搜索/原子编辑/符号大纲/并发检查 + 启动快照）"
+          : "agy-fast 加速插件：已关闭（点击开启 MCP 批量工具与启动快照）";
+        btn.style.borderColor = mode === "on" ? "rgba(14, 165, 233, 0.55)" : "";
+        btn.style.background = mode === "on" ? "rgba(14, 165, 233, 0.16)" : "";
+        btn.style.opacity = mode === "on" ? "1" : "0.5";
+      }
+      try { localStorage.setItem("agy_fast", mode); } catch (e) {}
+    }
+
+    function toggleAgyFastMode() {
+      const cur = document.body.getAttribute("data-agy-fast") || "off";
+      applyAgyFastMode(cur === "on" ? "off" : "on");
+    }
+
+    function applyThinkLangMode(val) {
+      const mode = val === "on" ? "on" : "off";
+      document.body.setAttribute("data-think-lang", mode);
+      const btn = $("#think-lang-toggle");
+      if (btn) {
+        btn.setAttribute("aria-checked", mode === "on" ? "true" : "false");
+        btn.title = mode === "on"
+          ? "思考语言跟随：已开启（内部思考过程跟随用户语言输出）"
+          : "思考语言跟随：已关闭（点击开启内部思考跟随用户语言输出）";
+        btn.style.borderColor = mode === "on" ? "rgba(139, 92, 246, 0.55)" : "";
+        btn.style.background = mode === "on" ? "rgba(139, 92, 246, 0.16)" : "";
+        btn.style.opacity = mode === "on" ? "1" : "0.5";
+      }
+      try { localStorage.setItem("agy_think_lang", mode); } catch (e) {}
+    }
+
+    function toggleThinkLangMode() {
+      const cur = document.body.getAttribute("data-think-lang") || "off";
+      applyThinkLangMode(cur === "on" ? "off" : "on");
     }
 
     /* ---------- Claude -> agy ---------- */
@@ -2095,6 +2191,9 @@
           body: JSON.stringify({
             model: selected,
             use_armor: (document.body.getAttribute("data-armor") || "off") === "on",
+            use_transam: (document.body.getAttribute("data-transam") || "off") === "on",
+            use_agy_fast: (document.body.getAttribute("data-agy-fast") || "off") === "on",
+            use_think_lang: (document.body.getAttribute("data-think-lang") || "off") === "on",
             use_claude_agy: (document.body.getAttribute("data-claude-agy") || "off") === "on",
           }),
         });
@@ -2139,6 +2238,13 @@
           $("#route-armor-val").textContent = "未启用";
         }
       }
+      if ($("#route-plugins-val")) {
+        const pluginLines = [];
+        if (d.transam?.enabled) pluginLines.push(`⚡ TRANS-AM (${d.transam.tier || "已启用"})`);
+        if (d.agy_fast?.enabled) pluginLines.push(`🚀 agy-fast${d.agy_fast.version ? ` v${d.agy_fast.version}` : ""}`);
+        if (d.think_lang?.enabled) pluginLines.push("🌐 思考语言跟随");
+        $("#route-plugins-val").textContent = pluginLines.length ? pluginLines.join(" · ") : "未启用";
+      }
       const sources = { agy_session_db: "本次 CLI 响应记录", cli_init: "CLI 配置", cli_result: "CLI 结果字段", cli_step_update: "CLI 步骤字段", request_log: "本次请求日志" };
       const evidence = Array.isArray(d.evidence) ? d.evidence.map(e => `${sources[e.source] || e.source} · ${e.field}: ${e.value}${e.step_indices?.length ? `（步骤 ${e.step_indices.join(", ")}）` : ""}`).join("\n") : "";
       const status = { unavailable: "未提供可验证字段", available: "已取得响应字段", partial: "部分回复步骤有记录", conflict: "不同步骤返回了多个模型名" }[d.status] || "等待返回";
@@ -2156,7 +2262,16 @@
       const armorBadge = d.armor?.enabled
         ? `<span class="meta-item" title="Antigravity Armor 破甲已生效">🛡️ ${d.armor.retries ? `Armor ×${escapeHtml(String(d.armor.retries))}` : "Armor"}</span>`
         : "";
-      return `<span class="meta-item meta-model clickable" data-message-id="${escapeHtml(message._id)}" title="查看本条回复的返回证据" onclick="openRouteModal(this.dataset.messageId)">🤖 ${escapeHtml(label)} <span class="inspect-hint">🔍</span></span>${armorBadge}`;
+      const transamBadge = d.transam?.enabled
+        ? `<span class="meta-item" title="TRANS-AM ${escapeHtml(d.transam.version || d.transam.tier || '')} 已生效${Array.isArray(d.transam.dice) ? ' · D100: ' + d.transam.dice.join('/') : ''}">⚡ TRANS-AM ${escapeHtml(d.transam.tier || "")}</span>`
+        : "";
+      const agyFastBadge = d.agy_fast?.enabled
+        ? `<span class="meta-item" title="agy-fast 加速插件已生效">🚀 agy-fast${d.agy_fast.version ? ` v${escapeHtml(String(d.agy_fast.version))}` : ""}</span>`
+        : "";
+      const thinkLangBadge = d.think_lang?.enabled
+        ? `<span class="meta-item" title="思考语言跟随已开启">🌐 思考跟随</span>`
+        : "";
+      return `<span class="meta-item meta-model clickable" data-message-id="${escapeHtml(message._id)}" title="查看本条回复的返回证据" onclick="openRouteModal(this.dataset.messageId)">🤖 ${escapeHtml(label)} <span class="inspect-hint">🔍</span></span>${armorBadge}${transamBadge}${agyFastBadge}${thinkLangBadge}`;
     }
 
     if ($("#route-inspect-btn")) {
@@ -2463,9 +2578,52 @@
       }
     }
 
+    function formatTransAmText(input) {
+      if (!input || !/<(?:ta|tw)_(?:plan|zh|source|time|status|npc_inner|hub|record|choices|speech_src|speech_zh|noise_pad|user_record|resolve)\b|<bbs_start\b/i.test(input)) {
+        return input || "";
+      }
+      const fences = [];
+      let out = String(input).replace(/```[\s\S]*?(?:```|$)/g, (m) => {
+        fences.push(m);
+        return `\x00TA_FENCE_${fences.length - 1}\x00`;
+      });
+      out = out.replace(/<ta_noise_pad\s*>[^<>]*?<\/ta_noise_pad\s*>/gi, "");
+      out = out.replace(/<(?:ta|tw)_user_record\b[^>]*>[\s\S]*?<\/(?:ta|tw)_user_record\s*>/gi, "");
+      out = out.replace(/<ta_resolve\b[^>]*>[\s\S]*?<\/ta_resolve\s*>[ \t]*(?:\r?\n)?/gi, "");
+      out = out.replace(/<(?:ta|tw)_plan\s*>([\s\S]*?)<\/(?:ta|tw)_plan\s*>/gi, (_m, b) => {
+        const lines = String(b).trim().split(/\r?\n/).map(l => `> ${l}`).join("\n");
+        return `\n\n> 🧠 **TRANS-AM 创作简报**\n${lines}\n\n`;
+      });
+      out = out.replace(/<(bbs_start|(?:ta|tw)_time)\b[^>]*>\s*([^<>\r\n]+?)\s*<\/\1\s*>/gi, (_m, _t, tm) => `\n\n> 🕒 **${String(tm).trim()}**\n\n`);
+      out = out.replace(/<(?:ta|tw)_speech_src\b[^>]*>([\s\S]*?)<\/(?:ta|tw)_speech_(?:src|zh)\s*>\s*<(?:ta|tw)_speech_zh\b[^>]*>([\s\S]*?)<\/(?:ta|tw)_speech_zh\s*>/gi, (_m, s, z) => {
+        const st = String(s).trim(), zt = String(z).trim();
+        return st === zt ? zt : `${st}（${zt}）`;
+      });
+      out = out.replace(/<\/?(?:ta|tw)_speech_(?:src|zh)\b[^>]*>/gi, "");
+      out = out.replace(/<\/?(?:ta|tw)_(?:zh|source)\b[^>]*>/gi, "\n\n");
+      out = out.replace(/<(?:ta|tw)_status\b[^>]*>([\s\S]*?)<\/(?:ta|tw)_status\s*>/gi, (_m, st) => `\n\n> 📡 **TRANS-AM 状态**：${String(st).trim()}\n\n`);
+      out = out.replace(/<(?:ta|tw)_npc_inner\b[^>]*>([\s\S]*?)<\/(?:ta|tw)_npc_inner\s*>/gi, (_m, b) => {
+        const lines = String(b).trim().split(/\r?\n/).map(l => `> ${l}`).join("\n");
+        return `\n\n> 💭 **人物心声**\n${lines}\n\n`;
+      });
+      out = out.replace(/<(?:ta|tw)_hub\s*>([\s\S]*?)<\/(?:ta|tw)_hub\s*>/gi, (_m, j) => `\n\n\`\`\`json\n${String(j).trim()}\n\`\`\`\n\n`);
+      out = out.replace(/<(?:ta|tw)_record\s*>([\s\S]*?)<\/(?:ta|tw)_record\s*>/gi, (_m, b) => {
+        const lines = String(b).trim().split(/\r?\n/).map(l => `> ${l}`).join("\n");
+        return `\n\n> 📚 **剧情存档**\n${lines}\n\n`;
+      });
+      out = out.replace(/<(?:ta|tw)_choices\s*>\s*<(?:ta|tw)_plot>([\s\S]*?)<\/(?:ta|tw)_plot>\s*<(?:ta|tw)_bond>([\s\S]*?)<\/(?:ta|tw)_bond>\s*<(?:ta|tw)_fun>([\s\S]*?)<\/(?:ta|tw)_fun>\s*<(?:ta|tw)_explore>([\s\S]*?)<\/(?:ta|tw)_explore>\s*<\/(?:ta|tw)_choices\s*>/gi,
+        (_m, p, b, f, e) => `\n\n> 🎯 **四向行动建议**\n> - 🗡️ **剧情推进**：${String(p).trim()}\n> - 💗 **关系羁绊**：${String(b).trim()}\n> - 🎭 **趣味互动**：${String(f).trim()}\n> - 🧭 **自由探索**：${String(e).trim()}\n\n`
+      );
+      if (fences.length) {
+        out = out.replace(/\x00TA_FENCE_(\d+)\x00/g, (_m, idx) => fences[Number(idx)] || "");
+      }
+      return out;
+    }
+
     function md(text) {
-      if (!window.DOMPurify) return escapeHtml(text || "");
-      const raw = window.marked ? window.marked.parse(text || "") : escapeHtml(text || "");
+      const formatted = formatTransAmText(text || "");
+      if (!window.DOMPurify) return escapeHtml(formatted);
+      const raw = window.marked ? window.marked.parse(formatted) : escapeHtml(formatted);
       return DOMPurify.sanitize(raw);
     }
 
@@ -3391,6 +3549,9 @@
 
       const isThinkingOn = (document.body.getAttribute("data-thinking") || "on") === "on";
       const isArmorOn = (document.body.getAttribute("data-armor") || "off") === "on";
+      const isTransamOn = (document.body.getAttribute("data-transam") || "off") === "on";
+      const isAgyFastOn = (document.body.getAttribute("data-agy-fast") || "off") === "on";
+      const isThinkLangOn = (document.body.getAttribute("data-think-lang") || "off") === "on";
       const isClaudeAgyOn = (document.body.getAttribute("data-claude-agy") || "off") === "on";
       let streamCompleted = false;
       try {
@@ -3405,6 +3566,9 @@
             user_id: userId,
             thinking: isThinkingOn,
             use_armor: isArmorOn,
+            use_transam: isTransamOn,
+            use_agy_fast: isAgyFastOn,
+            use_think_lang: isThinkLangOn,
             use_claude_agy: isClaudeAgyOn,
             turn_id: turn.id,
             model_label: selectedModelLabel,
@@ -3509,6 +3673,9 @@
     $("#quota-btn").onclick = openQuotaModal;
     if ($("#claude-agy-toggle")) $("#claude-agy-toggle").onclick = toggleClaudeAgyMode;
     if ($("#armor-toggle")) $("#armor-toggle").onclick = toggleArmorMode;
+    if ($("#transam-toggle")) $("#transam-toggle").onclick = toggleTransamMode;
+    if ($("#agy-fast-toggle")) $("#agy-fast-toggle").onclick = toggleAgyFastMode;
+    if ($("#think-lang-toggle")) $("#think-lang-toggle").onclick = toggleThinkLangMode;
     $("#thinking-toggle").onclick = toggleThinkingMode;
     $("#theme-toggle").onclick = toggleTheme;
     $("#bg-toggle").onclick = toggleChatBg;
@@ -3532,6 +3699,9 @@
 
     applyThinkingMode(localStorage.getItem("agy_thinking") || "on");
     applyArmorMode(localStorage.getItem("agy_armor") || "off");
+    applyTransamMode(localStorage.getItem("agy_transam") || "off");
+    applyAgyFastMode(localStorage.getItem("agy_fast") || "off");
+    applyThinkLangMode(localStorage.getItem("agy_think_lang") || "off");
     applyClaudeAgyMode(localStorage.getItem("agy_claude_agy") || "off");
     applyTheme(localStorage.getItem("agy_theme") || "dark");
     applyChatBg(localStorage.getItem("agy_chatbg") === "on");

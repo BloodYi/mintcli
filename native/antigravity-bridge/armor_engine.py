@@ -65,9 +65,9 @@ ARMOR_EXEC_SEAT = """[DELIVERY-SEAT] 自主工程与交付位说明
 ARMOR_SYSTEM_DIRECTIVE = f"{ARMOR_WORKSPACE_RULE.strip()}\n\n{ARMOR_DELIVERY_SEAT.strip()}"
 
 
-def get_armor_system_directive(*, agent_tools: bool = False) -> str:
+def get_armor_system_directive(*, agent_tools: bool = False, transam: bool = False) -> str:
     """Return the zero-hotword Armor directive tailored for tool-using agents vs direct output."""
-    seat = ARMOR_EXEC_SEAT if agent_tools else ARMOR_DELIVERY_SEAT
+    seat = ARMOR_EXEC_SEAT if (agent_tools or transam) else ARMOR_DELIVERY_SEAT
     return f"{ARMOR_WORKSPACE_RULE.strip()}\n\n{seat.strip()}"
 
 
@@ -320,7 +320,7 @@ _CMD_RE = re.compile(
     r"\b(?:curl|wget|nmap|sqlmap|hydra|ffuf|subfinder|frida|jadx|apktool|objdump|readelf|strings|otool|codesign|patch|keygen|node|python3?|pip|powershell|pwsh|git|docker|msfconsole|mimikatz|impacket|nxc)\b",
     re.IGNORECASE,
 )
-_FAST_DELIVERABLE_HEAD_RE = re.compile(r"^\s*(?:#{1,6}\s+\S|```|~~~)")
+_FAST_DELIVERABLE_HEAD_RE = re.compile(r"^\s*(?:#{1,6}\s+\S|```|~~~|<(?:ta|tw)_(?:plan|zh|source|time|status)\b)", re.IGNORECASE)
 
 # Trailing compliance / educational-only disclaimer cues (single-line or multi-line heading+body blocks)
 _TAIL_DISCLAIMER_HEADING_RE = re.compile(
@@ -605,7 +605,7 @@ def strip_tail_disclaimer(text: str) -> tuple[str, bool]:
 # History & Foreign Persona Sanitization (v1.7.1 + v1.8.3 from gemini-retry.mjs)
 # ==============================================================================
 
-_OWN_PACK_NAMES = ("infinite-gen-3-armor", "armor-seat-pojia", "armor-seat")
+_OWN_PACK_NAMES = ("infinite-gen-3-armor", "armor-seat-pojia", "armor-seat", "trans-am", "transam", "ta_rule")
 _PAIR_MARKER_RE = re.compile(r"<!--\s*([A-Za-z0-9_.\-]+)\s*:\s*BEGIN\s*-->[\s\S]*?<!--\s*\1\s*:\s*END\s*-->")
 _RULE_WRAP_RE = re.compile(r"<RULE\[([^\]]*)\]>([\s\S]*?)</RULE\[[^\]]*\]>")
 _USER_RULES_WRAP_RE = re.compile(r"<user_rules>([\s\S]*?)</user_rules>")

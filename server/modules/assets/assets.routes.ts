@@ -113,13 +113,13 @@ router.get('/images/:filename', async (req, res) => {
   // fetches assets as blobs and shows them through <img>, where SVG scripts
   // never execute.
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
   if (asset.contentType === 'image/svg+xml') {
     res.setHeader('Content-Disposition', 'attachment');
   }
-  asset.stream.pipe(res);
-  asset.stream.on('error', (error) => {
-    console.error('Error streaming image asset:', error);
-    if (!res.headersSent) {
+  res.sendFile(asset.filePath, { dotfiles: 'allow' }, (error) => {
+    if (error && !res.headersSent) {
+      console.error('Error sending image asset:', error);
       res.status(500).json({ error: 'Error reading asset' });
     }
   });
@@ -128,6 +128,8 @@ router.get('/images/:filename', async (req, res) => {
 /**
  * Downloads one stored non-image attachment. Content-Disposition prevents
  * uploaded HTML or other active formats from rendering in the application.
+ * Uses sendFile so large video attachments support HTTP Range seeking and
+ * aborted downloads automatically release file descriptors.
  */
 router.get('/files/:filename', async (req, res) => {
   const asset = await openStoredAttachmentAsset(req.params.filename);
@@ -140,11 +142,11 @@ router.get('/files/:filename', async (req, res) => {
 
   res.setHeader('Content-Type', asset.contentType);
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
   res.setHeader('Content-Disposition', `attachment; filename="${req.params.filename.replace(/["\r\n]/g, '_')}"`);
-  asset.stream.pipe(res);
-  asset.stream.on('error', (error) => {
-    console.error('Error streaming attachment asset:', error);
-    if (!res.headersSent) {
+  res.sendFile(asset.filePath, { dotfiles: 'allow' }, (error) => {
+    if (error && !res.headersSent) {
+      console.error('Error sending attachment asset:', error);
       res.status(500).json({ error: 'Error reading asset' });
     }
   });

@@ -1,14 +1,27 @@
-// @ts-nocheck -- dynamic provider event payloads are normalized at the injected writer boundary.
 import path from 'path';
 
-import express from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 
-import type { ProviderRunFunction } from '@/shared/types.js';
+import type { LLMProvider, ProviderRunFunction } from '@/shared/types.js';
 
 import { normalizeProjectPath } from '../../shared/utils.js';
 
 /** The providers an Agent API run can start: the ones with a runtime and a model catalog. */
-const AGENT_RUN_PROVIDERS = ['claude', 'cursor', 'codex', 'opencode', 'antigravity'];
+const AGENT_RUN_PROVIDERS: readonly LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'antigravity'];
+
+type AgentAuthenticatedUser = {
+  id: number;
+  username?: string;
+  [key: string]: unknown;
+};
+
+type AgentRequest = Request & {
+  user?: AgentAuthenticatedUser;
+};
+
+function readAgentErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /** What the route reads off a session row it continues: the row, not the request, says which provider and project a session belongs to. */
 type AgentSessionRow = {
@@ -22,7 +35,9 @@ type AgentRouterDependencies = {
   fileSystem: typeof import('node:fs/promises');
   crypto: typeof import('node:crypto');
   homeDirectory(): string;
-  spawnProcess: typeof import('cross-spawn').default;
+  spawnProcess: (
+    ...args: Parameters<typeof import('cross-spawn')>
+  ) => ReturnType<typeof import('cross-spawn')>;
   platformMode: boolean;
   users: { getFirstUser(): unknown };
   apiKeys: { validateApiKey(apiKey: string): unknown };
@@ -31,8 +46,8 @@ type AgentRouterDependencies = {
   models: typeof import('../providers/index.js').providerModelsService;
   /** The session gateway: an API run gets an app session row like a chat send, so the UI can list, open and subscribe to it. */
   sessions: {
-    getSessionById(sessionId: string): AgentSessionRow | null;
-    getSessionByProviderSessionId(providerSessionId: string): AgentSessionRow | null;
+    getSessionById(sessionId: string): AgentSessionRow | null | undefined;
+    getSessionByProviderSessionId(providerSessionId: string): AgentSessionRow | null | undefined;
     createAppSession(provider: string, projectPath: string, initialMessage: string): { sessionId: string };
   };
   /** The live-run registry the chat socket uses; registering here is what puts an API run on the running-sessions list. */
@@ -41,6 +56,7 @@ type AgentRouterDependencies = {
   queryCursor: ProviderRunFunction;
   queryCodex: ProviderRunFunction;
   queryOpenCode: ProviderRunFunction;
+  queryAntigravity?: ProviderRunFunction;
   GithubClient: typeof import('@octokit/rest').Octokit;
 };
 
@@ -65,26 +81,19 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
   const spawnCursor = dependencies.queryCursor;
   const queryCodex = dependencies.queryCodex;
   const spawnOpenCode = dependencies.queryOpenCode;
+  const queryAntigravity = dependencies.queryAntigravity;
   const Octokit = dependencies.GithubClient;
   const router = express.Router();
 
   /**
    * Middleware to authenticate agent API requests.
-   *
-   * Supports two authentication modes:
-   * 1. Platform mode (IS_PLATFORM=true): For managed/hosted deployments where
-   *    authentication is handled by an external proxy. Requests are trusted and
-   *    the default user context is used.
-   *
-   * 2. API key mode (default): For self-hosted deployments where users authenticate
-   *    via API keys created in the UI. Keys are validated against the local database.
    */
-  const validateExternalApiKey = (req, res, next) => {
+  const validateExternalApiKey = (req: AgentRequest, res: Response, next: NextFunction) => {
     // Platform mode: Authentication is handled externally (e.g., by a proxy layer).
     // Trust the request and use the default user context.
     if (IS_PLATFORM) {
       try {
-        const user = userDb.getFirstUser();
+        const user = userDb.getFirstUser() as AgentAuthenticatedUser | null | undefined;
         if (!user) {
           return res.status(500).json({ error: 'Platform mode: No user found in database' });
         }
@@ -97,13 +106,19 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
     }
 
     // Self-hosted mode: Validate API key from header or query parameter
-    const apiKey = req.headers['x-api-key'] || req.query.apiKey;
+    const headerKey = req.headers['x-api-key'];
+    const queryKey = req.query.apiKey;
+    const apiKey = typeof headerKey === 'string'
+      ? headerKey
+      : typeof queryKey === 'string'
+        ? queryKey
+        : '';
 
     if (!apiKey) {
       return res.status(401).json({ error: 'API key required' });
     }
 
-    const user = apiKeysDb.validateApiKey(apiKey);
+    const user = apiKeysDb.validateApiKey(apiKey) as AgentAuthenticatedUser | null | undefined;
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid or inactive API key' });
@@ -115,10 +130,8 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
 
   /**
    * Get the remote URL of a git repository
-   * @param {string} repoPath - Path to the git repository
-   * @returns {Promise<string>} - Remote URL of the repository
    */
-  async function getGitRemoteUrl(repoPath) {
+  async function getGitRemoteUrl(repoPath: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const gitProcess = spawn('git', ['config', '--get', 'remote.origin.url'], {
         cwd: repoPath,
@@ -128,15 +141,15 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       let stdout = '';
       let stderr = '';
 
-      gitProcess.stdout.on('data', (data) => {
+      gitProcess.stdout?.on('data', (data: Buffer | string) => {
         stdout += data.toString();
       });
 
-      gitProcess.stderr.on('data', (data) => {
+      gitProcess.stderr?.on('data', (data: Buffer | string) => {
         stderr += data.toString();
       });
 
-      gitProcess.on('close', (code) => {
+      gitProcess.on('close', (code: number | null) => {
         if (code === 0) {
           resolve(stdout.trim());
         } else {
@@ -144,7 +157,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         }
       });
 
-      gitProcess.on('error', (error) => {
+      gitProcess.on('error', (error: Error) => {
         reject(new Error(`Failed to execute git: ${error.message}`));
       });
     });
@@ -152,10 +165,8 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
 
   /**
    * Normalize GitHub URLs for comparison
-   * @param {string} url - GitHub URL
-   * @returns {string} - Normalized URL
    */
-  function normalizeGitHubUrl(url) {
+  function normalizeGitHubUrl(url: string): string {
     // Remove .git suffix
     let normalized = url.replace(/\.git$/, '');
     // Convert SSH to HTTPS format for comparison
@@ -167,10 +178,8 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
 
   /**
    * Parse GitHub URL to extract owner and repo
-   * @param {string} url - GitHub URL (HTTPS or SSH)
-   * @returns {{owner: string, repo: string}} - Parsed owner and repo
    */
-  function parseGitHubUrl(url) {
+  function parseGitHubUrl(url: string): { owner: string; repo: string } {
     // Handle HTTPS URLs: https://github.com/owner/repo or https://github.com/owner/repo.git
     // Handle SSH URLs: git@github.com:owner/repo or git@github.com:owner/repo.git
     const match = url.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/);
@@ -185,10 +194,8 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
 
   /**
    * Auto-generate a branch name from a message
-   * @param {string} message - The agent message
-   * @returns {string} - Generated branch name
    */
-  function autogenerateBranchName(message) {
+  function autogenerateBranchName(message: string): string {
     // Convert to lowercase, replace spaces/special chars with hyphens
     let branchName = message
       .toLowerCase()
@@ -232,18 +239,14 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
     return branchName;
   }
 
-  /**
-   * Validate a Git branch name
-   * @param {string} branchName - Branch name to validate
-   * @returns {{valid: boolean, error?: string}} - Validation result
-   */
-  function validateBranchName(branchName) {
+  function validateBranchName(branchName: string): { valid: boolean; error?: string } {
     if (!branchName || branchName.trim() === '') {
       return { valid: false, error: 'Branch name cannot be empty' };
     }
 
-    // Git branch name rules
+    // Git branch name rules (including leading '-' option-injection guard)
     const invalidPatterns = [
+      { pattern: /^-/, message: 'Branch name cannot start with a hyphen' },
       { pattern: /^\./, message: 'Branch name cannot start with a dot' },
       { pattern: /\.$/, message: 'Branch name cannot end with a dot' },
       { pattern: /\.\./, message: 'Branch name cannot contain consecutive dots (..)' },
@@ -272,13 +275,11 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
 
   /**
    * Get recent commit messages from a repository
-   * @param {string} projectPath - Path to the git repository
-   * @param {number} limit - Number of commits to retrieve (default: 5)
-   * @returns {Promise<string[]>} - Array of commit messages
    */
-  async function getCommitMessages(projectPath, limit = 5) {
+  async function getCommitMessages(projectPath: string, limit = 5): Promise<string[]> {
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 50) : 5;
     return new Promise((resolve, reject) => {
-      const gitProcess = spawn('git', ['log', `-${limit}`, '--pretty=format:%s'], {
+      const gitProcess = spawn('git', ['log', `-${safeLimit}`, '--pretty=format:%s'], {
         cwd: projectPath,
         stdio: ['pipe', 'pipe', 'pipe']
       });
@@ -286,51 +287,41 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       let stdout = '';
       let stderr = '';
 
-      gitProcess.stdout.on('data', (data) => {
+      gitProcess.stdout?.on('data', (data: Buffer | string) => {
         stdout += data.toString();
       });
 
-      gitProcess.stderr.on('data', (data) => {
+      gitProcess.stderr?.on('data', (data: Buffer | string) => {
         stderr += data.toString();
       });
 
-      gitProcess.on('close', (code) => {
+      gitProcess.on('close', (code: number | null) => {
         if (code === 0) {
-          const messages = stdout.trim().split('\n').filter(msg => msg.length > 0);
+          const messages = stdout.trim().split('\n').filter((msg) => msg.length > 0);
           resolve(messages);
         } else {
           reject(new Error(`Failed to get commit messages: ${stderr}`));
         }
       });
 
-      gitProcess.on('error', (error) => {
+      gitProcess.on('error', (error: Error) => {
         reject(new Error(`Failed to execute git: ${error.message}`));
       });
     });
   }
 
   /**
-   * Create a new branch on GitHub using the API
-   * @param {Octokit} octokit - Octokit instance
-   * @param {string} owner - Repository owner
-   * @param {string} repo - Repository name
-   * @param {string} branchName - Name of the new branch
-   * @param {string} baseBranch - Base branch to branch from (default: 'main')
-   * @returns {Promise<void>}
-   */
-
-  /**
    * Create a pull request on GitHub
-   * @param {Octokit} octokit - Octokit instance
-   * @param {string} owner - Repository owner
-   * @param {string} repo - Repository name
-   * @param {string} branchName - Head branch name
-   * @param {string} title - PR title
-   * @param {string} body - PR body/description
-   * @param {string} baseBranch - Base branch (default: 'main')
-   * @returns {Promise<{number: number, url: string}>} - PR number and URL
    */
-  async function createGitHubPR(octokit, owner, repo, branchName, title, body, baseBranch = 'main') {
+  async function createGitHubPR(
+    octokit: InstanceType<AgentRouterDependencies['GithubClient']>,
+    owner: string,
+    repo: string,
+    branchName: string,
+    title: string,
+    body: string,
+    baseBranch = 'main',
+  ): Promise<{ number: number; url: string }> {
     const { data: pr } = await octokit.pulls.create({
       owner,
       repo,
@@ -350,16 +341,16 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
 
   /**
    * Clone a GitHub repository to a directory
-   * @param {string} githubUrl - GitHub repository URL
-   * @param {string} githubToken - Optional GitHub token for private repos
-   * @param {string} projectPath - Path for cloning the repository
-   * @returns {Promise<{path: string, created: boolean}>} - Checkout path and ownership flag
    */
-  async function cloneGitHubRepo(githubUrl, githubToken = null, projectPath) {
+  async function cloneGitHubRepo(
+    githubUrl: string,
+    githubToken: string | null = null,
+    projectPath: string,
+  ): Promise<{ path: string; created: boolean }> {
     return new Promise(async (resolve, reject) => {
       try {
         // Validate the host before using credentials or invoking Git.
-        let parsedGithubUrl;
+        let parsedGithubUrl: URL;
         try {
           parsedGithubUrl = new URL(githubUrl);
         } catch {
@@ -392,10 +383,13 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
             } else {
               throw new Error(`Directory ${cloneDir} already exists with a different repository (${existingUrl}). Expected: ${githubUrl}`);
             }
-          } catch (gitError) {
+          } catch {
             throw new Error(`Directory ${cloneDir} already exists but is not a valid git repository or git command failed`);
           }
         } catch (accessError) {
+          if (accessError instanceof Error && accessError.message.startsWith('Directory ')) {
+            throw accessError;
+          }
           // Directory doesn't exist - proceed with clone
         }
 
@@ -423,19 +417,18 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           env: gitEnvironment
         });
 
-        let stdout = '';
         let stderr = '';
 
-        gitProcess.stdout.on('data', (data) => {
-          stdout += data.toString();
+        gitProcess.stdout?.on('data', () => {
+          // Drain stdout pipe so clone never stalls.
         });
 
-        gitProcess.stderr.on('data', (data) => {
+        gitProcess.stderr?.on('data', (data: Buffer | string) => {
           stderr += data.toString();
           console.log('Git stderr:', data.toString());
         });
 
-        gitProcess.on('close', (code) => {
+        gitProcess.on('close', (code: number | null) => {
           if (code === 0) {
             console.log('✅ Repository cloned successfully');
             resolve({ path: cloneDir, created: true });
@@ -445,7 +438,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           }
         });
 
-        gitProcess.on('error', (error) => {
+        gitProcess.on('error', (error: Error) => {
           reject(new Error(`Failed to execute git: ${error.message}`));
         });
       } catch (error) {
@@ -456,10 +449,8 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
 
   /**
    * Clean up a temporary project directory and its Claude session
-   * @param {string} projectPath - Path to the project directory
-   * @param {string} sessionId - Session ID to clean up
    */
-  async function cleanupProject(projectPath, sessionId = null) {
+  async function cleanupProject(projectPath: string, sessionId: string | null = null): Promise<void> {
     try {
       const externalProjectsRoot = await fs.realpath(
         path.join(os.homedir(), '.claude', 'external-projects')
@@ -480,15 +471,18 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       await fs.rm(canonicalProjectPath, { recursive: true, force: true });
       console.log('✅ Project cleaned up');
 
-      // Also clean up the Claude session directory if sessionId provided
-      if (sessionId) {
+      // Also clean up the Claude session directory if sessionId provided (strictly validate containment)
+      if (sessionId && /^[a-zA-Z0-9_.-]+$/.test(sessionId) && sessionId !== '.' && sessionId !== '..') {
         try {
-          const sessionPath = path.join(os.homedir(), '.claude', 'sessions', sessionId);
-          console.log('🧹 Cleaning up session directory:', sessionPath);
-          await fs.rm(sessionPath, { recursive: true, force: true });
-          console.log('✅ Session directory cleaned up');
+          const sessionsRoot = path.resolve(os.homedir(), '.claude', 'sessions');
+          const sessionPath = path.resolve(sessionsRoot, sessionId);
+          if (sessionPath.startsWith(`${sessionsRoot}${path.sep}`)) {
+            console.log('🧹 Cleaning up session directory:', sessionPath);
+            await fs.rm(sessionPath, { recursive: true, force: true });
+            console.log('✅ Session directory cleaned up');
+          }
         } catch (error) {
-          console.error('⚠️ Failed to clean up session directory:', error.message);
+          console.error('⚠️ Failed to clean up session directory:', readAgentErrorMessage(error));
         }
       }
     } catch (error) {
@@ -498,24 +492,20 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
 
   /**
    * SSE Stream Writer - the HTTP response as one audience of a registered run.
-   *
-   * The provider runtime no longer writes here directly: it writes to the
-   * run's gateway writer, which remaps, sequences and buffers every event
-   * and forwards it — as a JSON string, the way it reaches a websocket — to
-   * each connection watching the run, this one included. The route's own
-   * events (status, session-id, GitHub results, done) are objects.
    */
   class SSEStreamWriter {
-    constructor(res) {
+    private readonly res: Response;
+
+    constructor(res: Response) {
       this.res = res;
     }
 
     /** What the gateway writer checks before forwarding: open until the response has ended. */
-    get readyState() {
+    get readyState(): number {
       return this.res.writableEnded ? 3 : 1;
     }
 
-    send(data) {
+    send(data: unknown): void {
       if (this.res.writableEnded) {
         return;
       }
@@ -523,7 +513,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       this.res.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`);
     }
 
-    end() {
+    end(): void {
       if (!this.res.writableEnded) {
         this.res.write('data: {"type":"done"}\n\n');
         this.res.end();
@@ -536,55 +526,57 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    * memory until the run ends.
    */
   class ResponseCollector {
-    constructor() {
-      this.messages = [];
-    }
+    private readonly messages: Array<Record<string, any>> = [];
 
-    readyState = 1;
+    readonly readyState = 1;
 
-    send(data) {
+    send(data: unknown): void {
       // The run's events arrive as JSON strings; the route's own as objects.
       // Stored as objects either way so the filters below read one shape.
-      let record = data;
+      let record: unknown = data;
       if (typeof data === 'string') {
         try {
           record = JSON.parse(data);
-        } catch (e) {
+        } catch {
           // Not JSON, keep as is
         }
       }
-      this.messages.push(record);
+      if (record && typeof record === 'object') {
+        this.messages.push(record as Record<string, any>);
+      }
     }
 
-    end() {
+    end(): void {
       // Do nothing - we'll collect all messages
     }
 
-    getMessages() {
+    getMessages(): Array<Record<string, any>> {
       return this.messages;
     }
 
     /**
      * The assistant's replies, as the normalized `text` events the run
-     * produced. (Earlier versions filtered a `claude-response` shape no
-     * runtime has emitted since the providers were unified, so this was
-     * always empty.)
+     * produced.
      */
-    getAssistantMessages() {
+    getAssistantMessages(): Array<Record<string, any>> {
       return this.messages.filter((msg) => msg && msg.kind === 'text' && msg.role === 'assistant');
     }
 
     /**
      * The run's token usage, from the last context-window report the
-     * runtime streamed (`status` / `token_budget`, which the Claude and Codex
-     * runtimes emit per assistant message); zeros for a runtime that
-     * reports none.
+     * runtime streamed (`status` / `token_budget`).
      */
-    getTotalTokens() {
-      let budget = null;
+    getTotalTokens(): {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+      totalTokens: number;
+    } {
+      let budget: Record<string, number> | null = null;
       for (const msg of this.messages) {
         if (msg && msg.kind === 'status' && msg.text === 'token_budget' && msg.tokenBudget) {
-          budget = msg.tokenBudget;
+          budget = msg.tokenBudget as Record<string, number>;
         }
       }
       const inputTokens = budget?.inputTokens ?? 0;
@@ -861,39 +853,40 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *     "cleanup": false
    *   }
    */
-  router.post('/', validateExternalApiKey, async (req, res) => {
-    const { githubUrl, projectPath, message, model, githubToken, branchName } = req.body;
+  router.post('/', validateExternalApiKey, async (req: AgentRequest, res: Response) => {
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, any>;
+    const { githubUrl, projectPath, message, model, githubToken, branchName } = body;
     // Transport input is typed here, before anything binds it to a query:
     // the lookup below runs outside the try, where a throw would be an
     // unhandled rejection.
-    if (req.body.sessionId !== undefined && req.body.sessionId !== null && typeof req.body.sessionId !== 'string') {
+    if (body.sessionId !== undefined && body.sessionId !== null && typeof body.sessionId !== 'string') {
       return res.status(400).json({ error: 'sessionId must be a string' });
     }
-    const sessionId = typeof req.body.sessionId === 'string' && req.body.sessionId.trim() ? req.body.sessionId.trim() : null;
-    const requestedProvider = req.body.provider === undefined || req.body.provider === null ? null : req.body.provider;
-    const effort = typeof req.body.effort === 'string' && req.body.effort.trim()
-      ? req.body.effort.trim()
+    const sessionId = typeof body.sessionId === 'string' && body.sessionId.trim() ? body.sessionId.trim() : null;
+    const requestedProvider = body.provider === undefined || body.provider === null ? null : String(body.provider);
+    const effort = typeof body.effort === 'string' && body.effort.trim()
+      ? body.effort.trim()
       : undefined;
 
     // Parse stream and cleanup as booleans (handle string "true"/"false" from curl)
-    const stream = req.body.stream === undefined ? true : (req.body.stream === true || req.body.stream === 'true');
-    const cleanup = req.body.cleanup === undefined ? true : (req.body.cleanup === true || req.body.cleanup === 'true');
+    const stream = body.stream === undefined ? true : (body.stream === true || body.stream === 'true');
+    const cleanup = body.cleanup === undefined ? true : (body.cleanup === true || body.cleanup === 'true');
 
     // If branchName is provided, automatically enable createBranch
-    const createBranch = branchName ? true : (req.body.createBranch === true || req.body.createBranch === 'true');
-    const createPR = req.body.createPR === true || req.body.createPR === 'true';
+    const createBranch = branchName ? true : (body.createBranch === true || body.createBranch === 'true');
+    const createPR = body.createPR === true || body.createPR === 'true';
 
     // Validate inputs
     if (!githubUrl && !projectPath) {
       return res.status(400).json({ error: 'Either githubUrl or projectPath is required' });
     }
 
-    if (!message || !message.trim()) {
+    if (!message || typeof message !== 'string' || !message.trim()) {
       return res.status(400).json({ error: 'message is required' });
     }
 
-    if (requestedProvider !== null && !AGENT_RUN_PROVIDERS.includes(requestedProvider)) {
-      return res.status(400).json({ error: 'provider must be "claude", "cursor", "codex", or "opencode"' });
+    if (requestedProvider !== null && !AGENT_RUN_PROVIDERS.includes(requestedProvider as LLMProvider)) {
+      return res.status(400).json({ error: 'provider must be "claude", "cursor", "codex", "opencode", or "antigravity"' });
     }
 
     // Validate GitHub branch/PR creation requirements
@@ -902,107 +895,99 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       return res.status(400).json({ error: 'createBranch and createPR require either githubUrl or projectPath with a GitHub remote' });
     }
 
-    // A run continues a session the caller names, by its app id or — for a
-    // caller that stored what an earlier response called `sessionId` — the
-    // provider-native one, which the row is also keyed by once indexed. The
-    // row, not the request, says which provider the session belongs to, as
-    // it does for a chat send; a request that names another is refused.
-    let sessionRow = null;
+    let sessionRow: AgentSessionRow | null = null;
     if (sessionId) {
-      sessionRow = sessionGateway.getSessionById(sessionId) ?? sessionGateway.getSessionByProviderSessionId(sessionId);
+      sessionRow = sessionGateway.getSessionById(sessionId) ?? sessionGateway.getSessionByProviderSessionId(sessionId) ?? null;
       if (!sessionRow) {
         return res.status(404).json({ error: `Session "${sessionId}" was not found` });
       }
       if (requestedProvider !== null && requestedProvider !== sessionRow.provider) {
         return res.status(400).json({ error: `Session "${sessionRow.session_id}" belongs to provider "${sessionRow.provider}"` });
       }
-      // Refused before any side effect — a clone per retry would pile up
-      // under external-projects. startRun below still has the last word.
       if (runRegistry.isProcessing(sessionRow.session_id)) {
         return res.status(409).json({ error: `Session "${sessionRow.session_id}" already has a run in progress` });
       }
     }
     const provider = sessionRow?.provider ?? requestedProvider ?? 'claude';
+    const userId = Number(req.user?.id ?? 0);
 
-    let finalProjectPath = null;
+    let finalProjectPath: string | null = null;
     let clonedProjectCreated = false;
-    let writer = null;
-    // The run as the chat socket registers one: on the running-sessions
-    // list, subscribable from any tab, and completed on every exit path.
-    let run = null;
+    let sseWriter: SSEStreamWriter | null = null;
+    let collectorWriter: ResponseCollector | null = null;
+    let run: ReturnType<AgentRouterDependencies['runs']['startRun']> = null;
 
     try {
       // Determine the final project path
       if (githubUrl) {
         // Clone repository (to projectPath if provided, otherwise generate path)
-        const tokenToUse = githubToken || githubTokensDb.getActiveGithubToken(req.user.id);
+        const tokenToUse = githubToken || githubTokensDb.getActiveGithubToken(userId);
 
-        let targetPath;
+        let targetPath: string;
         if (projectPath) {
-          targetPath = projectPath;
+          targetPath = String(projectPath);
         } else {
           // Generate a unique path for cloning
-          const repoHash = crypto.createHash('md5').update(githubUrl + Date.now()).digest('hex');
+          const repoHash = crypto.createHash('md5').update(String(githubUrl) + Date.now()).digest('hex');
           targetPath = path.join(os.homedir(), '.claude', 'external-projects', repoHash);
         }
 
-        const clonedProject = await cloneGitHubRepo(githubUrl.trim(), tokenToUse, targetPath);
+        const clonedProject = await cloneGitHubRepo(String(githubUrl).trim(), tokenToUse, targetPath);
         finalProjectPath = clonedProject.path;
         clonedProjectCreated = clonedProject.created;
       } else {
         // Use existing project path
-        finalProjectPath = normalizeProjectPath(path.resolve(projectPath));
+        finalProjectPath = normalizeProjectPath(path.resolve(String(projectPath)));
 
         // Verify the path exists
         try {
           await fs.access(finalProjectPath);
-        } catch (error) {
+        } catch {
           throw new Error(`Project path does not exist: ${finalProjectPath}`);
         }
       }
 
       finalProjectPath = normalizeProjectPath(finalProjectPath);
+      const activeProjectPath: string = finalProjectPath;
 
-      // A continued session runs where it lives, as a chat send does; a
-      // request that resolved to another directory is not that session.
       if (sessionRow && sessionRow.project_path && normalizeProjectPath(sessionRow.project_path) !== finalProjectPath) {
         throw new Error(`Session "${sessionRow.session_id}" belongs to project ${sessionRow.project_path}, not ${finalProjectPath}`);
       }
 
       // Register project path in DB (or reuse existing active registration)
-      const registrationResult = projectsDb.createProjectPath(finalProjectPath, null);
-      if (registrationResult.outcome === 'active_conflict') {
+      const registrationResult = projectsDb.createProjectPath(finalProjectPath, null) as {
+        outcome?: string;
+        project?: unknown;
+      };
+      if (registrationResult?.outcome === 'active_conflict') {
         console.log('Project registration already exists for:', finalProjectPath);
       } else {
-        console.log('Project registered:', registrationResult.project);
+        console.log('Project registered:', registrationResult?.project);
       }
 
-      // A brand-new run gets its app session row first, as a chat send does:
-      // the id is stable for the conversation, the sidebar can list it, and
-      // the provider-native id is mapped onto it when the runtime announces it.
       const appSessionId = sessionRow
         ? sessionRow.session_id
         : sessionGateway.createAppSession(provider, finalProjectPath, message.trim()).sessionId;
 
-      // Registered before any header goes out, so a session already mid-run
-      // is refused with a plain 409 rather than an empty stream. The HTTP
-      // response is the run's first audience; a tab that opens the session
-      // subscribes as another, and replays what it missed.
-      const audience = stream ? new SSEStreamWriter(res) : new ResponseCollector();
+      if (stream) {
+        sseWriter = new SSEStreamWriter(res);
+      } else {
+        collectorWriter = new ResponseCollector();
+      }
+      const audience = sseWriter ?? collectorWriter!;
       run = runRegistry.startRun({
         appSessionId,
-        provider,
+        provider: provider as LLMProvider,
         providerSessionId: sessionRow?.provider_session_id ?? null,
-        connection: audience,
-        userId: req.user.id,
+        connection: audience as unknown as Parameters<AgentRouterDependencies['runs']['startRun']>[0]['connection'],
+        userId,
       });
       if (!run) {
         if (cleanup && githubUrl && clonedProjectCreated) {
-          cleanupProject(finalProjectPath, null);
+          void cleanupProject(finalProjectPath, null);
         }
         return res.status(409).json({ error: `Session "${appSessionId}" already has a run in progress` });
       }
-      writer = audience;
 
       if (stream) {
         // Set up SSE headers for streaming
@@ -1012,26 +997,16 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
       }
 
-      // The route's own opening events. `session-id` is the app session id:
-      // what the UI opens the conversation under, and what a later request
-      // passes back as `sessionId` to continue it.
-      writer.send({
+      audience.send({
         type: 'status',
         message: githubUrl ? 'Repository cloned and session started' : 'Session started',
         projectPath: finalProjectPath
       });
-      writer.send({ type: 'session-id', sessionId: appSessionId });
+      audience.send({ type: 'session-id', sessionId: appSessionId });
 
-      // A request without `model` runs on the catalog's DEFAULT, the value
-      // /api/providers/:provider/models and the API docs advertise. It is the
-      // first custom model while the provider lists only custom models.
-      // Only the four runnable providers have a catalog: a continued legacy
-      // session whose provider is no longer registered must not fail here.
-      const providerModels = AGENT_RUN_PROVIDERS.includes(provider)
-        ? await providerModelsService.getProviderModels(provider)
+      const providerModels = AGENT_RUN_PROVIDERS.includes(provider as LLMProvider)
+        ? await providerModelsService.getProviderModels(provider as LLMProvider)
         : null;
-      // Cursor otherwise leaves the choice to its CLI, so it only takes the
-      // catalog DEFAULT when that is one of the user's own models.
       const cursorDefaultModel = providerModels?.CUSTOM_MODELS_ONLY === true
         && providerModels.OPTIONS.some((option) => option.isCustom)
         ? providerModels.DEFAULT
@@ -1047,7 +1022,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           sessionId: appSessionId,
           model: model || providerModels?.DEFAULT,
           effort,
-          permissionMode: 'bypassPermissions' // Bypass all permissions for API calls
+          permissionMode: 'bypassPermissions'
         }, run.writer);
 
       } else if (provider === 'cursor') {
@@ -1058,7 +1033,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           cwd: finalProjectPath,
           sessionId: appSessionId,
           model: model || cursorDefaultModel,
-          skipPermissions: true // Bypass permissions for Cursor
+          skipPermissions: true
         }, run.writer);
       } else if (provider === 'codex') {
         console.log('🤖 Starting Codex SDK session');
@@ -1080,28 +1055,39 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           sessionId: appSessionId,
           model: model || providerModels?.DEFAULT,
           effort,
-          permissionMode: 'bypassPermissions' // Agent runs are non-interactive, like the other providers above
+          permissionMode: 'bypassPermissions'
+        }, run.writer);
+      } else if (provider === 'antigravity') {
+        if (!queryAntigravity) {
+          throw new Error('Antigravity runtime is not configured');
+        }
+        console.log('🚀 Starting Antigravity session');
+
+        await queryAntigravity(message.trim(), {
+          projectPath: finalProjectPath,
+          cwd: finalProjectPath,
+          sessionId: appSessionId,
+          model: model || providerModels?.DEFAULT,
+          effort,
+          permissionMode: 'bypassPermissions'
         }, run.writer);
       }
 
-      // A tab can now abort the run (`chat.abort`), on which the runtime
-      // returns as it does on completion. What the interrupted agent left
-      // behind is not a result to branch or open a PR from.
       const aborted = run.events.some((event) => event.kind === 'complete' && event.aborted === true);
       if (aborted) {
-        writer.send({ type: 'status', message: 'Run aborted', aborted: true });
+        audience.send({ type: 'status', message: 'Run aborted', aborted: true });
       }
 
       // Handle GitHub branch and PR creation after successful agent completion
-      let branchInfo = null;
-      let prInfo = null;
+      let branchInfo: Record<string, unknown> | null = null;
+      let prInfo: Record<string, unknown> | null = null;
 
       if (!aborted && (createBranch || createPR)) {
         try {
           console.log('🔄 Starting GitHub branch/PR creation workflow...');
 
           // Get GitHub token
-          const tokenToUse = githubToken || githubTokensDb.getActiveGithubToken(req.user.id);
+          const tokenToUse = githubToken || githubTokensDb.getActiveGithubToken(userId);
 
           if (!tokenToUse) {
             throw new Error('GitHub token required for branch/PR creation. Please configure a GitHub token in settings.');
@@ -1111,7 +1097,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           const octokit = new Octokit({ auth: tokenToUse });
 
           // Get GitHub URL - either from parameter or from git remote
-          let repoUrl = githubUrl;
+          let repoUrl: string = githubUrl ? String(githubUrl) : '';
           if (!repoUrl) {
             console.log('🔍 Getting GitHub URL from git remote...');
             try {
@@ -1121,7 +1107,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
               }
               console.log(`✅ Found GitHub remote: ${repoUrl}`);
             } catch (error) {
-              throw new Error(`Failed to get GitHub remote URL: ${error.message}`);
+              throw new Error(`Failed to get GitHub remote URL: ${readAgentErrorMessage(error)}`);
             }
           }
 
@@ -1130,7 +1116,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           console.log(`📦 Repository: ${owner}/${repo}`);
 
           // Use provided branch name or auto-generate from message
-          const finalBranchName = branchName || autogenerateBranchName(message);
+          const finalBranchName = branchName ? String(branchName) : autogenerateBranchName(message);
           if (branchName) {
             console.log(`🌿 Using provided branch name: ${finalBranchName}`);
 
@@ -1147,14 +1133,14 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
             // Create and checkout the new branch locally
             console.log('🔄 Creating local branch...');
             const checkoutProcess = spawn('git', ['checkout', '-b', finalBranchName], {
-              cwd: finalProjectPath,
+              cwd: activeProjectPath,
               stdio: 'pipe'
             });
 
-            await new Promise((resolve, reject) => {
+            await new Promise<void>((resolve, reject) => {
               let stderr = '';
-              checkoutProcess.stderr.on('data', (data) => { stderr += data.toString(); });
-              checkoutProcess.on('close', (code) => {
+              checkoutProcess.stderr?.on('data', (data: Buffer | string) => { stderr += data.toString(); });
+              checkoutProcess.on('close', (code: number | null) => {
                 if (code === 0) {
                   console.log(`✅ Created and checked out local branch '${finalBranchName}'`);
                   resolve();
@@ -1162,11 +1148,11 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
                   // Branch might already exist locally, try to checkout
                   if (stderr.includes('already exists')) {
                     console.log(`ℹ️ Branch '${finalBranchName}' already exists locally, checking out...`);
-                    const checkoutExisting = spawn('git', ['checkout', finalBranchName], {
-                      cwd: finalProjectPath,
+                    const checkoutExisting = spawn('git', ['checkout', finalBranchName, '--'], {
+                      cwd: activeProjectPath,
                       stdio: 'pipe'
                     });
-                    checkoutExisting.on('close', (checkoutCode) => {
+                    checkoutExisting.on('close', (checkoutCode: number | null) => {
                       if (checkoutCode === 0) {
                         console.log(`✅ Checked out existing branch '${finalBranchName}'`);
                         resolve();
@@ -1183,22 +1169,20 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
 
             // Push the branch to remote
             console.log('🔄 Pushing branch to remote...');
-            const pushProcess = spawn('git', ['push', '-u', 'origin', finalBranchName], {
-              cwd: finalProjectPath,
+            const pushProcess = spawn('git', ['push', '-u', '--', 'origin', finalBranchName], {
+              cwd: activeProjectPath,
               stdio: 'pipe'
             });
 
-            await new Promise((resolve, reject) => {
+            await new Promise<void>((resolve, reject) => {
               let stderr = '';
-              let stdout = '';
-              pushProcess.stdout.on('data', (data) => { stdout += data.toString(); });
-              pushProcess.stderr.on('data', (data) => { stderr += data.toString(); });
-              pushProcess.on('close', (code) => {
+              pushProcess.stdout?.on('data', () => undefined);
+              pushProcess.stderr?.on('data', (data: Buffer | string) => { stderr += data.toString(); });
+              pushProcess.on('close', (code: number | null) => {
                 if (code === 0) {
                   console.log(`✅ Pushed branch '${finalBranchName}' to remote`);
                   resolve();
                 } else {
-                  // Check if branch exists on remote but has different commits
                   if (stderr.includes('already exists') || stderr.includes('up-to-date')) {
                     console.log(`ℹ️ Branch '${finalBranchName}' already exists on remote, using existing branch`);
                     resolve();
@@ -1216,17 +1200,14 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           }
 
           if (createPR) {
-            // Get commit messages to generate PR description
             console.log('🔄 Generating PR title and description...');
             const commitMessages = await getCommitMessages(finalProjectPath, 5);
 
-            // Use the first commit message as the PR title, or fallback to the agent message
             const prTitle = commitMessages.length > 0 ? commitMessages[0] : message;
 
-            // Generate PR body from commit messages
             let prBody = '## Changes\n\n';
             if (commitMessages.length > 0) {
-              prBody += commitMessages.map(msg => `- ${msg}`).join('\n');
+              prBody += commitMessages.map((msg) => `- ${msg}`).join('\n');
             } else {
               prBody += `Agent task: ${message}`;
             }
@@ -1234,21 +1215,19 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
 
             console.log(`📝 PR Title: ${prTitle}`);
 
-            // Create the pull request
             console.log('🔄 Creating pull request...');
             prInfo = await createGitHubPR(octokit, owner, repo, finalBranchName, prTitle, prBody, 'main');
           }
 
-          // Send branch/PR info in response
-          if (stream) {
+          if (stream && sseWriter) {
             if (branchInfo) {
-              writer.send({
+              sseWriter.send({
                 type: 'github-branch',
                 branch: branchInfo
               });
             }
             if (prInfo) {
-              writer.send({
+              sseWriter.send({
                 type: 'github-pr',
                 pullRequest: prInfo
               });
@@ -1256,45 +1235,38 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           }
 
         } catch (error) {
+          const errMessage = readAgentErrorMessage(error);
           console.error('❌ GitHub branch/PR creation error:', error);
 
-          // Send error but don't fail the entire request
-          if (stream) {
-            writer.send({
+          if (stream && sseWriter) {
+            sseWriter.send({
               type: 'github-error',
-              error: error.message
+              error: errMessage
             });
           }
-          // Store error info for non-streaming response
           if (!stream) {
-            branchInfo = { error: error.message };
-            prInfo = { error: error.message };
+            branchInfo = { error: errMessage };
+            prInfo = { error: errMessage };
           }
         }
       }
 
-      // Handle response based on streaming mode
-      if (stream) {
-        // Streaming mode: end the SSE stream
-        writer.end();
-      } else {
-        // Non-streaming mode: send filtered messages and token summary as JSON
-        const assistantMessages = writer.getAssistantMessages();
-        const tokenSummary = writer.getTotalTokens();
+      if (stream && sseWriter) {
+        sseWriter.end();
+      } else if (collectorWriter) {
+        const assistantMessages = collectorWriter.getAssistantMessages();
+        const tokenSummary = collectorWriter.getTotalTokens();
 
-        const response = {
+        const response: Record<string, unknown> = {
           success: !aborted,
           ...(aborted ? { aborted: true } : {}),
           sessionId: appSessionId,
-          // The provider-native id, for a caller that drives the CLI itself
-          // (`claude --resume`); `sessionId` is what this API and the UI use.
           providerSessionId: run.writer.getSessionId(),
           messages: assistantMessages,
           tokens: tokenSummary,
           projectPath: finalProjectPath
         };
 
-        // Add branch/PR info if created
         if (branchInfo) {
           response.branch = branchInfo;
         }
@@ -1305,54 +1277,47 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         res.json(response);
       }
 
-      // Clean up if requested
-      if (cleanup && githubUrl && clonedProjectCreated) {
-        // Only cleanup if we cloned a repo (not for existing project paths)
+      if (cleanup && githubUrl && clonedProjectCreated && finalProjectPath) {
+        const projectPathForCleanup = finalProjectPath;
         const sessionIdForCleanup = run.writer.getSessionId();
         setTimeout(() => {
-          cleanupProject(finalProjectPath, sessionIdForCleanup);
+          void cleanupProject(projectPathForCleanup, sessionIdForCleanup);
         }, 5000);
       }
 
     } catch (error) {
+      const errMessage = readAgentErrorMessage(error);
       console.error('❌ External session error:', error);
 
-      // Clean up on error
       if (finalProjectPath && cleanup && githubUrl && clonedProjectCreated) {
         const sessionIdForCleanup = run ? run.writer.getSessionId() : null;
-        cleanupProject(finalProjectPath, sessionIdForCleanup);
+        void cleanupProject(finalProjectPath, sessionIdForCleanup);
       }
 
       if (stream) {
-        // For streaming, send error event and stop
-        if (!writer) {
-          // Set up SSE headers if not already done
+        if (!sseWriter) {
           res.setHeader('Content-Type', 'text/event-stream');
           res.setHeader('Cache-Control', 'no-cache');
           res.setHeader('Connection', 'keep-alive');
           res.setHeader('X-Accel-Buffering', 'no');
-          writer = new SSEStreamWriter(res);
+          sseWriter = new SSEStreamWriter(res);
         }
 
         if (!res.writableEnded) {
-          writer.send({
+          sseWriter.send({
             type: 'error',
-            error: error.message,
-            message: `Failed: ${error.message}`
+            error: errMessage,
+            message: `Failed: ${errMessage}`
           });
-          writer.end();
+          sseWriter.end();
         }
       } else if (!res.headersSent) {
         res.status(500).json({
           success: false,
-          error: error.message
+          error: errMessage
         });
       }
     } finally {
-      // Safety net, as for a chat send: a runtime that threw or resolved
-      // without its terminal `complete` would leave the session listed as
-      // running in every tab. Scoped to this run, so a run the session
-      // started meanwhile is left alone.
       if (run) {
         runRegistry.completeRunIfCurrent(run, { exitCode: 1 });
       }

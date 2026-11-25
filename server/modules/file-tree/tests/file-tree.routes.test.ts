@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
+import { Readable } from 'node:stream';
 import test from 'node:test';
 
 import express, { type RequestHandler } from 'express';
@@ -154,4 +155,26 @@ test('create route rejects invalid entry types without calling the service', asy
   });
 
   assert.equal(createCalled, false);
+});
+
+test('files/content forces attachment, nosniff, and sandbox CSP on HTML and SVG content', async () => {
+  const services = createFakeServices({
+    openFile: async (_projectId, requestedPath) => ({
+      contentType: requestedPath.endsWith('.svg') ? 'image/svg+xml' : 'text/html',
+      stream: Readable.from(['<script>alert(1)</script>']),
+    }),
+  });
+
+  await withFileTreeServer(services, async (baseUrl) => {
+    for (const target of ['index.html', 'diagram.svg']) {
+      const response = await fetch(
+        `${baseUrl}/api/file-tree/projects/project-1/files/content?path=${encodeURIComponent(target)}`,
+      );
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+      assert.match(response.headers.get('content-security-policy') || '', /sandbox/);
+      assert.match(response.headers.get('content-disposition') || '', /^attachment;/);
+      assert.equal(await response.text(), '<script>alert(1)</script>');
+    }
+  });
 });

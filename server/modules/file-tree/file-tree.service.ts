@@ -340,6 +340,74 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     return validation.resolvedPath || targetPath;
   }
 
+  async function resolveRealProjectRoot(projectRoot: string): Promise<string> {
+    try {
+      return normalizeProjectPath(await fileSystem.realpath(projectRoot));
+    } catch {
+      return normalizeProjectPath(path.resolve(projectRoot));
+    }
+  }
+
+  /**
+   * Verifies lexical project-root containment first, then resolves `realpath`
+   * on the target (when `followLeaf` is true) or its deepest existing ancestor
+   * so symlinks — including dangling symlinks — cannot escape `projectRoot`.
+   */
+  async function resolveSafePathInsideProject(
+    projectRoot: string,
+    targetPath: string,
+    options: { followLeaf?: boolean } = {},
+  ): Promise<string> {
+    const followLeaf = options.followLeaf ?? true;
+    const lexicalPath = resolvePathInsideProject(projectRoot, targetPath);
+    const normalizedLexicalRoot = path.resolve(projectRoot);
+    const realProjectRoot = await resolveRealProjectRoot(projectRoot);
+
+    let probePath = followLeaf ? lexicalPath : path.dirname(lexicalPath);
+    while (true) {
+      try {
+        const realProbe = normalizeProjectPath(await fileSystem.realpath(probePath));
+        const remainder = path.relative(probePath, lexicalPath);
+        const canonicalTarget = normalizeProjectPath(path.resolve(realProbe, remainder));
+        const withinRoot = canonicalTarget === realProjectRoot
+          || canonicalTarget.startsWith(`${realProjectRoot}${path.sep}`);
+        if (!withinRoot) {
+          throw createFileTreeError('Path must be under project root', 403, 'PATH_OUTSIDE_PROJECT');
+        }
+        return lexicalPath;
+      } catch (error) {
+        if (error instanceof AppError) {
+          throw error;
+        }
+        const code = readErrorCode(error);
+        if (code === 'ELOOP') {
+          throw createFileTreeError('Too many symbolic links in path', 400, 'SYMLINK_LOOP');
+        }
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+          break;
+        }
+        // Distinguish a genuinely missing path from a dangling symlink whose
+        // target does not exist yet (writing to which would create an outside file).
+        try {
+          const linkStats = await fileSystem.lstat(probePath);
+          if (linkStats.isSymbolicLink()) {
+            throw createFileTreeError('Path must be under project root', 403, 'PATH_OUTSIDE_PROJECT');
+          }
+        } catch (lstatError) {
+          if (lstatError instanceof AppError) {
+            throw lstatError;
+          }
+        }
+        if (probePath === normalizedLexicalRoot || path.dirname(probePath) === probePath) {
+          break;
+        }
+        probePath = path.dirname(probePath);
+      }
+    }
+
+    return lexicalPath;
+  }
+
   /**
    * Resolves a path the viewer is allowed to read.
    *
@@ -352,7 +420,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
    * The agent may also point at a file in another folder of the workspace, the
    * same tree `browseWorkspace` lists, so anything under the workspace root is
    * readable too. Symlinks are resolved before that comparison. The writing
-   * endpoints keep using `resolvePathInsideProject` alone, so nothing outside
+   * endpoints keep using `resolveSafePathInsideProject` alone, so nothing outside
    * the project can be changed.
    */
   async function resolveReadablePath(projectRoot: string, targetPath: string): Promise<string> {
@@ -368,7 +436,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       }
     }
 
-    return resolvePathInsideProject(projectRoot, targetPath);
+    return resolveSafePathInsideProject(projectRoot, targetPath);
   }
 
   async function cleanupTemporaryFiles(files: FileTreeUploadedFile[]): Promise<void> {
@@ -498,7 +566,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
 
     async saveTextFile(projectId, filePath, content) {
       const projectRoot = await resolveProjectRoot(projectId);
-      const resolvedPath = resolvePathInsideProject(projectRoot, filePath);
+      const resolvedPath = await resolveSafePathInsideProject(projectRoot, filePath);
       try {
         await fileSystem.writeTextFile(resolvedPath, content);
       } catch (error) {
@@ -540,7 +608,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       const targetPath = input.parentPath
         ? path.join(input.parentPath, input.name)
         : input.name;
-      const resolvedPath = resolvePathInsideProject(projectRoot, targetPath);
+      const resolvedPath = await resolveSafePathInsideProject(projectRoot, targetPath);
 
       try {
         await fileSystem.access(resolvedPath);
@@ -584,18 +652,20 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     async renameEntry(input) {
       validateFilename(input.newName);
       const projectRoot = await resolveProjectRoot(input.projectId);
-      const resolvedOldPath = resolvePathInsideProject(projectRoot, input.oldPath);
+      const resolvedOldPath = await resolveSafePathInsideProject(projectRoot, input.oldPath, {
+        followLeaf: false,
+      });
 
       try {
-        await fileSystem.access(resolvedOldPath);
+        await fileSystem.lstat(resolvedOldPath);
       } catch {
         throw createFileTreeError('File or directory not found', 404, 'FILE_TREE_ENTRY_NOT_FOUND');
       }
 
       const resolvedNewPath = path.join(path.dirname(resolvedOldPath), input.newName);
-      resolvePathInsideProject(projectRoot, resolvedNewPath);
+      await resolveSafePathInsideProject(projectRoot, resolvedNewPath);
       try {
-        await fileSystem.access(resolvedNewPath);
+        await fileSystem.lstat(resolvedNewPath);
         throw createFileTreeError(
           'A file or directory with this name already exists',
           409,
@@ -626,20 +696,22 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
 
     async deleteEntry(input) {
       const projectRoot = await resolveProjectRoot(input.projectId);
-      const resolvedPath = resolvePathInsideProject(projectRoot, input.targetPath);
+      const resolvedPath = await resolveSafePathInsideProject(projectRoot, input.targetPath, {
+        followLeaf: false,
+      });
+      if (resolvedPath === path.resolve(projectRoot)) {
+        throw createFileTreeError('Cannot delete project root directory', 403, 'PROJECT_ROOT_DELETE_FORBIDDEN');
+      }
       let stats;
       try {
-        stats = await fileSystem.stat(resolvedPath);
+        stats = await fileSystem.lstat(resolvedPath);
       } catch {
         throw createFileTreeError('File or directory not found', 404, 'FILE_TREE_ENTRY_NOT_FOUND');
       }
 
-      if (resolvedPath === path.resolve(projectRoot)) {
-        throw createFileTreeError('Cannot delete project root directory', 403, 'PROJECT_ROOT_DELETE_FORBIDDEN');
-      }
-
+      const isDirectory = stats.isDirectory() && !stats.isSymbolicLink();
       try {
-        if (stats.isDirectory()) {
+        if (isDirectory) {
           await fileSystem.removeDirectory(resolvedPath);
         } else {
           await fileSystem.unlink(resolvedPath);
@@ -652,7 +724,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         });
       }
 
-      const entryType = stats.isDirectory() ? 'directory' as const : 'file' as const;
+      const entryType = isDirectory ? 'directory' as const : 'file' as const;
       return {
         success: true,
         path: resolvedPath,
@@ -672,7 +744,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
           || input.targetPath === '.'
           || input.targetPath === './'
           ? path.resolve(projectRoot)
-          : resolvePathInsideProject(projectRoot, input.targetPath);
+          : await resolveSafePathInsideProject(projectRoot, input.targetPath);
 
         try {
           await fileSystem.access(resolvedTargetDirectory);
@@ -687,7 +759,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
           const destinationPath = path.join(resolvedTargetDirectory, fileName);
 
           try {
-            resolvePathInsideProject(projectRoot, destinationPath);
+            await resolveSafePathInsideProject(projectRoot, destinationPath);
           } catch (error) {
             if (error instanceof AppError && error.statusCode === 403) {
               await cleanupTemporaryFiles([file]);

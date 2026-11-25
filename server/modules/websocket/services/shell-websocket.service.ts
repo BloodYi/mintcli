@@ -868,3 +868,23 @@ export function handleShellConnection(
     console.error('[ERROR] Shell WebSocket error:', error);
   });
 }
+
+/**
+ * Terminates all retained PTY shell sessions and clears idle timers during
+ * server shutdown so child shells do not outlive the HTTP/WebSocket process.
+ */
+export function closeAllPtySessions(): void {
+  for (const [key, session] of ptySessionsMap.entries()) {
+    if (session.timeoutId) {
+      clearTimeout(session.timeoutId);
+      session.timeoutId = null;
+    }
+    session.ws = null;
+    try {
+      session.pty.kill();
+    } catch {
+      // Ignore already-exited PTY handles during shutdown.
+    }
+    ptySessionsMap.delete(key);
+  }
+}

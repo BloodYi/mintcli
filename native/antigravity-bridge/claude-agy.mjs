@@ -66,6 +66,33 @@ function truncateInline(value, max = 72) {
 
 function formatToolLabel(name, input) {
   const toolName = String(name || 'Tool');
+  if (toolName.startsWith('mcp__agy-fast_')) {
+    const shortName = toolName.split('__').slice(2).join('__') || toolName;
+    let detail = '';
+    if (input && typeof input === 'object') {
+      if (Array.isArray(input.queries)) {
+        detail = `${input.queries.length} queries`;
+      } else if (Array.isArray(input.edits)) {
+        detail = `${input.edits.length} files`;
+      } else if (typeof input.edits === 'string' && input.edits.trim()) {
+        try {
+          const parsedEdits = JSON.parse(input.edits);
+          if (Array.isArray(parsedEdits)) detail = `${parsedEdits.length} files`;
+        } catch {}
+      } else if (Array.isArray(input.paths)) {
+        detail = `${input.paths.length} paths`;
+      } else if (Array.isArray(input.commands)) {
+        detail = `${input.commands.length} checks`;
+      } else {
+        const sliceParts = [];
+        if (Array.isArray(input.outlines) && input.outlines.length) sliceParts.push(`${input.outlines.length} outlines`);
+        if (Array.isArray(input.slices) && input.slices.length) sliceParts.push(`${input.slices.length} slices`);
+        if (Array.isArray(input.lineRanges) && input.lineRanges.length) sliceParts.push(`${input.lineRanges.length} ranges`);
+        if (sliceParts.length) detail = sliceParts.join(', ');
+      }
+    }
+    return detail ? `agy-fast:${shortName} (${detail})` : `agy-fast:${shortName}`;
+  }
   if (!input || typeof input !== 'object') return toolName;
   let detail = '';
   if (['Read', 'Edit', 'Write', 'NotebookEdit'].includes(toolName)) {
@@ -84,7 +111,7 @@ function formatToolLabel(name, input) {
 
 const MAX_TOOL_RESULT_CHARS = 32768;
 const ARMOR_GATE_CHARS = 600;
-const FAST_DELIVERABLE_HEAD_RE = /^\s*(?:#{1,6}\s+\S|```|~~~)/;
+const FAST_DELIVERABLE_HEAD_RE = /^\s*(?:#{1,6}\s+\S|```|~~~|<(?:ta|tw)_(?:plan|zh|source|time|status)\b)/i;
 const TAIL_DISCLAIMER_HEADING_RE = /^\s*(?:#{1,6}|>|[-*_]{3,})?\s*(?:\*\*|__)?\s*【?(?:免责声明|安全提示|合规提示|法律声明|合规声明|重要声明|安全与免责(?:提示|声明)|安全与合规(?:提示|声明)|Disclaimer|Safety\s+Notice|Legal\s+Disclaimer)】?\s*(?:\*\*|__)?\s*[：:]?\s*$/i;
 const TAIL_DISCLAIMER_BODY_RE = /(?:(?:以上|上述|本)(?:代码|脚本|内容|方案|实现|示例|工具)[\s\S]{0,60}?(?:仅供|仅用于|只用于)(?:安全研究|学习|教学|学术|授权测试|本地测试)|请(?:勿|切勿|不要)用于(?:任何)?(?:未授权|非法|恶意)|请遵守(?:当地|相关)?法律法规|(?:solely|strictly|only)?\s*for\s+(?:educational|authorized\s+(?:security\s+)?testing|research)\s+purposes|do\s+not\s+use\s+(?:this|it)\s+against\s+unauthorized)/i;
 const TAIL_DISCLAIMER_LINE_RE = /^\s*(?:[>*_\-#]+\s*)*(?:【?(?:免责声明|安全提示|合规提示|法律声明|合规声明|重要声明|安全与免责(?:提示|声明))】?[：:\s]|注[：:]\s*(?:以上|上述|本)(?:代码|脚本|内容|方案|实现|示例)[^\n]{0,24}(?:仅供|仅用于|请勿|切勿)|请注意[：:，,]\s*(?:以上|上述|本)(?:代码|脚本|内容|方案|实现|示例)[^\n]{0,24}(?:仅供|仅用于|请勿|切勿)|(?:以上|上述|本)(?:代码|脚本|内容|方案|实现|示例)(?:仅供|仅用于)(?:安全研究|学习|教学|学术|授权测试|本地测试)[^\n]*(?:请勿|切勿|不得|严禁|遵守)|(?:\*\*)?Disclaimer(?:\*\*)?\s*:\s*(?:The above|This (?:code|script|example|information))[^\n]*(?:educational|authorized|research)|(?:\*\*)?Note(?:\*\*)?\s*:\s*(?:The above|This (?:code|script|example)) is provided (?:solely |strictly |only )?for (?:educational|authorized))/i;
@@ -648,6 +675,40 @@ async function run() {
   };
 
   try {
+    const hasAgyFastMcp = input.useAgyFast === true && input.agyFastMcpServers && typeof input.agyFastMcpServers === 'object' && Object.keys(input.agyFastMcpServers).length > 0;
+    const rawExtraTools = hasAgyFastMcp && Array.isArray(input.agyFastAllowedTools)
+      ? input.agyFastAllowedTools.filter(t => typeof t === 'string' && t.trim())
+      : [];
+    const extraAllowedTools = input.sandbox
+      ? rawExtraTools.filter(t => !t.endsWith('__*') && !t.endsWith('__run_checks'))
+      : rawExtraTools;
+    const sandboxDisallowedTools = input.sandbox && hasAgyFastMcp
+      ? Object.keys(input.agyFastMcpServers).map(srv => `mcp__${srv}__run_checks`)
+      : [];
+    const sandboxCanUseTool = input.sandbox && hasAgyFastMcp
+      ? async (toolName, toolInput) => {
+          if (typeof toolName === 'string' && toolName.endsWith('__run_checks')) {
+            return {
+              behavior: 'deny',
+              message: 'Sandbox mode blocks unsandboxed agy-fast run_checks; run commands via the sandboxed Bash tool instead.',
+            };
+          }
+          if (
+            typeof toolName === 'string'
+            && toolName.endsWith('__apply_edits')
+            && toolInput
+            && typeof toolInput.verify === 'string'
+            && toolInput.verify.trim()
+          ) {
+            return {
+              behavior: 'deny',
+              message: 'Sandbox mode blocks unsandboxed inline verify commands in apply_edits; omit verify and run checks via the sandboxed Bash tool.',
+            };
+          }
+          return { behavior: 'allow', updatedInput: toolInput };
+        }
+      : undefined;
+    const effectiveAllowedTools = extraAllowedTools.length > 0 ? [...tools, ...extraAllowedTools] : tools;
     const turn = query({
       prompt: heldPrompt.stream,
       options: {
@@ -658,7 +719,10 @@ async function run() {
           preset: 'claude_code',
           ...(input.systemAppend ? { append: input.systemAppend } : {}),
         },
-        tools, allowedTools: tools, permissionMode: 'dontAsk',
+        tools, allowedTools: effectiveAllowedTools, permissionMode: 'dontAsk',
+        ...(sandboxDisallowedTools.length > 0 ? { disallowedTools: sandboxDisallowedTools } : {}),
+        ...(sandboxCanUseTool ? { canUseTool: sandboxCanUseTool } : {}),
+        ...(hasAgyFastMcp ? { mcpServers: input.agyFastMcpServers } : {}),
         settingSources: [], includePartialMessages: true, persistSession: false,
         extraArgs: { 'replay-user-messages': null },
         ...(input.sandbox ? { sandbox: {

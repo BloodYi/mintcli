@@ -179,7 +179,7 @@ export function useAntigravity() {
     model: string,
     cwd: string,
     attachments: AntigravityMessage['attachments'],
-    options?: { useArmor?: boolean; useClaudeAgy?: boolean },
+    options?: { useArmor?: boolean; useTransam?: boolean; useAgyFast?: boolean; useThinkLang?: boolean; useClaudeAgy?: boolean },
   ) => {
     if (running.current || !content.trim() && !attachments?.length) return false;
     running.current = true; setBusy(true); setNotice('');
@@ -198,6 +198,9 @@ export function useAntigravity() {
         conversation_id: currentId.current, history_revision: revision.current,
         turn_id: currentTurn.current, model_label: models.find(item => item.id === model)?.name || model,
         ...(options?.useArmor ? { use_armor: true } : {}),
+        ...(options?.useTransam ? { use_transam: true } : {}),
+        ...(options?.useAgyFast ? { use_agy_fast: true } : {}),
+        ...(options?.useThinkLang ? { use_think_lang: true } : {}),
         ...(options?.useClaudeAgy ? { use_claude_agy: true } : {}),
       }, abort.signal);
       if (!response.ok) { await readApiJson(response); return false; }

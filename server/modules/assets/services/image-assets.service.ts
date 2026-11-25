@@ -1,4 +1,4 @@
-import fsSync, { promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import mime from 'mime-types';
@@ -114,17 +114,20 @@ export async function openStoredAttachmentAsset(filename: string) {
   }
 
   try {
-    await fs.access(resolved);
+    const stats = await fs.lstat(resolved);
+    if (!stats.isFile()) {
+      return { status: 'missing' as const };
+    }
   } catch {
     return { status: 'missing' as const };
   }
 
   return {
     status: 'found' as const,
+    filePath: resolved,
     // mime-db can map .mp4 to application/mp4; chat uploads are video files.
     contentType: path.extname(resolved).toLowerCase() === '.mp4'
       ? 'video/mp4'
       : mime.lookup(resolved) || 'application/octet-stream',
-    stream: fsSync.createReadStream(resolved),
   };
 }

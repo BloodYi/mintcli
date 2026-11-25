@@ -324,6 +324,7 @@
   body.mobile-tools-open .header-secondary-tools #route-inspect-btn,
   body.mobile-tools-open .header-secondary-tools #claude-agy-toggle,
   body.mobile-tools-open .header-secondary-tools #armor-toggle,
+  body.mobile-tools-open .header-secondary-tools #transam-toggle,
   body.mobile-tools-open .header-secondary-tools #thinking-toggle,
   body.mobile-tools-open .header-secondary-tools #theme-toggle,
   body.mobile-tools-open .header-secondary-tools #bg-toggle {
@@ -347,6 +348,12 @@
 
   body.mobile-tools-open .header-secondary-tools #armor-toggle::after {
     content: "Armor 破甲";
+    font-size: 13.5px;
+    font-weight: 550;
+  }
+
+  body.mobile-tools-open .header-secondary-tools #transam-toggle::after {
+    content: "TRANS-AM";
     font-size: 13.5px;
     font-weight: 550;
   }

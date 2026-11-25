@@ -1,4 +1,4 @@
-import { Readable } from 'node:stream';
+import { pipeline, Readable } from 'node:stream';
 
 import express from 'express';
 
@@ -106,7 +106,11 @@ export function createVoiceRouter(dependencies: VoiceRouterDependencies): expres
       return;
     }
 
-    Readable.fromWeb(result.value.body).on('error', (error) => response.destroy(error)).pipe(response);
+    pipeline(Readable.fromWeb(result.value.body), response, (error) => {
+      if (error && (error as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE' && !response.writableEnded) {
+        response.destroy(error);
+      }
+    });
   }));
 
   return router;

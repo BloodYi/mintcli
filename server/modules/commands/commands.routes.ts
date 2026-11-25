@@ -52,6 +52,7 @@ const MODEL_PROVIDER_LABELS = {
   cursor: "Cursor",
   codex: "Codex",
   opencode: "OpenCode",
+  antigravity: "Antigravity",
 };
 
 const readModelProvider = (value) => {
@@ -530,8 +531,10 @@ router.post("/execute", async (req, res) => {
       });
     }
 
-    // Handle built-in commands
-    const handler = builtInHandlers[commandName];
+    // Handle built-in commands (guard against Object.prototype property lookup)
+    const handler = Object.hasOwn(builtInHandlers, commandName)
+      ? builtInHandlers[commandName]
+      : undefined;
     if (handler) {
       try {
         const result = await handler(args, context);
@@ -553,34 +556,60 @@ router.post("/execute", async (req, res) => {
     }
 
     // Handle custom commands
-    if (!commandPath) {
+    if (typeof commandPath !== "string" || !commandPath.trim()) {
       return res.status(400).json({
         error: "Command path is required for custom commands",
       });
     }
 
     // Load command content
-    // Security: validate commandPath is within allowed directories
+    // Security: validate commandPath is a .md file within allowed directories (including symlink canonicalization)
+    let safeCommandPath = path.resolve(commandPath);
     {
-      const resolvedPath = path.resolve(commandPath);
+      if (path.extname(safeCommandPath).toLowerCase() !== ".md") {
+        return res.status(403).json({
+          error: "Access denied",
+          message: "Custom command must be a Markdown (.md) file",
+        });
+      }
       const userBase = path.resolve(
         path.join(os.homedir(), ".claude", "commands"),
       );
-      const projectBase = context?.projectPath
+      const projectBase = context?.projectPath && typeof context.projectPath === "string"
         ? path.resolve(path.join(context.projectPath, ".claude", "commands"))
         : null;
-      const isUnder = (base) => {
-        const rel = path.relative(base, resolvedPath);
+      const isUnder = (base, candidate) => {
+        const rel = path.relative(base, candidate);
         return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
       };
-      if (!(isUnder(userBase) || (projectBase && isUnder(projectBase)))) {
+      if (!(isUnder(userBase, safeCommandPath) || (projectBase && isUnder(projectBase, safeCommandPath)))) {
         return res.status(403).json({
           error: "Access denied",
           message: "Command must be in .claude/commands directory",
         });
       }
+      if (typeof fs.realpath === "function") {
+        const canonicalTarget = await fs.realpath(safeCommandPath);
+        if (path.extname(canonicalTarget).toLowerCase() !== ".md") {
+          return res.status(403).json({
+            error: "Access denied",
+            message: "Custom command target must be a Markdown (.md) file",
+          });
+        }
+        const canonicalUserBase = await fs.realpath(userBase).catch(() => userBase);
+        const canonicalProjectBase = projectBase
+          ? await fs.realpath(projectBase).catch(() => projectBase)
+          : null;
+        if (!(isUnder(canonicalUserBase, canonicalTarget) || (canonicalProjectBase && isUnder(canonicalProjectBase, canonicalTarget)))) {
+          return res.status(403).json({
+            error: "Access denied",
+            message: "Command symlink target must stay within .claude/commands directory",
+          });
+        }
+        safeCommandPath = canonicalTarget;
+      }
     }
-    const content = await fs.readFile(commandPath, "utf8");
+    const content = await fs.readFile(safeCommandPath, "utf8");
     const { data: metadata, content: commandContent } =
       parseFrontMatter(content);
     // `$ARGUMENTS` gets the raw text typed after the command name (line breaks

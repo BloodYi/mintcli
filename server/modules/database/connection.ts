@@ -52,10 +52,35 @@ function resolveLegacyDatabasePath(): string {
 // ---------------------------------------------------------------------------
 
 function ensureDatabaseDirectory(dbPath: string): void {
+  if (dbPath === ':memory:') return;
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     console.log('Created database directory:', dir);
+  }
+  if (process.platform !== 'win32') {
+    const base = path.basename(dir);
+    if (base === '.cloudcli' || base === 'database') {
+      try {
+        fs.chmodSync(dir, 0o700);
+      } catch {
+        // Best-effort permission hardening on shared filesystems.
+      }
+    }
+  }
+}
+
+function tightenDatabaseFilePermissions(dbPath: string): void {
+  if (dbPath === ':memory:' || process.platform === 'win32') return;
+  for (const suffix of ['', '-wal', '-shm']) {
+    const candidate = dbPath + suffix;
+    if (fs.existsSync(candidate)) {
+      try {
+        fs.chmodSync(candidate, 0o600);
+      } catch {
+        // Best-effort permission hardening.
+      }
+    }
   }
 }
 
@@ -115,10 +140,14 @@ export function getConnection(): Database.Database {
   migrateLegacyDatabase(dbPath);
 
   instance = new Database(dbPath);
+  instance.pragma('journal_mode = WAL');
+  instance.pragma('busy_timeout = 5000');
+  instance.pragma('foreign_keys = ON');
 
   // app_config must exist immediately — the auth middleware reads
   // the JWT secret at module-load time, before initializeDatabase() runs.
   instance.exec(APP_CONFIG_TABLE_SCHEMA_SQL);
+  tightenDatabaseFilePermissions(dbPath);
 
   return instance;
 }

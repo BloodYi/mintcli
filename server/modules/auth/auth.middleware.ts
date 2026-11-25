@@ -1,72 +1,140 @@
-// @ts-nocheck -- JWT request augmentation is narrowed by Auth route contracts.
-import jwt from 'jsonwebtoken';
+import { timingSafeEqual } from 'node:crypto';
+import { createRequire } from 'node:module';
 
+import type { NextFunction, Request, RequestHandler, Response } from 'express';
+
+import type { AuthenticatedWebSocketUser } from '@/shared/types.js';
 import { IS_PLATFORM } from '@/shared/utils.js';
 
-import { userDb, appConfigDb } from '../database/index.js';
+import { appConfigDb, userDb } from '../database/index.js';
+
+type DecodedAuthToken = {
+  userId?: number;
+  username?: string;
+  iat?: number;
+  exp?: number;
+  [key: string]: unknown;
+};
+
+type JwtAdapter = {
+  sign(payload: Record<string, unknown>, secret: string, options: { expiresIn: string }): string;
+  verify(token: string, secret: string): string | DecodedAuthToken;
+  TokenExpiredError: new (...args: any[]) => Error;
+};
+
+const require = createRequire(import.meta.url);
+const jwt = require('jsonwebtoken') as JwtAdapter;
+
+type TokenUserInput = {
+  id: number | bigint;
+  username: string;
+};
+
+type AuthenticatedHttpRequest = Request & {
+  user?: {
+    id: number;
+    username: string;
+    [key: string]: unknown;
+  };
+};
 
 // Use env var if set, otherwise auto-generate a unique secret per installation
-const JWT_SECRET = process.env.JWT_SECRET || appConfigDb.getOrCreateJwtSecret();
+const JWT_SECRET: string = process.env.JWT_SECRET || appConfigDb.getOrCreateJwtSecret();
 
 // Optional API key middleware
-const validateApiKey = (req, res, next) => {
-  // Skip API key validation if not configured
-  if (!process.env.API_KEY) {
-    return next();
+const validateApiKey: RequestHandler = (req: Request, res: Response, next: NextFunction) => {
+  const configuredKey = process.env.API_KEY;
+  if (!configuredKey) {
+    next();
+    return;
   }
-  
-  const apiKey = req.headers['x-api-key'];
-  if (apiKey !== process.env.API_KEY) {
-    return res.status(401).json({ error: 'Invalid API key' });
+
+  const rawHeader = req.headers['x-api-key'];
+  const apiKey = typeof rawHeader === 'string' ? rawHeader : '';
+  const candidateBuf = Buffer.from(apiKey, 'utf8');
+  const expectedBuf = Buffer.from(configuredKey, 'utf8');
+  if (
+    candidateBuf.byteLength !== expectedBuf.byteLength
+    || !timingSafeEqual(candidateBuf, expectedBuf)
+  ) {
+    res.status(401).json({ error: 'Invalid API key' });
+    return;
   }
   next();
 };
 
 // JWT authentication middleware
-const authenticateToken = async (req, res, next) => {
-  // Platform mode:  use single database user
+const authenticateToken: RequestHandler = async (
+  req: AuthenticatedHttpRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  // Platform mode: use single database user
   if (IS_PLATFORM) {
     try {
       const user = userDb.getFirstUser();
       if (!user) {
-        return res.status(500).json({ error: 'Platform mode: No user found in database' });
+        res.status(500).json({ error: 'Platform mode: No user found in database' });
+        return;
       }
       req.user = user;
-      return next();
+      next();
+      return;
     } catch (error) {
       console.error('Platform mode error:', error);
-      return res.status(500).json({ error: 'Platform mode: Failed to fetch user' });
+      res.status(500).json({ error: 'Platform mode: Failed to fetch user' });
+      return;
     }
   }
 
   // Normal OSS JWT validation
   const authHeader = req.headers['authorization'];
-  let token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  let token: string | undefined = authHeader ? authHeader.split(' ')[1] : undefined; // Bearer TOKEN
 
   // Also check query param for SSE endpoints (EventSource can't set headers)
-  if (!token && req.query.token) {
+  if (!token && typeof req.query.token === 'string') {
     token = req.query.token;
   }
 
   if (!token) {
     res.setHeader('X-Auth-Error', 'invalid-token');
-    return res.status(401).json({
+    res.status(401).json({
       error: 'Access denied. No token provided.',
       code: 'AUTH_TOKEN_INVALID',
     });
+    return;
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const verified = jwt.verify(token, JWT_SECRET);
+    if (!verified || typeof verified === 'string') {
+      res.setHeader('X-Auth-Error', 'invalid-token');
+      res.status(401).json({
+        error: 'Invalid token',
+        code: 'AUTH_TOKEN_INVALID',
+      });
+      return;
+    }
+    const decoded = verified as DecodedAuthToken;
+    const userId = typeof decoded.userId === 'number' ? decoded.userId : Number(decoded.userId);
+    if (!Number.isFinite(userId)) {
+      res.setHeader('X-Auth-Error', 'invalid-token');
+      res.status(401).json({
+        error: 'Invalid token',
+        code: 'AUTH_TOKEN_INVALID',
+      });
+      return;
+    }
 
     // Verify user still exists and is active
-    const user = userDb.getUserById(decoded.userId);
+    const user = userDb.getUserById(userId);
     if (!user) {
       res.setHeader('X-Auth-Error', 'invalid-token');
-      return res.status(401).json({
+      res.status(401).json({
         error: 'Invalid token. User not found.',
         code: 'AUTH_TOKEN_INVALID',
       });
+      return;
     }
 
     // Auto-refresh: if token is past halfway through its lifetime, issue a new one
@@ -84,10 +152,11 @@ const authenticateToken = async (req, res, next) => {
   } catch (error) {
     if (error instanceof jwt.TokenExpiredError) {
       res.setHeader('X-Auth-Error', 'session-expired');
-      return res.status(401).json({
+      res.status(401).json({
         error: 'Session expired. Please log in again.',
         code: 'AUTH_TOKEN_EXPIRED',
       });
+      return;
     }
 
     console.warn(
@@ -95,7 +164,7 @@ const authenticateToken = async (req, res, next) => {
       error instanceof Error ? error.message : String(error),
     );
     res.setHeader('X-Auth-Error', 'invalid-token');
-    return res.status(401).json({
+    res.status(401).json({
       error: 'Invalid token',
       code: 'AUTH_TOKEN_INVALID',
     });
@@ -103,19 +172,19 @@ const authenticateToken = async (req, res, next) => {
 };
 
 // Generate JWT token
-const generateToken = (user) => {
+const generateToken = (user: TokenUserInput): string => {
   return jwt.sign(
     {
-      userId: user.id,
-      username: user.username
+      userId: Number(user.id),
+      username: user.username,
     },
     JWT_SECRET,
-    { expiresIn: '7d' }
+    { expiresIn: '7d' },
   );
 };
 
 // WebSocket authentication function
-const authenticateWebSocket = (token) => {
+const authenticateWebSocket = (token: string | null | undefined): AuthenticatedWebSocketUser | null => {
   // Platform mode: bypass token validation, return first user
   if (IS_PLATFORM) {
     try {
@@ -136,13 +205,21 @@ const authenticateWebSocket = (token) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const verified = jwt.verify(token, JWT_SECRET);
+    if (!verified || typeof verified === 'string') {
+      return null;
+    }
+    const decoded = verified as DecodedAuthToken;
+    const userId = typeof decoded.userId === 'number' ? decoded.userId : Number(decoded.userId);
+    if (!Number.isFinite(userId)) {
+      return null;
+    }
     // Verify user actually exists in database (matches REST authenticateToken behavior)
-    const user = userDb.getUserById(decoded.userId);
+    const user = userDb.getUserById(userId);
     if (!user) {
       return null;
     }
-    return { userId: user.id, username: user.username };
+    return { id: user.id, userId: user.id, username: user.username };
   } catch (error) {
     if (!(error instanceof jwt.TokenExpiredError)) {
       console.warn(
@@ -159,5 +236,5 @@ export {
   authenticateToken,
   generateToken,
   authenticateWebSocket,
-  JWT_SECRET
+  JWT_SECRET,
 };

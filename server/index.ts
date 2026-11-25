@@ -21,7 +21,7 @@ import {
     initializeSessionsWatcher,
     providerRuntimeService,
 } from '@/modules/providers/index.js';
-import { chatRunRegistry, createWebSocketServer } from '@/modules/websocket/index.js';
+import { chatRunRegistry, closeAllPtySessions, createWebSocketServer } from '@/modules/websocket/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
@@ -61,7 +61,7 @@ import { fileTreeRoutes } from './modules/file-tree/index.js';
 import { worktreesRoutes } from './modules/worktrees/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
-import { initializeDatabase, sessionsDb } from './modules/database/index.js';
+import { closeConnection, initializeDatabase, sessionsDb } from './modules/database/index.js';
 import { configureWebPush } from './modules/notifications/index.js';
 
 const __dirname = getModuleDirectory(import.meta.url);
@@ -95,6 +95,7 @@ const queryClaude = providerRuntimeService.getRunner('claude');
 const queryCursor = providerRuntimeService.getRunner('cursor');
 const queryCodex = providerRuntimeService.getRunner('codex');
 const queryOpenCode = providerRuntimeService.getRunner('opencode');
+const queryAntigravity = providerRuntimeService.getRunner('antigravity');
 const gitRoutes = createGitModule({
     queryClaude,
     queryCursor,
@@ -104,6 +105,7 @@ const agentRoutes = createAgentModule({
     queryCursor,
     queryCodex,
     queryOpenCode,
+    queryAntigravity,
 });
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
@@ -111,7 +113,47 @@ const agentRoutes = createAgentModule({
 // (agents, workflows, backgrounded commands) is still reporting through it.
 chatRunRegistry.setRetentionGuard((sessionId) => providerRuntimeService.hasBackgroundWork(sessionId));
 
-createWebSocketServer(server, {
+const configuredCorsOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+function isAllowedCorsOrigin(origin: string, req: Request): boolean {
+    if (configuredCorsOrigins.includes('*') && !IS_PLATFORM) {
+        return true;
+    }
+    if (configuredCorsOrigins.includes(origin)) {
+        return true;
+    }
+    if (origin.startsWith('app://') || origin.startsWith('cloudcli://')) {
+        return true;
+    }
+    if (origin === 'null') {
+        return !IS_PLATFORM;
+    }
+
+    let parsedOrigin: URL;
+    try {
+        parsedOrigin = new URL(origin);
+    } catch {
+        return false;
+    }
+
+    const forwardedHost = req.header('x-forwarded-host')?.split(',')[0]?.trim();
+    const requestHost = forwardedHost || req.header('host')?.trim();
+    if (requestHost && parsedOrigin.host.toLowerCase() === requestHost.toLowerCase()) {
+        return true;
+    }
+
+    const loopbackHosts = new Set(['localhost', '127.0.0.1', '[::1]']);
+    if (loopbackHosts.has(parsedOrigin.hostname.toLowerCase()) && !IS_PLATFORM) {
+        return true;
+    }
+
+    return false;
+}
+
+const wss = createWebSocketServer(server, {
     verifyClient: {
         isPlatform: IS_PLATFORM,
         authenticateWebSocket,
@@ -132,7 +174,14 @@ createWebSocketServer(server, {
     getPluginPort,
 });
 
-app.use(cors({ exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error'] }));
+app.use(cors((req, callback) => {
+    const origin = req.header('origin');
+    const allowOrigin = !origin || isAllowedCorsOrigin(origin, req);
+    callback(null, {
+        origin: allowOrigin,
+        exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error'],
+    });
+}));
 app.use(express.json({
     limit: '50mb',
     type: (req) => {
@@ -400,10 +449,52 @@ async function startServer() {
             });
         });
 
-        await closeSessionsWatcher();
-        closeScheduledMessageDispatcher();
-        // Clean up plugin processes on shutdown
+        // Clean up runtime services and persistent handles on shutdown
+        let shuttingDown = false;
         const shutdownRuntimeServices = async () => {
+            if (shuttingDown) return;
+            shuttingDown = true;
+
+            const forceExitTimer = setTimeout(() => {
+                console.warn('[WARN] Shutdown timed out after 15s; forcing exit');
+                process.exit(1);
+            }, 15_000);
+            forceExitTimer.unref();
+
+            closeScheduledMessageDispatcher();
+            try {
+                await closeSessionsWatcher();
+            } catch (err) {
+                console.error('[Watcher] Error closing sessions watcher during shutdown:', getErrorMessage(err));
+            }
+            try {
+                closeAllPtySessions();
+            } catch (err) {
+                console.error('[Shell] Error closing PTY sessions during shutdown:', getErrorMessage(err));
+            }
+            try {
+                for (const client of wss.clients) {
+                    try {
+                        client.close();
+                    } catch {
+                        // Ignore half-closed sockets during shutdown.
+                    }
+                }
+                await new Promise<void>((resolve) => wss.close(() => resolve()));
+            } catch (err) {
+                console.error('[WebSocket] Error closing WebSocket server during shutdown:', getErrorMessage(err));
+            }
+            try {
+                await new Promise<void>((resolve) => {
+                    if (!server.listening) {
+                        resolve();
+                        return;
+                    }
+                    server.close(() => resolve());
+                });
+            } catch (err) {
+                console.error('[HTTP] Error closing HTTP server during shutdown:', getErrorMessage(err));
+            }
             try {
                 await browserUseService.stopAllSessions();
             } catch (err) {
@@ -419,6 +510,12 @@ async function startServer() {
             } catch (err) {
                 console.error('[Local Server] Error removing server marker during shutdown:', getErrorMessage(err));
             }
+            try {
+                closeConnection();
+            } catch (err) {
+                console.error('[Database] Error closing SQLite connection during shutdown:', getErrorMessage(err));
+            }
+            clearTimeout(forceExitTimer);
             process.exit(0);
         };
         process.on('SIGTERM', () => void shutdownRuntimeServices());

@@ -1,7 +1,8 @@
-// @ts-nocheck -- temporary while Git workflows are extracted into the injected service.
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import type { EventEmitter } from 'node:events';
 import path from 'path';
 
-import express from 'express';
+import express, { type Request, type Response } from 'express';
 
 import type { ProviderRunFunction } from '@/shared/types.js';
 import { AppError, getGitErrorDetails } from '@/shared/utils.js';
@@ -11,14 +12,66 @@ import { parseGitLogWithStats, parseGitStatusOutput } from './git-parsing.servic
 import { deleteLocalBranch } from './git-branch.service.js';
 import { getBranchDiffForFile, listBranchDiffFiles } from './git-branch-diff.service.js';
 
+type GitProcessResult = {
+  stdout: string;
+  stderr: string;
+};
+
+type GitSpawnedProcess = EventEmitter & {
+  stdout: NodeJS.ReadableStream | null;
+  stderr: NodeJS.ReadableStream | null;
+  kill?: ChildProcess['kill'];
+};
+
 type GitRouterDependencies = {
   fileSystem: typeof import('node:fs/promises');
-  spawnProcess: typeof import('cross-spawn').default;
-  resolveProjectPathById(projectId: string): string | null;
+  spawnProcess: (
+    command: string,
+    args: string[],
+    options?: SpawnOptions,
+  ) => GitSpawnedProcess;
+  resolveProjectPathById(projectId: string): string | null | Promise<string | null>;
   queryClaude: ProviderRunFunction;
   queryCursor: ProviderRunFunction;
   pushGithub?(userId: number, projectId: string): Promise<unknown | null>;
 };
+
+type AuthenticatedGitRequest = Request & {
+  user?: {
+    id?: number | string;
+    [key: string]: unknown;
+  };
+};
+
+type GitCommandError = Error & {
+  code?: number | string | null;
+  stdout?: string;
+  stderr?: string;
+};
+
+type GitSpawnOptions = SpawnOptions & {
+  timeoutMs?: number;
+  maxBuffer?: number;
+};
+
+const DEFAULT_GIT_TIMEOUT_MS = 60_000;
+const DEFAULT_GIT_MAX_BUFFER = 16 * 1024 * 1024;
+
+function readErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function readErrorStderr(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'stderr' in error && typeof error.stderr === 'string'
+    ? error.stderr
+    : '';
+}
+
+function readQueryString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value) && typeof value[0] === 'string') return value[0];
+  return '';
+}
 
 /** Creates Git routes around explicit repository, filesystem, subprocess, and AI adapters. */
 export function createGitRouter(dependencies: GitRouterDependencies): express.Router {
@@ -30,61 +83,145 @@ const spawnCursor = dependencies.queryCursor;
 const router = express.Router();
 const COMMIT_DIFF_CHARACTER_LIMIT = 500_000;
 
-function spawnAsync(command, args, options = {}) {
+function spawnAsync(command: string, args: string[], options: GitSpawnOptions = {}): Promise<GitProcessResult> {
+  const {
+    timeoutMs = DEFAULT_GIT_TIMEOUT_MS,
+    maxBuffer = DEFAULT_GIT_MAX_BUFFER,
+    ...spawnOptions
+  } = options;
+
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      ...options,
+      ...spawnOptions,
       shell: false,
     });
 
     let stdout = '';
     let stderr = '';
+    let totalBytes = 0;
+    let settled = false;
 
-    child.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
+    const killChild = () => {
+      try {
+        if (typeof child.kill === 'function') {
+          child.kill('SIGKILL');
+        }
+      } catch {
+        // Process may already have exited.
+      }
+    };
 
-    child.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    child.on('error', (error) => {
+    const finishReject = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutHandle);
       reject(error);
+    };
+
+    const finishResolve = (result: GitProcessResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutHandle);
+      resolve(result);
+    };
+
+    const timeoutHandle = setTimeout(() => {
+      killChild();
+      const timeoutError: GitCommandError = new Error(
+        `Command timed out after ${Math.round(timeoutMs / 1000)}s: ${command} ${args.join(' ')}`,
+      );
+      timeoutError.code = 'ETIMEDOUT';
+      timeoutError.stdout = stdout;
+      timeoutError.stderr = stderr;
+      finishReject(timeoutError);
+    }, timeoutMs);
+    timeoutHandle.unref?.();
+
+    child.stdout?.on('data', (data: Buffer | string) => {
+      if (settled) return;
+      const chunk = typeof data === 'string' ? data : data.toString();
+      totalBytes += Buffer.byteLength(chunk);
+      if (totalBytes > maxBuffer) {
+        killChild();
+        const overflowError: GitCommandError = new Error(
+          `Command output exceeded ${maxBuffer} bytes: ${command}`,
+        );
+        overflowError.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+        finishReject(overflowError);
+        return;
+      }
+      stdout += chunk;
     });
 
-    child.on('close', (code) => {
+    child.stderr?.on('data', (data: Buffer | string) => {
+      if (settled) return;
+      const chunk = typeof data === 'string' ? data : data.toString();
+      totalBytes += Buffer.byteLength(chunk);
+      if (totalBytes > maxBuffer) {
+        killChild();
+        const overflowError: GitCommandError = new Error(
+          `Command output exceeded ${maxBuffer} bytes: ${command}`,
+        );
+        overflowError.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+        finishReject(overflowError);
+        return;
+      }
+      stderr += chunk;
+    });
+
+    child.on('error', (error: Error) => {
+      finishReject(error);
+    });
+
+    child.on('close', (code: number | null) => {
       if (code === 0) {
-        resolve({ stdout, stderr });
+        finishResolve({ stdout, stderr });
         return;
       }
 
-      const error = new Error(`Command failed: ${command} ${args.join(' ')}`);
+      const error: GitCommandError = new Error(`Command failed: ${command} ${args.join(' ')}`);
       error.code = code;
       error.stdout = stdout;
       error.stderr = stderr;
-      reject(error);
+      finishReject(error);
     });
   });
 }
 
 // Input validation helpers (defense-in-depth)
-function validateCommitRef(commit) {
-  // Allow hex hashes, HEAD, HEAD~N, HEAD^N, tag names, branch names
-  if (!/^[a-zA-Z0-9._~^{}@\/-]+$/.test(commit)) {
+function validateCommitRef(commit: string): string {
+  // Reject leading hyphens (git option injection) and '..' ranges (bulk history dump)
+  if (
+    typeof commit !== 'string'
+    || !commit
+    || commit.startsWith('-')
+    || commit.includes('..')
+    || !/^[a-zA-Z0-9._~^{}@/-]+$/.test(commit)
+  ) {
     throw new Error('Invalid commit reference');
   }
   return commit;
 }
 
-function validateBranchName(branch) {
-  if (!/^[a-zA-Z0-9._\/-]+$/.test(branch)) {
+function validateBranchName(branch: string): string {
+  if (
+    typeof branch !== 'string'
+    || !branch
+    || branch.startsWith('-')
+    || branch.startsWith('/')
+    || branch.endsWith('/')
+    || branch.endsWith('.lock')
+    || branch.includes('..')
+    || branch.includes('//')
+    || !/^[a-zA-Z0-9._/-]+$/.test(branch)
+  ) {
     throw new Error('Invalid branch name');
   }
   return branch;
 }
 
-function validateFilePath(file, projectPath) {
-  if (!file || file.includes('\0')) {
+function validateFilePath(file: string, projectPath?: string): string {
+  if (typeof file !== 'string' || !file || file.includes('\0')) {
     throw new Error('Invalid file path');
   }
   // Prevent path traversal: resolve the file relative to the project root
@@ -99,14 +236,20 @@ function validateFilePath(file, projectPath) {
   return file;
 }
 
-function validateRemoteName(remote) {
-  if (!/^[a-zA-Z0-9._-]+$/.test(remote)) {
+function validateRemoteName(remote: string): string {
+  if (
+    typeof remote !== 'string'
+    || !remote
+    || remote.startsWith('-')
+    || remote.includes('..')
+    || !/^[a-zA-Z0-9._-]+$/.test(remote)
+  ) {
     throw new Error('Invalid remote name');
   }
   return remote;
 }
 
-function validateProjectPath(projectPath) {
+function validateProjectPath(projectPath: string): string {
   if (!projectPath || projectPath.includes('\0')) {
     throw new Error('Invalid project path');
   }
@@ -131,7 +274,7 @@ function validateProjectPath(projectPath) {
  * path comes straight from the `projects` table and is then sanity-checked
  * by `validateProjectPath` before any `git` command runs against it.
  */
-async function getActualProjectPath(projectId) {
+async function getActualProjectPath(projectId: string): Promise<string> {
   const projectPath = await projectsDb.getProjectPathById(projectId);
   if (!projectPath) {
     throw new Error(`Unable to resolve project path for "${projectId}"`);
@@ -140,11 +283,11 @@ async function getActualProjectPath(projectId) {
 }
 
 // Helper function to strip git diff headers
-function stripDiffHeaders(diff) {
+function stripDiffHeaders(diff: string): string {
   if (!diff) return '';
 
   const lines = diff.split('\n');
-  const filteredLines = [];
+  const filteredLines: string[] = [];
   let startIncluding = false;
 
   for (const line of lines) {
@@ -169,7 +312,7 @@ function stripDiffHeaders(diff) {
 }
 
 // Helper function to validate git repository
-async function validateGitRepository(projectPath) {
+async function validateGitRepository(projectPath: string): Promise<void> {
   try {
     // Check if directory exists
     await fs.access(projectPath);
@@ -209,7 +352,7 @@ async function validateGitRepository(projectPath) {
   }
 }
 
-function isMissingHeadRevisionError(error) {
+function isMissingHeadRevisionError(error: unknown): boolean {
   const errorDetails = getGitErrorDetails(error).toLowerCase();
   return errorDetails.includes('unknown revision')
     || errorDetails.includes('ambiguous argument')
@@ -217,7 +360,7 @@ function isMissingHeadRevisionError(error) {
     || errorDetails.includes('bad revision');
 }
 
-async function getCurrentBranchName(projectPath) {
+async function getCurrentBranchName(projectPath: string): Promise<string> {
   try {
     // symbolic-ref works even when the repository has no commits.
     const { stdout } = await spawnAsync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: projectPath });
@@ -225,7 +368,7 @@ async function getCurrentBranchName(projectPath) {
     if (branchName) {
       return branchName;
     }
-  } catch (error) {
+  } catch {
     // Fall back to rev-parse for detached HEAD and older git edge cases.
   }
 
@@ -233,7 +376,7 @@ async function getCurrentBranchName(projectPath) {
   return stdout.trim();
 }
 
-async function repositoryHasCommits(projectPath) {
+async function repositoryHasCommits(projectPath: string): Promise<boolean> {
   try {
     await spawnAsync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: projectPath });
     return true;
@@ -245,12 +388,12 @@ async function repositoryHasCommits(projectPath) {
   }
 }
 
-async function getRepositoryRootPath(projectPath) {
+async function getRepositoryRootPath(projectPath: string): Promise<string> {
   const { stdout } = await spawnAsync('git', ['rev-parse', '--show-toplevel'], { cwd: projectPath });
   return stdout.trim();
 }
 
-function normalizeRepositoryRelativeFilePath(filePath) {
+function normalizeRepositoryRelativeFilePath(filePath: string): string {
   return String(filePath)
     .replace(/\\/g, '/')
     .replace(/^\.\/+/, '')
@@ -258,7 +401,7 @@ function normalizeRepositoryRelativeFilePath(filePath) {
     .trim();
 }
 
-function parseStatusFilePaths(statusOutput) {
+function parseStatusFilePaths(statusOutput: string): string[] {
   return statusOutput
     .split('\n')
     .map((line) => line.trimEnd())
@@ -271,7 +414,7 @@ function parseStatusFilePaths(statusOutput) {
     .filter(Boolean);
 }
 
-function buildFilePathCandidates(projectPath, repositoryRootPath, filePath) {
+function buildFilePathCandidates(projectPath: string, repositoryRootPath: string, filePath: string): string[] {
   const normalizedFilePath = normalizeRepositoryRelativeFilePath(filePath);
   const projectRelativePath = normalizeRepositoryRelativeFilePath(path.relative(repositoryRootPath, projectPath));
   const candidates = [normalizedFilePath];
@@ -287,13 +430,17 @@ function buildFilePathCandidates(projectPath, repositoryRootPath, filePath) {
   return Array.from(new Set(candidates.filter(Boolean)));
 }
 
-async function resolveRepositoryFilePath(projectPath, filePath) {
-  validateFilePath(filePath);
+async function resolveRepositoryFilePath(projectPath: string, filePath: string): Promise<{
+  repositoryRootPath: string;
+  repositoryRelativeFilePath: string;
+}> {
+  validateFilePath(filePath, projectPath);
 
   const repositoryRootPath = await getRepositoryRootPath(projectPath);
   const candidateFilePaths = buildFilePathCandidates(projectPath, repositoryRootPath, filePath);
 
   for (const candidateFilePath of candidateFilePaths) {
+    validateFilePath(candidateFilePath, repositoryRootPath);
     const { stdout } = await spawnAsync('git', ['status', '--porcelain', '--', candidateFilePath], { cwd: repositoryRootPath });
     if (stdout.trim()) {
       return {
@@ -313,6 +460,7 @@ async function resolveRepositoryFilePath(projectPath, filePath) {
     );
 
     if (suffixMatches.length === 1) {
+      validateFilePath(suffixMatches[0], repositoryRootPath);
       return {
         repositoryRootPath,
         repositoryRelativeFilePath: suffixMatches[0],
@@ -320,6 +468,7 @@ async function resolveRepositoryFilePath(projectPath, filePath) {
     }
   }
 
+  validateFilePath(candidateFilePaths[0], repositoryRootPath);
   return {
     repositoryRootPath,
     repositoryRelativeFilePath: candidateFilePaths[0],
@@ -328,7 +477,7 @@ async function resolveRepositoryFilePath(projectPath, filePath) {
 
 // Get Git status for a project; parsing is isolated in git-parsing.service.ts.
 router.get('/status', async (req, res) => {
-  const { project } = req.query;
+  const project = readQueryString(req.query.project);
 
   if (!project) {
     return res.status(400).json({ error: 'Project id is required' });
@@ -365,7 +514,7 @@ router.get('/status', async (req, res) => {
     }
     res.json({
       error: isNotGitRepository ? 'Not a git repository' : 'Git operation failed',
-      details: isNotGitRepository ? error.message : `Failed to get git status: ${error.message}`,
+      details: isNotGitRepository ? error.message : `Failed to get git status: ${readErrorMessage(error)}`,
       notGitRepository: isNotGitRepository
     });
   }
@@ -401,14 +550,15 @@ router.post('/init', async (req, res) => {
     res.json({ success: true, output: stdout.trim() || stderr.trim() });
   } catch (error) {
     console.error('Git init error:', error);
-    res.json({ success: false, error: error.stderr?.trim() || error.message });
+    res.json({ success: false, error: readErrorStderr(error).trim() || readErrorMessage(error) });
   }
 });
 
 // Get diff for a specific file
 router.get('/diff', async (req, res) => {
-  const { project, file } = req.query;
-  
+  const project = readQueryString(req.query.project);
+  const file = readQueryString(req.query.file);
+
   if (!project || !file) {
     return res.status(400).json({ error: 'Project id and file path are required' });
   }
@@ -484,13 +634,14 @@ router.get('/diff', async (req, res) => {
     res.json({ diff });
   } catch (error) {
     console.error('Git diff error:', error);
-    res.json({ error: error.message });
+    res.json({ error: readErrorMessage(error) });
   }
 });
 
 // Get file content with diff information for CodeEditor
 router.get('/file-with-diff', async (req, res) => {
-  const { project, file } = req.query;
+  const project = readQueryString(req.query.project);
+  const file = readQueryString(req.query.file);
 
   if (!project || !file) {
     return res.status(400).json({ error: 'Project id and file path are required' });
@@ -564,7 +715,7 @@ router.get('/file-with-diff', async (req, res) => {
     });
   } catch (error) {
     console.error('Git file-with-diff error:', error);
-    res.json({ error: error.message });
+    res.json({ error: readErrorMessage(error) });
   }
 });
 
@@ -586,7 +737,7 @@ router.post('/initial-commit', async (req, res) => {
     try {
       await spawnAsync('git', ['rev-parse', 'HEAD'], { cwd: projectPath });
       return res.status(400).json({ error: 'Repository already has commits. Use regular commit instead.' });
-    } catch (error) {
+    } catch {
       // No HEAD - this is good, we can create initial commit
     }
 
@@ -599,16 +750,17 @@ router.post('/initial-commit', async (req, res) => {
     res.json({ success: true, output: stdout, message: 'Initial commit created successfully' });
   } catch (error) {
     console.error('Git initial commit error:', error);
+    const message = readErrorMessage(error);
 
     // Handle the case where there's nothing to commit
-    if (error.message.includes('nothing to commit')) {
+    if (message.includes('nothing to commit')) {
       return res.status(400).json({
         error: 'Nothing to commit',
         details: 'No files found in the repository. Add some files first.'
       });
     }
 
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: message });
   }
 });
 
@@ -639,7 +791,7 @@ router.post('/commit', async (req, res) => {
     res.json({ success: true, output: stdout });
   } catch (error) {
     console.error('Git commit error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: readErrorMessage(error) });
   }
 });
 
@@ -665,7 +817,7 @@ router.post('/stage', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Git stage error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: readErrorMessage(error) });
   }
 });
 
@@ -697,7 +849,7 @@ router.post('/unstage', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Git unstage error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: readErrorMessage(error) });
   }
 });
 
@@ -715,7 +867,7 @@ router.post('/revert-local-commit', async (req, res) => {
 
     try {
       await spawnAsync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: projectPath });
-    } catch (error) {
+    } catch {
       return res.status(400).json({
         error: 'No local commit to revert',
         details: 'This repository has no commit yet.',
@@ -726,7 +878,7 @@ router.post('/revert-local-commit', async (req, res) => {
       // Soft reset rewinds one commit while preserving all file changes in the index.
       await spawnAsync('git', ['reset', '--soft', 'HEAD~1'], { cwd: projectPath });
     } catch (error) {
-      const errorDetails = `${error.stderr || ''} ${error.message || ''}`;
+      const errorDetails = `${readErrorStderr(error)} ${readErrorMessage(error)}`;
       const isInitialCommit = errorDetails.includes('HEAD~1') &&
         (errorDetails.includes('unknown revision') || errorDetails.includes('ambiguous argument'));
 
@@ -744,14 +896,14 @@ router.post('/revert-local-commit', async (req, res) => {
     });
   } catch (error) {
     console.error('Git revert local commit error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: readErrorMessage(error) });
   }
 });
 
 // Get list of branches
 router.get('/branches', async (req, res) => {
-  const { project } = req.query;
-  
+  const project = readQueryString(req.query.project);
+
   if (!project) {
     return res.status(400).json({ error: 'Project id is required' });
   }
@@ -794,24 +946,25 @@ router.get('/branches', async (req, res) => {
     res.json({ branches, localBranches, remoteBranches, remoteRefs });
   } catch (error) {
     console.error('Git branches error:', error);
-    res.json({ error: error.message });
+    res.json({ error: readErrorMessage(error) });
   }
 });
 
 // Shared error shaping for the two compare routes: service AppErrors (unknown
 // ref, no merge base) keep their status/code; anything else follows the
 // module's GET convention of a 200 with `error`/`details`.
-function sendBranchDiffError(res, error, context) {
+function sendBranchDiffError(res: Response, error: unknown, context: string) {
   if (error instanceof AppError) {
     return res.status(error.statusCode).json({ error: error.message, code: error.code, details: error.details });
   }
   console.error(`Git ${context} error:`, error);
-  res.json({ error: 'Git operation failed', details: error.message });
+  res.json({ error: 'Git operation failed', details: readErrorMessage(error) });
 }
 
 // List files the working copy changed relative to the merge base with `base`
 router.get('/branch-diff', async (req, res) => {
-  const { project, base } = req.query;
+  const project = readQueryString(req.query.project);
+  const base = readQueryString(req.query.base);
 
   if (!project || !base) {
     return res.status(400).json({ error: 'Project id and base branch are required' });
@@ -820,7 +973,7 @@ router.get('/branch-diff', async (req, res) => {
   try {
     validateBranchName(base);
   } catch (error) {
-    return res.status(400).json({ error: error.message });
+    return res.status(400).json({ error: readErrorMessage(error) });
   }
 
   try {
@@ -843,7 +996,11 @@ router.get('/branch-diff', async (req, res) => {
 // Diff of one file between the merge base with `base` and the working copy.
 // `oldPath` is the pre-rename path of an `R` entry from `/branch-diff`.
 router.get('/branch-diff/file', async (req, res) => {
-  const { project, base, file, oldPath } = req.query;
+  const project = readQueryString(req.query.project);
+  const base = readQueryString(req.query.base);
+  const file = readQueryString(req.query.file);
+  const oldPathRaw = req.query.oldPath;
+  const oldPath = oldPathRaw === undefined ? undefined : readQueryString(oldPathRaw);
 
   if (!project || !base || !file) {
     return res.status(400).json({ error: 'Project id, base branch and file path are required' });
@@ -856,7 +1013,7 @@ router.get('/branch-diff/file', async (req, res) => {
       validateFilePath(oldPath);
     }
   } catch (error) {
-    return res.status(400).json({ error: error.message });
+    return res.status(400).json({ error: readErrorMessage(error) });
   }
 
   try {
@@ -892,44 +1049,44 @@ router.get('/branch-diff/file', async (req, res) => {
 // Checkout branch
 router.post('/checkout', async (req, res) => {
   const { project, branch } = req.body;
-  
+
   if (!project || !branch) {
     return res.status(400).json({ error: 'Project id and branch are required' });
   }
 
   try {
     const projectPath = await getActualProjectPath(project);
-    
+
     // Checkout the branch
     validateBranchName(branch);
-    const { stdout } = await spawnAsync('git', ['checkout', branch], { cwd: projectPath });
-    
+    const { stdout } = await spawnAsync('git', ['checkout', branch, '--'], { cwd: projectPath });
+
     res.json({ success: true, output: stdout });
   } catch (error) {
     console.error('Git checkout error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: readErrorMessage(error) });
   }
 });
 
 // Create new branch
 router.post('/create-branch', async (req, res) => {
   const { project, branch } = req.body;
-  
+
   if (!project || !branch) {
     return res.status(400).json({ error: 'Project id and branch name are required' });
   }
 
   try {
     const projectPath = await getActualProjectPath(project);
-    
+
     // Create and checkout new branch
     validateBranchName(branch);
     const { stdout } = await spawnAsync('git', ['checkout', '-b', branch], { cwd: projectPath });
-    
+
     res.json({ success: true, output: stdout });
   } catch (error) {
     console.error('Git create branch error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: readErrorMessage(error) });
   }
 });
 
@@ -961,7 +1118,7 @@ router.post('/delete-branch', async (req, res) => {
     if (error instanceof AppError) {
       return res.status(error.statusCode).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: readErrorMessage(error) });
   }
 });
 
@@ -971,7 +1128,8 @@ const GIT_LOG_PRETTY_FORMAT = '%H%x1f%P%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%s';
 
 // Get recent commits (across all branches, in graph order)
 router.get('/commits', async (req, res) => {
-  const { project, limit = 10 } = req.query;
+  const project = readQueryString(req.query.project);
+  const limit = req.query.limit ?? 10;
 
   if (!project) {
     return res.status(400).json({ error: 'Project id is required' });
@@ -1008,14 +1166,15 @@ router.get('/commits', async (req, res) => {
     res.json({ commits: parseGitLogWithStats(stdout) });
   } catch (error) {
     console.error('Git commits error:', error);
-    res.json({ error: error.message });
+    res.json({ error: readErrorMessage(error) });
   }
 });
 
 // Get diff for a specific commit
 router.get('/commit-diff', async (req, res) => {
-  const { project, commit } = req.query;
-  
+  const project = readQueryString(req.query.project);
+  const commit = readQueryString(req.query.commit);
+
   if (!project || !commit) {
     return res.status(400).json({ error: 'Project id and commit hash are required' });
   }
@@ -1026,9 +1185,9 @@ router.get('/commit-diff', async (req, res) => {
     // Validate commit reference (defense-in-depth)
     validateCommitRef(commit);
 
-    // Get diff for the commit
+    // Get diff for the commit (--end-of-options blocks git flag injection)
     const { stdout } = await spawnAsync(
-      'git', ['show', commit],
+      'git', ['show', '--end-of-options', commit],
       { cwd: projectPath }
     );
 
@@ -1040,7 +1199,7 @@ router.get('/commit-diff', async (req, res) => {
     res.json({ diff, isTruncated });
   } catch (error) {
     console.error('Git commit diff error:', error);
-    res.json({ error: error.message });
+    res.json({ error: readErrorMessage(error) });
   }
 });
 
@@ -1106,19 +1265,19 @@ router.post('/generate-commit-message', async (req, res) => {
     res.json({ message });
   } catch (error) {
     console.error('Generate commit message error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: readErrorMessage(error) });
   }
 });
 
 /**
  * Generates a commit message using AI (Claude SDK or Cursor CLI)
- * @param {Array<string>} files - List of changed files
- * @param {string} diffContext - Git diff content
- * @param {string} provider - 'claude' or 'cursor'
- * @param {string} projectPath - Project directory path
- * @returns {Promise<string>} Generated commit message
  */
-async function generateCommitMessageWithAI(files, diffContext, provider, projectPath) {
+async function generateCommitMessageWithAI(
+  files: string[],
+  diffContext: string,
+  provider: string,
+  projectPath: string,
+): Promise<string> {
   // Create the prompt
   const prompt = `Generate a conventional commit message for these changes.
 
@@ -1143,9 +1302,9 @@ Generate the commit message:`;
     // Create a simple writer that collects the response
     let responseText = '';
     const writer = {
-      send: (data) => {
+      send: (data: unknown) => {
         try {
-          const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+          const parsed = (typeof data === 'string' ? JSON.parse(data) : data) as Record<string, any>;
           console.log('🔍 Writer received message type:', parsed.type);
 
           // Handle different message formats from Claude SDK and Cursor CLI
@@ -1168,10 +1327,11 @@ Generate the commit message:`;
             console.log('✅ Cursor output:', parsed.output.substring(0, 100));
             responseText += parsed.output;
           }
-          // Also handle direct text messages
-          else if (parsed.type === 'text' && parsed.text) {
-            console.log('✅ Direct text:', parsed.text.substring(0, 100));
-            responseText += parsed.text;
+          // Also handle direct text messages / unified NormalizedMessage
+          else if ((parsed.type === 'text' && parsed.text) || (parsed.kind === 'text' && parsed.content)) {
+            const chunk = String(parsed.text ?? parsed.content);
+            console.log('✅ Direct text:', chunk.substring(0, 100));
+            responseText += chunk;
           }
         } catch (e) {
           // Ignore parse errors
@@ -1218,7 +1378,7 @@ Generate the commit message:`;
  * @param {string} text - Raw AI response
  * @returns {string} Clean commit message
  */
-function cleanCommitMessage(text) {
+function cleanCommitMessage(text: string): string {
   if (!text || !text.trim()) {
     return '';
   }
@@ -1251,8 +1411,8 @@ function cleanCommitMessage(text) {
 
 // Get remote status (ahead/behind commits with smart remote detection)
 router.get('/remote-status', async (req, res) => {
-  const { project } = req.query;
-  
+  const project = readQueryString(req.query.project);
+
   if (!project) {
     return res.status(400).json({ error: 'Project id is required' });
   }
@@ -1323,14 +1483,14 @@ router.get('/remote-status', async (req, res) => {
     });
   } catch (error) {
     console.error('Git remote status error:', error);
-    res.json({ error: error.message });
+    res.json({ error: readErrorMessage(error) });
   }
 });
 
 // Fetch from remote (using smart remote detection)
 router.post('/fetch', async (req, res) => {
   const { project } = req.body;
-  
+
   if (!project) {
     return res.status(400).json({ error: 'Project id is required' });
   }
@@ -1346,24 +1506,25 @@ router.post('/fetch', async (req, res) => {
     try {
       const { stdout } = await spawnAsync('git', ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { cwd: projectPath });
       remoteName = stdout.trim().split('/')[0]; // Extract remote name
-    } catch (error) {
+    } catch {
       // No upstream, try to fetch from origin anyway
       console.log('No upstream configured, using origin as fallback');
     }
 
     validateRemoteName(remoteName);
-    const { stdout } = await spawnAsync('git', ['fetch', remoteName], { cwd: projectPath });
+    const { stdout } = await spawnAsync('git', ['fetch', '--', remoteName], { cwd: projectPath });
 
     res.json({ success: true, output: stdout || 'Fetch completed successfully', remoteName });
   } catch (error) {
     console.error('Git fetch error:', error);
-    res.status(500).json({ 
-      error: 'Fetch failed', 
-      details: error.message.includes('Could not resolve hostname') 
+    const message = readErrorMessage(error);
+    res.status(500).json({
+      error: 'Fetch failed',
+      details: message.includes('Could not resolve hostname')
         ? 'Unable to connect to remote repository. Check your internet connection.'
-        : error.message.includes('fatal: \'origin\' does not appear to be a git repository')
+        : message.includes('fatal: \'origin\' does not appear to be a git repository')
         ? 'No remote repository configured. Add a remote with: git remote add origin <url>'
-        : error.message
+        : message
     });
   }
 });
@@ -1371,7 +1532,7 @@ router.post('/fetch', async (req, res) => {
 // Pull from remote (fetch + merge using smart remote detection)
 router.post('/pull', async (req, res) => {
   const { project } = req.body;
-  
+
   if (!project) {
     return res.status(400).json({ error: 'Project id is required' });
   }
@@ -1390,14 +1551,14 @@ router.post('/pull', async (req, res) => {
       const tracking = stdout.trim();
       remoteName = tracking.split('/')[0]; // Extract remote name
       remoteBranch = tracking.split('/').slice(1).join('/'); // Extract branch name
-    } catch (error) {
+    } catch {
       // No upstream, use fallback
       console.log('No upstream configured, using origin/branch as fallback');
     }
 
     validateRemoteName(remoteName);
     validateBranchName(remoteBranch);
-    const { stdout } = await spawnAsync('git', ['pull', remoteName, remoteBranch], { cwd: projectPath });
+    const { stdout } = await spawnAsync('git', ['pull', '--', remoteName, remoteBranch], { cwd: projectPath });
 
     res.json({
       success: true,
@@ -1407,39 +1568,40 @@ router.post('/pull', async (req, res) => {
     });
   } catch (error) {
     console.error('Git pull error:', error);
+    const message = readErrorMessage(error);
 
     // Enhanced error handling for common pull scenarios
     let errorMessage = 'Pull failed';
-    let details = error.message;
-    
-    if (error.message.includes('CONFLICT')) {
+    let details = message;
+
+    if (message.includes('CONFLICT')) {
       errorMessage = 'Merge conflicts detected';
       details = 'Pull created merge conflicts. Please resolve conflicts manually in the editor, then commit the changes.';
-    } else if (error.message.includes('Please commit your changes or stash them')) {
-      errorMessage = 'Uncommitted changes detected';  
+    } else if (message.includes('Please commit your changes or stash them')) {
+      errorMessage = 'Uncommitted changes detected';
       details = 'Please commit or stash your local changes before pulling.';
-    } else if (error.message.includes('Could not resolve hostname')) {
+    } else if (message.includes('Could not resolve hostname')) {
       errorMessage = 'Network error';
       details = 'Unable to connect to remote repository. Check your internet connection.';
-    } else if (error.message.includes('fatal: \'origin\' does not appear to be a git repository')) {
+    } else if (message.includes('fatal: \'origin\' does not appear to be a git repository')) {
       errorMessage = 'Remote not configured';
       details = 'No remote repository configured. Add a remote with: git remote add origin <url>';
-    } else if (error.message.includes('diverged')) {
+    } else if (message.includes('diverged')) {
       errorMessage = 'Branches have diverged';
       details = 'Your local branch and remote branch have diverged. Consider fetching first to review changes.';
     }
-    
-    res.status(500).json({ 
-      error: errorMessage, 
+
+    res.status(500).json({
+      error: errorMessage,
       details: details
     });
   }
 });
 
 // Push commits to remote repository
-router.post('/push', async (req, res) => {
+router.post('/push', async (req: AuthenticatedGitRequest, res) => {
   const { project } = req.body;
-  
+
   if (!project) {
     return res.status(400).json({ error: 'Project id is required' });
   }
@@ -1462,14 +1624,14 @@ router.post('/push', async (req, res) => {
       const tracking = stdout.trim();
       remoteName = tracking.split('/')[0]; // Extract remote name
       remoteBranch = tracking.split('/').slice(1).join('/'); // Extract branch name
-    } catch (error) {
+    } catch {
       // No upstream, use fallback
       console.log('No upstream configured, using origin/branch as fallback');
     }
 
     validateRemoteName(remoteName);
     validateBranchName(remoteBranch);
-    const { stdout } = await spawnAsync('git', ['push', remoteName, remoteBranch], { cwd: projectPath });
+    const { stdout } = await spawnAsync('git', ['push', '--', remoteName, remoteBranch], { cwd: projectPath });
 
     res.json({
       success: true,
@@ -1480,33 +1642,34 @@ router.post('/push', async (req, res) => {
   } catch (error) {
     console.error('Git push error:', error);
     if (error instanceof AppError) return res.status(error.statusCode).json({ error: error.message, code: error.code });
-    
+    const message = readErrorMessage(error);
+
     // Enhanced error handling for common push scenarios
     let errorMessage = 'Push failed';
-    let details = error.message;
-    
-    if (error.message.includes('rejected')) {
+    let details = message;
+
+    if (message.includes('rejected')) {
       errorMessage = 'Push rejected';
       details = 'The remote has newer commits. Pull first to merge changes before pushing.';
-    } else if (error.message.includes('non-fast-forward')) {
+    } else if (message.includes('non-fast-forward')) {
       errorMessage = 'Non-fast-forward push';
       details = 'Your branch is behind the remote. Pull the latest changes first.';
-    } else if (error.message.includes('Could not resolve hostname')) {
+    } else if (message.includes('Could not resolve hostname')) {
       errorMessage = 'Network error';
       details = 'Unable to connect to remote repository. Check your internet connection.';
-    } else if (error.message.includes('fatal: \'origin\' does not appear to be a git repository')) {
+    } else if (message.includes('fatal: \'origin\' does not appear to be a git repository')) {
       errorMessage = 'Remote not configured';
       details = 'No remote repository configured. Add a remote with: git remote add origin <url>';
-    } else if (error.message.includes('Permission denied')) {
+    } else if (message.includes('Permission denied')) {
       errorMessage = 'Authentication failed';
       details = 'Permission denied. Check your credentials or SSH keys.';
-    } else if (error.message.includes('no upstream branch')) {
+    } else if (message.includes('no upstream branch')) {
       errorMessage = 'No upstream branch';
       details = 'No upstream branch configured. Use: git push --set-upstream origin <branch>';
     }
-    
-    res.status(500).json({ 
-      error: errorMessage, 
+
+    res.status(500).json({
+      error: errorMessage,
       details: details
     });
   }
@@ -1515,7 +1678,7 @@ router.post('/push', async (req, res) => {
 // Publish branch to remote (set upstream and push)
 router.post('/publish', async (req, res) => {
   const { project, branch } = req.body;
-  
+
   if (!project || !branch) {
     return res.status(400).json({ error: 'Project id and branch are required' });
   }
@@ -1547,7 +1710,7 @@ router.post('/publish', async (req, res) => {
         });
       }
       remoteName = remotes.includes('origin') ? 'origin' : remotes[0];
-    } catch (error) {
+    } catch {
       return res.status(400).json({
         error: 'No remote repository configured. Add a remote with: git remote add origin <url>'
       });
@@ -1555,37 +1718,38 @@ router.post('/publish', async (req, res) => {
 
     // Publish the branch (set upstream and push)
     validateRemoteName(remoteName);
-    const { stdout } = await spawnAsync('git', ['push', '--set-upstream', remoteName, branch], { cwd: projectPath });
-    
-    res.json({ 
-      success: true, 
-      output: stdout || 'Branch published successfully', 
+    const { stdout } = await spawnAsync('git', ['push', '--set-upstream', '--', remoteName, branch], { cwd: projectPath });
+
+    res.json({
+      success: true,
+      output: stdout || 'Branch published successfully',
       remoteName,
       branch
     });
   } catch (error) {
     console.error('Git publish error:', error);
-    
+    const message = readErrorMessage(error);
+
     // Enhanced error handling for common publish scenarios
     let errorMessage = 'Publish failed';
-    let details = error.message;
-    
-    if (error.message.includes('rejected')) {
+    let details = message;
+
+    if (message.includes('rejected')) {
       errorMessage = 'Publish rejected';
       details = 'The remote branch already exists and has different commits. Use push instead.';
-    } else if (error.message.includes('Could not resolve hostname')) {
+    } else if (message.includes('Could not resolve hostname')) {
       errorMessage = 'Network error';
       details = 'Unable to connect to remote repository. Check your internet connection.';
-    } else if (error.message.includes('Permission denied')) {
+    } else if (message.includes('Permission denied')) {
       errorMessage = 'Authentication failed';
       details = 'Permission denied. Check your credentials or SSH keys.';
-    } else if (error.message.includes('fatal:') && error.message.includes('does not appear to be a git repository')) {
+    } else if (message.includes('fatal:') && message.includes('does not appear to be a git repository')) {
       errorMessage = 'Remote not configured';
       details = 'Remote repository not properly configured. Check your remote URL.';
     }
-    
-    res.status(500).json({ 
-      error: errorMessage, 
+
+    res.status(500).json({
+      error: errorMessage,
       details: details
     });
   }
@@ -1594,7 +1758,7 @@ router.post('/publish', async (req, res) => {
 // Discard changes for a specific file
 router.post('/discard', async (req, res) => {
   const { project, file } = req.body;
-  
+
   if (!project || !file) {
     return res.status(400).json({ error: 'Project id and file path are required' });
   }
@@ -1621,11 +1785,11 @@ router.post('/discard', async (req, res) => {
     const status = statusOutput.substring(0, 2);
 
     if (status === '??') {
-      // Untracked file or directory - delete it
+      // Untracked file or directory - use lstat so symlinks to external folders are unlinked, not recursively deleted
       const filePath = path.join(repositoryRootPath, repositoryRelativeFilePath);
-      const stats = await fs.stat(filePath);
+      const stats = typeof fs.lstat === 'function' ? await fs.lstat(filePath) : await fs.stat(filePath);
 
-      if (stats.isDirectory()) {
+      if (stats.isDirectory() && !stats.isSymbolicLink()) {
         await fs.rm(filePath, { recursive: true, force: true });
       } else {
         await fs.unlink(filePath);
@@ -1637,18 +1801,18 @@ router.post('/discard', async (req, res) => {
       // Added file - unstage it
       await spawnAsync('git', ['reset', 'HEAD', '--', repositoryRelativeFilePath], { cwd: repositoryRootPath });
     }
-    
+
     res.json({ success: true, message: `Changes discarded for ${repositoryRelativeFilePath}` });
   } catch (error) {
     console.error('Git discard error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: readErrorMessage(error) });
   }
 });
 
 // Delete untracked file
 router.post('/delete-untracked', async (req, res) => {
   const { project, file } = req.body;
-  
+
   if (!project || !file) {
     return res.status(400).json({ error: 'Project id and file path are required' });
   }
@@ -1667,22 +1831,22 @@ router.post('/delete-untracked', async (req, res) => {
       ['status', '--porcelain', '--', repositoryRelativeFilePath],
       { cwd: repositoryRootPath },
     );
-    
+
     if (!statusOutput.trim()) {
       return res.status(400).json({ error: 'File is not untracked or does not exist' });
     }
 
     const status = statusOutput.substring(0, 2);
-    
+
     if (status !== '??') {
       return res.status(400).json({ error: 'File is not untracked. Use discard for tracked files.' });
     }
 
-    // Delete the untracked file or directory
+    // Delete the untracked file or directory (lstat prevents following symlinks to external directories)
     const filePath = path.join(repositoryRootPath, repositoryRelativeFilePath);
-    const stats = await fs.stat(filePath);
+    const stats = typeof fs.lstat === 'function' ? await fs.lstat(filePath) : await fs.stat(filePath);
 
-    if (stats.isDirectory()) {
+    if (stats.isDirectory() && !stats.isSymbolicLink()) {
       // Use rm with recursive option for directories
       await fs.rm(filePath, { recursive: true, force: true });
       res.json({ success: true, message: `Untracked directory ${repositoryRelativeFilePath} deleted successfully` });
@@ -1692,7 +1856,7 @@ router.post('/delete-untracked', async (req, res) => {
     }
   } catch (error) {
     console.error('Git delete untracked error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: readErrorMessage(error) });
   }
 });
 

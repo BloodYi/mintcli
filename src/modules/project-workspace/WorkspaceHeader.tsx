@@ -1,6 +1,8 @@
-import { ChevronDown, ChevronLeft, ChevronRight, Shield, SlidersHorizontal, SquarePen } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Languages, Loader2, RefreshCw, Rocket, Shield, SlidersHorizontal, SquarePen, Zap } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import { useAgyFastStatus } from '@/modules/antigravity';
 
 import type { AgentConnectionChoice, AppTab, LLMProvider, Project, ProjectSession } from '@/shared/types';
 import { LLMProviderLogo } from '@/shared/ui';
@@ -51,6 +53,13 @@ type WorkspaceHeaderProps = {
   onToggleAgyUseClaude?: () => void;
   agyArmor?: boolean;
   onToggleAgyArmor?: () => void;
+  agyTransam?: boolean;
+  onToggleAgyTransam?: () => void;
+  agyFast?: boolean;
+  agyFastDisabled?: boolean;
+  onToggleAgyFast?: () => void;
+  agyThinkLang?: boolean;
+  onToggleAgyThinkLang?: () => void;
 };
 
 /** Rendered by WorkspaceMain to show the workspace title and chat connection status alongside the scrollable tab bar. */
@@ -76,12 +85,42 @@ export default function WorkspaceHeader({
   onToggleAgyUseClaude,
   agyArmor = false,
   onToggleAgyArmor,
+  agyTransam = false,
+  onToggleAgyTransam,
+  agyFast = false,
+  agyFastDisabled = false,
+  onToggleAgyFast,
+  agyThinkLang = false,
+  onToggleAgyThinkLang,
 }: WorkspaceHeaderProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const agyFastMenuRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
+  const [agyFastMenuOpen, setAgyFastMenuOpen] = useState(false);
+  const agyFastPlugin = useAgyFastStatus(Boolean(onToggleAgyFast) && !isMobile);
   const hasOverflow = canScrollLeft || canScrollRight;
+
+  useEffect(() => {
+    if (!agyFastMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (agyFastMenuRef.current && !agyFastMenuRef.current.contains(event.target as Node)) {
+        setAgyFastMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setAgyFastMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [agyFastMenuOpen]);
 
   const updateScrollState = useCallback(() => {
     const el = scrollRef.current;
@@ -142,6 +181,9 @@ export default function WorkspaceHeader({
     const isFloatingChatHeader = activeTab === 'chat';
     const hasActiveAgyClaude = Boolean(onToggleAgyUseClaude && agyUseClaude && !agyUseClaudeDisabled);
     const hasActiveAgyArmor = Boolean(onToggleAgyArmor && agyArmor);
+    const hasActiveAgyTransam = Boolean(onToggleAgyTransam && agyTransam);
+    const hasActiveAgyFast = Boolean(onToggleAgyFast && agyFast);
+    const hasActiveAgyThinkLang = Boolean(onToggleAgyThinkLang && agyThinkLang);
     const showAccountPill = isFloatingChatHeader && Boolean(onOpenMobileAccount);
     const pillProvider = activeAccount?.provider ?? selectedSession?.__provider ?? activeProvider;
     const accountLabel = formatCompactAccountLabel(activeAccount);
@@ -266,13 +308,22 @@ export default function WorkspaceHeader({
                 )}
               >
                 <SlidersHorizontal className="h-4 w-4" />
-                {(hasActiveAgyArmor || hasActiveAgyClaude) && (
+                {(hasActiveAgyArmor || hasActiveAgyTransam || hasActiveAgyFast || hasActiveAgyThinkLang || hasActiveAgyClaude) && (
                   <span
                     aria-hidden="true"
                     className="absolute right-1 top-1 flex items-center gap-0.5"
                   >
                     {hasActiveAgyArmor && (
                       <span className="h-2 w-2 rounded-full bg-amber-500 ring-2 ring-background" />
+                    )}
+                    {hasActiveAgyTransam && (
+                      <span className="h-2 w-2 rounded-full bg-rose-500 ring-2 ring-background" />
+                    )}
+                    {hasActiveAgyFast && (
+                      <span className="h-2 w-2 rounded-full bg-sky-500 ring-2 ring-background" />
+                    )}
+                    {hasActiveAgyThinkLang && (
+                      <span className="h-2 w-2 rounded-full bg-violet-500 ring-2 ring-background" />
                     )}
                     {hasActiveAgyClaude && (
                       <span className="h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-background" />
@@ -371,6 +422,187 @@ export default function WorkspaceHeader({
             >
               <Shield className={cn('h-3.5 w-3.5', agyArmor ? 'text-amber-500' : 'text-muted-foreground')} />
               <span>Armor 破甲</span>
+            </button>
+          )}
+
+          {onToggleAgyTransam && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={agyTransam}
+              aria-label="切换 TRANS-AM 叙事引擎"
+              title={
+                agyTransam
+                  ? '已开启：TRANS-AM 叙事引擎（按模型自动匹配 4A v1.2.4 / 4H v1.1.4 / 4N v1.0.1 预设 + D100×4 判定池 + 上下文净化）'
+                  : '已关闭：点击开启 TRANS-AM 叙事引擎（4A / 4H / 4N）'
+              }
+              onClick={onToggleAgyTransam}
+              className={cn(
+                'mr-2 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                agyTransam
+                  ? 'border-rose-500/50 bg-rose-500/15 text-rose-600 hover:bg-rose-500/20 dark:text-rose-400'
+                  : 'border-border/70 bg-muted/40 text-muted-foreground hover:bg-accent hover:text-foreground',
+              )}
+            >
+              <Zap className={cn('h-3.5 w-3.5', agyTransam ? 'text-rose-500' : 'text-muted-foreground')} />
+              <span>TRANS-AM</span>
+            </button>
+          )}
+
+          {onToggleAgyFast && (
+            <div ref={agyFastMenuRef} className="relative mr-2 inline-flex shrink-0 items-center">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={agyFast && !agyFastDisabled}
+                aria-label="切换 agy-fast 加速插件"
+                disabled={agyFastDisabled}
+                title={
+                  agyFastDisabled
+                    ? '第三方 API 连接不支持挂载 agy-fast MCP 工具（需要已登录的原生 agy 账号）'
+                    : agyFast
+                      ? `已开启：agy-fast 加速插件${agyFastPlugin.status?.installed_version ? ` (v${agyFastPlugin.status.installed_version})` : ''}（批量搜索 / 多文件原子编辑 / 符号大纲 / 并发检查 + 启动快照）`
+                      : '已关闭：点击开启 agy-fast 加速插件（MCP 批量工具 + 启动快照）'
+                }
+                onClick={onToggleAgyFast}
+                className={cn(
+                  'inline-flex h-8 items-center gap-1.5 rounded-l-full border border-r-0 px-2.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-not-allowed disabled:opacity-45',
+                  agyFast && !agyFastDisabled
+                    ? 'border-sky-500/50 bg-sky-500/15 text-sky-600 hover:bg-sky-500/20 dark:text-sky-400'
+                    : 'border-border/70 bg-muted/40 text-muted-foreground hover:bg-accent hover:text-foreground',
+                )}
+              >
+                <Rocket className={cn('h-3.5 w-3.5', agyFast && !agyFastDisabled ? 'text-sky-500' : 'text-muted-foreground')} />
+                <span>agy-fast</span>
+              </button>
+              <button
+                type="button"
+                aria-label="agy-fast 插件更新与设置"
+                aria-expanded={agyFastMenuOpen}
+                title="检查 GitHub 更新、自动更新适配与插件状态"
+                onClick={() => {
+                  setAgyFastMenuOpen((open) => {
+                    const next = !open;
+                    if (next) void agyFastPlugin.refresh();
+                    return next;
+                  });
+                }}
+                className={cn(
+                  'relative inline-flex h-8 items-center justify-center rounded-r-full border px-2 text-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                  agyFast && !agyFastDisabled
+                    ? 'border-sky-500/50 bg-sky-500/15 text-sky-600 hover:bg-sky-500/25 dark:text-sky-400'
+                    : 'border-border/70 bg-muted/40 text-muted-foreground hover:bg-accent hover:text-foreground',
+                )}
+              >
+                <RefreshCw className={cn('h-3 w-3', (agyFastPlugin.checking || agyFastPlugin.updating) && 'animate-spin')} />
+                {agyFastPlugin.status?.update_available && (
+                  <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-sky-500" />
+                )}
+              </button>
+              {agyFastMenuOpen && (
+                <div className="absolute right-0 top-10 z-50 w-72 rounded-xl border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 font-semibold">
+                      <Rocket className="h-3.5 w-3.5 text-sky-500" />
+                      <span>agy-fast 插件</span>
+                      {agyFastPlugin.status?.installed_version && (
+                        <span className="rounded bg-sky-500/15 px-1.5 py-0.5 font-mono text-[10px] text-sky-600 dark:text-sky-400">
+                          v{agyFastPlugin.status.installed_version}
+                        </span>
+                      )}
+                    </div>
+                    <a
+                      href={agyFastPlugin.status?.repo_url || 'https://github.com/INK-Q/agy-fast'}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+                    >
+                      GitHub <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+                  {agyFastPlugin.status?.adapted_tools?.length ? (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {agyFastPlugin.status.adapted_tools.map((tool) => (
+                        <span key={tool} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                          {tool}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-border/60 pt-2">
+                    <span className="text-[11px] text-muted-foreground">定时自动检查并更新适配</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={agyFastPlugin.status?.auto_update_enabled ?? true}
+                      onClick={() => void agyFastPlugin.toggleAutoUpdate()}
+                      className={cn(
+                        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
+                        (agyFastPlugin.status?.auto_update_enabled ?? true) ? 'bg-sky-500' : 'bg-muted-foreground/30',
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+                          (agyFastPlugin.status?.auto_update_enabled ?? true) ? 'translate-x-4' : 'translate-x-0.5',
+                        )}
+                      />
+                    </button>
+                  </div>
+                  <div className="mt-2.5 flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={agyFastPlugin.checking || agyFastPlugin.updating}
+                      onClick={() => void agyFastPlugin.checkUpdate()}
+                      className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-border bg-background px-2 py-1.5 text-[11px] font-medium hover:bg-accent disabled:opacity-50"
+                    >
+                      {agyFastPlugin.checking ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                      检查更新
+                    </button>
+                    <button
+                      type="button"
+                      disabled={agyFastPlugin.checking || agyFastPlugin.updating}
+                      onClick={() => void agyFastPlugin.runUpdate(false)}
+                      className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-sky-500 px-2 py-1.5 text-[11px] font-medium text-white hover:bg-sky-600 disabled:opacity-50"
+                    >
+                      {agyFastPlugin.updating ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                      {agyFastPlugin.status?.update_available ? '更新并适配' : '同步适配'}
+                    </button>
+                  </div>
+                  {agyFastPlugin.message && (
+                    <p className="mt-2 text-[11px] text-emerald-600 dark:text-emerald-400">{agyFastPlugin.message}</p>
+                  )}
+                  {(agyFastPlugin.error || agyFastPlugin.status?.last_error) && (
+                    <p className="mt-2 text-[11px] text-red-600 dark:text-red-400">
+                      {agyFastPlugin.error || agyFastPlugin.status?.last_error}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {onToggleAgyThinkLang && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={agyThinkLang}
+              aria-label="切换思考语言跟随"
+              title={
+                agyThinkLang
+                  ? '已开启：内部思考过程（thinking）跟随用户语言输出（零延迟规则约束）'
+                  : '已关闭：点击开启思考过程跟随用户语言输出'
+              }
+              onClick={onToggleAgyThinkLang}
+              className={cn(
+                'mr-2 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                agyThinkLang
+                  ? 'border-violet-500/50 bg-violet-500/15 text-violet-600 hover:bg-violet-500/20 dark:text-violet-400'
+                  : 'border-border/70 bg-muted/40 text-muted-foreground hover:bg-accent hover:text-foreground',
+              )}
+            >
+              <Languages className={cn('h-3.5 w-3.5', agyThinkLang ? 'text-violet-500' : 'text-muted-foreground')} />
+              <span>思考跟随</span>
             </button>
           )}
 

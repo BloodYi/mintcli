@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ApiModelPicker } from '@/modules/agent-connections/ApiModelPicker';
+import type * as sharedApiModule from '@/shared/api';
 import { api } from '@/shared/api';
 
 vi.mock('@/shared/api', async importOriginal => {
-  const original = await importOriginal<typeof import('@/shared/api')>();
+  const original = await importOriginal<typeof sharedApiModule>();
   return { ...original, api: { codexConnections: { discoverModels: vi.fn() } } };
 });
 beforeEach(() => vi.resetAllMocks());

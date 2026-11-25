@@ -99,11 +99,19 @@ export function formatToolDisplayName(toolName: string): string {
     return unifiedLabel;
   }
 
-  const mcpMatch = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(toolName);
-  if (!mcpMatch) {
-    return toolName;
+  const normalized = toolName.replace(/^mcp_ide-tools_/, '');
+  const mcpMatch = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(normalized);
+  if (mcpMatch) {
+    return `${mcpMatch[2]} (${mcpMatch[1]})`;
   }
-  return `${mcpMatch[2]} (${mcpMatch[1]})`;
+
+  const acpFastMatch = /^(?:mcp_(agy-fast_[^_]+)_|(agy-fast_[^/:]+)[:/])([a-z0-9_]+)$/i.exec(normalized);
+  if (acpFastMatch) {
+    const server = acpFastMatch[1] || acpFastMatch[2];
+    return `${acpFastMatch[3]} (${server})`;
+  }
+
+  return toolName;
 }
 
 export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {

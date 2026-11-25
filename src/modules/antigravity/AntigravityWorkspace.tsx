@@ -4,7 +4,8 @@ import remarkGfm from 'remark-gfm';
 import { api, readApiJson } from '@/shared/api';
 import type { AntigravityMessage } from '@/shared/types';
 import { useAntigravity } from '@/modules/antigravity/hooks/useAntigravity';
-import { MarkdownImage, MarkdownVideo, isImagePath, isVideoPath } from '@/modules/chat';
+import { useAgyFastStatus } from '@/modules/antigravity/hooks/useAgyFastStatus';
+import { MarkdownImage, MarkdownVideo, formatTransAmMarkdown, isImagePath, isVideoPath } from '@/modules/chat';
 import { QuotaWindow } from '@/shared/ui/QuotaWindow';
 import { readStoredUiPreferences } from '@/shared/uiPreferences';
 import { subscribeToUserPreferences, writeUserPreference } from '@/shared/userSettings';
@@ -14,16 +15,26 @@ const CONTROL = 'min-h-10 rounded-md border border-border bg-background px-3 py-
 /** Rendered by App as the native agy workspace, alongside the existing Codex/Claude/API workspace. */
 export function AntigravityWorkspace() {
   const agent = useAntigravity();
+  const agyFastPlugin = useAgyFastStatus(true);
   const [agyArmor, setAgyArmor] = useState(() => readStoredUiPreferences().agyArmor);
+  const [agyTransam, setAgyTransam] = useState(() => readStoredUiPreferences().agyTransam);
+  const [agyFast, setAgyFast] = useState(() => readStoredUiPreferences().agyFast);
+  const [agyThinkLang, setAgyThinkLang] = useState(() => readStoredUiPreferences().agyThinkLang);
   const [agyUseClaude, setAgyUseClaude] = useState(() => readStoredUiPreferences().agyUseClaude);
   useEffect(() => subscribeToUserPreferences(() => {
     const prefs = readStoredUiPreferences();
     setAgyArmor(prefs.agyArmor);
+    setAgyTransam(prefs.agyTransam);
+    setAgyFast(prefs.agyFast);
+    setAgyThinkLang(prefs.agyThinkLang);
     setAgyUseClaude(prefs.agyUseClaude);
   }), []);
-  const togglePref = (key: 'agyArmor' | 'agyUseClaude', next: boolean) => {
+  const togglePref = (key: 'agyArmor' | 'agyTransam' | 'agyFast' | 'agyThinkLang' | 'agyUseClaude', next: boolean) => {
     const prefs = { ...readStoredUiPreferences(), [key]: next };
     if (key === 'agyArmor') setAgyArmor(next);
+    else if (key === 'agyTransam') setAgyTransam(next);
+    else if (key === 'agyFast') setAgyFast(next);
+    else if (key === 'agyThinkLang') setAgyThinkLang(next);
     else setAgyUseClaude(next);
     writeUserPreference('uiPreferences', prefs);
   };
@@ -98,6 +109,48 @@ export function AntigravityWorkspace() {
         <button
           type="button"
           role="switch"
+          aria-checked={agyTransam}
+          className={CONTROL + (agyTransam ? ' border-rose-500/50 bg-rose-500/15 text-rose-600 dark:text-rose-400' : '')}
+          onClick={() => togglePref('agyTransam', !agyTransam)}
+        >
+          ⚡ TRANS-AM
+        </button>
+        <div className="inline-flex items-center">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={agyFast}
+            className={CONTROL + ' rounded-r-none border-r-0' + (agyFast ? ' border-sky-500/50 bg-sky-500/15 text-sky-600 dark:text-sky-400' : '')}
+            onClick={() => togglePref('agyFast', !agyFast)}
+          >
+            🚀 agy-fast{agyFastPlugin.status?.installed_version ? ` v${agyFastPlugin.status.installed_version}` : ''}
+          </button>
+          <button
+            type="button"
+            aria-label="检查并同步 agy-fast 更新"
+            title={
+              agyFastPlugin.error || agyFastPlugin.status?.last_error || agyFastPlugin.message
+              || (agyFastPlugin.status?.update_available ? '发现新版本：点击更新并适配 agy-fast' : '点击检查并同步适配 agy-fast 插件')
+            }
+            disabled={agyFastPlugin.checking || agyFastPlugin.updating}
+            className={CONTROL + ' rounded-l-none px-2.5' + (agyFast ? ' border-sky-500/50 bg-sky-500/15 text-sky-600 dark:text-sky-400' : '')}
+            onClick={() => void (agyFastPlugin.status?.update_available ? agyFastPlugin.runUpdate(false) : agyFastPlugin.checkUpdate())}
+          >
+            {agyFastPlugin.checking || agyFastPlugin.updating ? '⟳' : agyFastPlugin.status?.update_available ? '↑ 更新' : '↻'}
+          </button>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={agyThinkLang}
+          className={CONTROL + (agyThinkLang ? ' border-violet-500/50 bg-violet-500/15 text-violet-600 dark:text-violet-400' : '')}
+          onClick={() => togglePref('agyThinkLang', !agyThinkLang)}
+        >
+          🌐 思考跟随
+        </button>
+        <button
+          type="button"
+          role="switch"
           aria-checked={agyUseClaude}
           className={CONTROL + (agyUseClaude ? ' border-emerald-500/50 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' : '')}
           onClick={() => togglePref('agyUseClaude', !agyUseClaude)}
@@ -164,7 +217,7 @@ export function AntigravityWorkspace() {
                     return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
                   },
                 }}
-              >{message.content || (message.status === 'streaming' ? '正在等待 agy 回复…' : '')}</ReactMarkdown>
+              >{formatTransAmMarkdown(message.content || (message.status === 'streaming' ? '正在等待 agy 回复…' : ''))}</ReactMarkdown>
             </div>
             {message.attachments?.map(file => <button key={file.path} type="button" className={CONTROL + ' mr-2 mt-2 max-w-full truncate'} onClick={() => void download(file.path, file.filename)}>📎 {file.filename}</button>)}
             {message.tool && <p className="mt-3 break-words text-xs text-muted-foreground">工具：{message.tool}</p>}
@@ -178,7 +231,7 @@ export function AntigravityWorkspace() {
         event.preventDefault();
         const text = draft; const files = attachments;
         setDraft(''); setAttachments([]);
-        void agent.send(text, model, cwd, files, { useArmor: agyArmor, useClaudeAgy: agyUseClaude }).then(ok => { if (!ok) { setDraft(text); setAttachments(files); } });
+        void agent.send(text, model, cwd, files, { useArmor: agyArmor, useTransam: agyTransam, useAgyFast: agyFast, useThinkLang: agyThinkLang, useClaudeAgy: agyUseClaude }).then(ok => { if (!ok) { setDraft(text); setAttachments(files); } });
       }}>
         <label className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">工作目录
           <input className={CONTROL + ' min-w-0 flex-1'} value={cwd} disabled={agent.busy} onChange={event => setCwd(event.target.value)} placeholder="留空使用 agy 默认目录" />

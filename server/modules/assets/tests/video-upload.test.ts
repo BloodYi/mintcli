@@ -31,7 +31,14 @@ test('video larger than the old 10MB limit uploads and downloads unchanged', asy
     const downloaded = await fetch(`${base}/files/${path.basename(storedPath)}`);
     assert.equal(downloaded.headers.get('content-type'), 'video/mp4');
     assert.match(downloaded.headers.get('content-disposition') || '', /^attachment;/);
+    assert.equal(downloaded.headers.get('accept-ranges'), 'bytes');
     assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), bytes);
+
+    const partial = await fetch(`${base}/files/${path.basename(storedPath)}`, {
+      headers: { Range: 'bytes=0-1023' },
+    });
+    assert.equal(partial.status, 206);
+    assert.equal((await partial.arrayBuffer()).byteLength, 1024);
   } finally {
     if (storedPath) await fs.unlink(storedPath);
     server.closeAllConnections();

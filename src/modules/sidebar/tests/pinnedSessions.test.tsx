@@ -1,10 +1,12 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, expect, test, vi } from 'vitest';
 
+import type * as sharedApiModule from '@/shared/api';
+
 const saved: Record<string, unknown>[] = [];
 let failSave = false;
 vi.mock('@/shared/api', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@/shared/api')>();
+  const original = await importOriginal<typeof sharedApiModule>();
   return {
     ...original,
     api: { ...original.api, user: { ...original.api.user, savePreferences: vi.fn(async (updates: Record<string, unknown>) => {

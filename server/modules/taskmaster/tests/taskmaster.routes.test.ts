@@ -199,3 +199,71 @@ test('TaskMaster broadcasts reach only the tracked chat clients', async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test('PRD endpoints reject path traversal and CLI option injection inputs', async () => {
+  const router = createTaskmasterRouter({
+    fileSystem: { constants: { F_OK: 0, R_OK: 4 } } as typeof import('node:fs'),
+    fileSystemPromises: {
+      readFile: async () => {
+        throw new Error('readFile must not be called for invalid filenames');
+      },
+      writeFile: async () => {
+        throw new Error('writeFile must not be called for invalid filenames');
+      },
+      mkdir: async () => undefined,
+    } as unknown as typeof import('node:fs/promises'),
+    spawnProcess: (() => {
+      throw new Error('spawn must not be called for rejected inputs');
+    }) as unknown as Parameters<typeof createTaskmasterRouter>[0]['spawnProcess'],
+    resolveProjectPathById: () => '/workspace/project',
+    taskmasterService: {
+      detectMcpServer: async () => ({
+        hasMCPServer: false,
+        reason: 'Not configured',
+        hasConfig: false,
+      }),
+    },
+  });
+  const app = express().use(express.json()).use('/api/taskmaster', router);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+
+  try {
+    const address = server.address() as AddressInfo;
+    const baseUrl = `http://127.0.0.1:${address.port}/api/taskmaster`;
+
+    const getTraversal = await fetch(`${baseUrl}/prd/project-1/..%2f..%2fetc%2fpasswd`);
+    assert.equal(getTraversal.status, 400);
+
+    const postDotDot = await fetch(`${baseUrl}/prd/project-1`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fileName: '..prd.md', content: '# Test' }),
+    });
+    assert.equal(postDotDot.status, 400);
+
+    const applyTemplateTraversal = await fetch(`${baseUrl}/apply-template/project-1`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ templateId: 'web-app', fileName: '../../outside.md' }),
+    });
+    assert.equal(applyTemplateTraversal.status, 400);
+
+    const parsePrdTraversal = await fetch(`${baseUrl}/parse-prd/project-1`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fileName: '../secret.txt' }),
+    });
+    assert.equal(parsePrdTraversal.status, 400);
+
+    const injectedTaskId = await fetch(`${baseUrl}/update-task/project-1/--help`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'done' }),
+    });
+    assert.equal(injectedTaskId.status, 400);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+

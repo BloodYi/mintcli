@@ -18,6 +18,9 @@ export type UiPreferences = {
   voiceEnabled: boolean;
   agyUseClaude: boolean;
   agyArmor: boolean;
+  agyTransam: boolean;
+  agyFast: boolean;
+  agyThinkLang: boolean;
 };
 
 export type UiPreferenceKey = keyof UiPreferences;
@@ -35,6 +38,9 @@ const DEFAULTS: UiPreferences = {
   voiceEnabled: false,
   agyUseClaude: false,
   agyArmor: false,
+  agyTransam: false,
+  agyFast: false,
+  agyThinkLang: false,
 };
 
 const PREFERENCE_KEYS = Object.keys(DEFAULTS) as UiPreferenceKey[];

@@ -133,3 +133,53 @@ test('delete branch rejects a non-boolean force value before running Git', async
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test('git routes reject leading-hyphen option injection in commit and branch parameters', async () => {
+  const spawnProcess = ((_command: string, args: string[]) => {
+    if (args.some((arg) => arg === '--all' || arg === '--output=/tmp/pwn')) {
+      throw new Error(`Unsafe git option reached subprocess: ${args.join(' ')}`);
+    }
+    const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough };
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    process.nextTick(() => {
+      child.stdout.end('true\n');
+      child.stderr.end();
+      child.emit('close', 0);
+    });
+    return child;
+  }) as Parameters<typeof createGitRouter>[0]['spawnProcess'];
+  const unexpectedProvider = async (): Promise<never> => { throw new Error('unexpected provider call'); };
+  const router = createGitRouter({
+    fileSystem: { access: async () => undefined } as unknown as Parameters<typeof createGitRouter>[0]['fileSystem'],
+    spawnProcess,
+    resolveProjectPathById: () => '/workspace/repo',
+    queryClaude: unexpectedProvider,
+    queryCursor: unexpectedProvider,
+  });
+  const app = express();
+  app.use(express.json());
+  app.use('/api/git', router);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+
+  try {
+    const address = server.address() as AddressInfo;
+    const commitDiffRes = await fetch(
+      `http://127.0.0.1:${address.port}/api/git/commit-diff?project=project-1&commit=--all`,
+    );
+    const commitDiffBody = await commitDiffRes.json() as { error?: string };
+    assert.equal(commitDiffBody.error, 'Invalid commit reference');
+
+    const checkoutRes = await fetch(`http://127.0.0.1:${address.port}/api/git/checkout`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project: 'project-1', branch: '--output=/tmp/pwn' }),
+    });
+    assert.equal(checkoutRes.status, 500);
+    const checkoutBody = await checkoutRes.json() as { error?: string };
+    assert.equal(checkoutBody.error, 'Invalid branch name');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

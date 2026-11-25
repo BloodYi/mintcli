@@ -39,16 +39,24 @@ async function forward(req: Request, res: Response, next: NextFunction) {
   }
 }
 
-for (const route of ['/accounts', '/models', '/quota', '/conversations', '/conversations/:id/messages',
+for (const route of ['/accounts', '/acp-info', '/inspect-route', '/models', '/quota',
+  '/agy-fast/status',
+  '/conversations', '/conversations/search', '/conversations/:id/messages',
   '/turns/:id', '/turns/:id/events', '/download', '/fs']) {
   router.get(route, forward);
 }
-for (const route of ['/accounts/add', '/accounts/switch', '/chat', '/turns/:id/stop', '/conversations/:id/activate']) {
+for (const route of ['/accounts/add', '/accounts/switch', '/inspect-route', '/chat',
+  '/agy-fast/check-update', '/agy-fast/update', '/agy-fast/config',
+  '/turns/:id/stop', '/turns/:id/messages',
+  '/conversations/:id/activate', '/conversations/:id/messages', '/conversations/:id/recall']) {
   router.post(route, forward);
 }
 router.post('/upload', express.raw({ type: 'multipart/form-data', limit: '50mb' }), forward);
 router.patch('/conversations/:id', forward);
 router.patch('/conversations/:id/pin', forward);
+for (const route of ['/accounts/:id', '/conversations', '/conversations/:id']) {
+  router.delete(route, forward);
+}
 
 /** Mounted by server/index.ts behind the existing authenticated CloudCLI API. */
 export const antigravityRoutes = router;

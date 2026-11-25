@@ -14,8 +14,9 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 from process_lifecycle import reap_cli_process
+from think_lang_engine import append_think_lang_reminder, detect_think_target_lang
 from armor_engine import (
     ARMOR_DELIVERY_SEAT,
     ARMOR_EXEC_SEAT,
@@ -167,6 +168,11 @@ async def stream_agy_acp(
     timeout: int = 0,
     register_injector: Callable[[Callable[[str, str], Awaitable[bool]] | None], None] | None = None,
     use_armor: bool = False,
+    use_think_lang: bool = False,
+    think_lang_user_text: str | None = None,
+    think_lang_history: Sequence[str] | None = None,
+    mcp_servers: list[dict[str, Any]] | None = None,
+    agy_fast_info: dict[str, Any] | None = None,
     is_shutting_down: Callable[[], bool] | None = None,
     max_transient_recoveries: int = 1,
 ):
@@ -182,11 +188,22 @@ async def stream_agy_acp(
         route_info["cli_config_model"] = model
     if use_armor:
         route_info["armor"] = {"enabled": True, "status": "armed"}
+    if use_think_lang:
+        initial_seed = think_lang_user_text if think_lang_user_text is not None else prompt
+        detected_init_lang, _ = detect_think_target_lang(initial_seed, think_lang_history)
+        tl_entry = route_info.setdefault("think_lang", {})
+        tl_entry["enabled"] = True
+        if detected_init_lang:
+            tl_entry["lang"] = detected_init_lang
+    if agy_fast_info:
+        route_info["agy_fast"] = dict(agy_fast_info)
 
     log_dir = tempfile.TemporaryDirectory(prefix="agy-acp-", dir=str(scratch_dir))
     log_path = Path(log_dir.name) / "acp.log"
     init_emitted_session_id: str | None = None
     recovery_attempt = 0
+    turn_lang_history: list[str] = list(think_lang_history or [])
+    recorded_initial_lang_seed = False
 
     try:
         while True:
@@ -241,6 +258,15 @@ async def stream_agy_acp(
                     return False
                 if use_armor and content:
                     content, _ = soften_prompt(content)
+                outbound_content = content
+                if use_think_lang and outbound_content:
+                    outbound_content, _ = append_think_lang_reminder(
+                        outbound_content,
+                        user_text=content,
+                        history_user_texts=turn_lang_history,
+                    )
+                if content and content.strip():
+                    turn_lang_history.append(content)
                 req_id = next_id
                 next_id += 1
                 pending_prompt_ids[req_id] = message_uuid
@@ -253,7 +279,7 @@ async def stream_agy_acp(
                             "method": "session/prompt",
                             "params": {
                                 "sessionId": session_id,
-                                "prompt": [{"type": "text", "text": content}],
+                                "prompt": [{"type": "text", "text": outbound_content}],
                             },
                         }
                     )
@@ -405,13 +431,14 @@ async def stream_agy_acp(
                     session_meta = {"_meta": {"antigravity": {"systemPrompt": {"append": clean_system_append}}}}
 
                 # 2. Resume existing session or create a new one
+                acp_mcp_servers = list(mcp_servers) if mcp_servers else []
                 session_res: dict[str, Any] | None = None
                 resumed_existing = False
                 target_cid = init_emitted_session_id or conversation_id
                 if target_cid:
                     resumed = await _call(
                         "session/resume",
-                        {"sessionId": target_cid, "cwd": target_cwd, "mcpServers": [], **session_meta},
+                        {"sessionId": target_cid, "cwd": target_cwd, "mcpServers": acp_mcp_servers, **session_meta},
                         setup_deadline,
                     )
                     if "error" not in resumed and isinstance(resumed.get("result"), dict):
@@ -423,7 +450,7 @@ async def stream_agy_acp(
                 if session_res is None:
                     session_res = await _call(
                         "session/new",
-                        {"cwd": target_cwd, "mcpServers": [], **session_meta},
+                        {"cwd": target_cwd, "mcpServers": acp_mcp_servers, **session_meta},
                         setup_deadline,
                     )
                 if "error" in session_res:
@@ -469,6 +496,19 @@ async def stream_agy_acp(
                     elif use_armor and ARMOR_EXEC_SEAT not in effective_prompt and ARMOR_DELIVERY_SEAT not in effective_prompt:
                         seat_head = ARMOR_EXEC_SEAT.strip()
                         effective_prompt = f"{seat_head}\n\n{effective_prompt}" if effective_prompt else seat_head
+                outbound_prompt = effective_prompt
+                seed_user_text = think_lang_user_text if think_lang_user_text is not None else prompt
+                if use_think_lang and outbound_prompt:
+                    outbound_prompt, resolved_think_lang = append_think_lang_reminder(
+                        outbound_prompt,
+                        user_text=seed_user_text,
+                        history_user_texts=think_lang_history,
+                    )
+                    if resolved_think_lang:
+                        route_info.setdefault("think_lang", {"enabled": True})["lang"] = resolved_think_lang
+                if not recorded_initial_lang_seed and seed_user_text and seed_user_text.strip():
+                    turn_lang_history.append(seed_user_text)
+                    recorded_initial_lang_seed = True
                 pending_prompt_ids[prompt_req_id] = None
                 ordered_prompt_ids.append(prompt_req_id)
                 await _send(
@@ -478,7 +518,7 @@ async def stream_agy_acp(
                         "method": "session/prompt",
                         "params": {
                             "sessionId": session_id,
-                            "prompt": [{"type": "text", "text": effective_prompt}],
+                            "prompt": [{"type": "text", "text": outbound_prompt}],
                         },
                     }
                 )
@@ -624,25 +664,32 @@ async def stream_agy_acp(
                                 out_chunk = _emit_stream_chunk(buf_str)
                                 if out_chunk:
                                     yield {"event": "delta", "delta": out_chunk}
+                            raw_tool_id_name = str(update.get("name") or update.get("kind") or "")
                             tool_name = str(
                                 update.get("title")
-                                or update.get("name")
-                                or update.get("kind")
+                                or raw_tool_id_name
                                 or "tool"
                             )
+                            raw_input = update.get("rawInput")
+                            if raw_input is None:
+                                raw_input = update.get("input") if update.get("input") is not None else update.get("arguments")
+                            agy_fast_match = re.match(
+                                r"^(?:mcp__agy-fast_[^_]+__|mcp_agy-fast_[^_]+_|agy-fast_[^/:]+[:/])([a-z0-9_]+)$",
+                                raw_tool_id_name or tool_name,
+                            )
+                            if agy_fast_match and (not update.get("title") or update.get("title") == raw_tool_id_name):
+                                short_tool = agy_fast_match.group(1)
+                                tool_name = f"agy-fast:{short_tool}"
                             status = str(update.get("status") or "running")
                             tool_event: dict[str, Any] = {
                                 "event": "tool",
                                 "tool": tool_name,
-                                "tool_name": str(update.get("name") or update.get("kind") or tool_name),
+                                "tool_name": raw_tool_id_name or tool_name,
                                 "status": status,
                             }
                             tool_id = update.get("toolCallId") or update.get("id")
                             if tool_id:
                                 tool_event["tool_id"] = str(tool_id)
-                            raw_input = update.get("rawInput")
-                            if raw_input is None:
-                                raw_input = update.get("input") if update.get("input") is not None else update.get("arguments")
                             if raw_input is not None:
                                 tool_event["tool_input"] = raw_input
                             raw_output = update.get("rawOutput")

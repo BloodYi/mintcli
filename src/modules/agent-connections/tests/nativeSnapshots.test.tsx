@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
 import { expect, it } from 'vitest';
-import { useSessionStore } from '@/modules/chat/hooks/useSessionStore';
+import { useSessionStore } from '@/modules/chat';
 import type { NormalizedMessage } from '@/shared/types';
 it('a new native snapshot replaces the earlier text without creating a second assistant row', () => {
   const { result } = renderHook(() => useSessionStore());

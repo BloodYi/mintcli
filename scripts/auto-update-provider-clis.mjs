@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -109,10 +109,54 @@ async function pruneOldReleases(root, provider) {
   }
 }
 
+const AGY_FAST_ENGINE = path.resolve(__dirname, '../native/antigravity-bridge/agy_fast_engine.py');
+const BRIDGE_PYTHON_CANDIDATES = [
+  process.env.MINTCLI_BRIDGE_PYTHON || '',
+  '/var/lib/mintcli-bridge-venv/bin/python',
+  '/var/lib/cloudcli/antigravity-home/.venv/bin/python',
+];
+
+function resolveBridgePython() {
+  for (const cand of BRIDGE_PYTHON_CANDIDATES) {
+    if (!cand) continue;
+    try {
+      const probe = spawnSync(cand, ['-c', 'import sys'], { stdio: 'ignore', timeout: 5_000 });
+      if (probe.status === 0) return cand;
+    } catch {
+      // Try next candidate
+    }
+  }
+  return 'python3';
+}
+
+function runAgyFastAutoUpdate(env) {
+  const py = resolveBridgePython();
+  return new Promise((resolve, reject) => {
+    const child = spawn(py, [AGY_FAST_ENGINE, 'update', '--if-auto'], {
+      stdio: 'inherit',
+      shell: false,
+      env,
+    });
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
+      reject(new Error('agy-fast update timed out'));
+    }, 120_000);
+    child.on('error', (err) => { clearTimeout(timer); reject(err); });
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`agy-fast update exited with ${code !== null ? `code ${code}` : `signal ${signal}`}`));
+    });
+  });
+}
+
 async function main() {
   const root = path.resolve(process.env.MINTCLI_CLI_ROOT || '/var/lib/cloudcli/cli');
   const requested = process.argv.slice(2);
-  const providers = requested.length > 0 ? requested : DEFAULT_PROVIDERS;
+  const onlyAgyFast = requested.length === 1 && requested[0] === 'agy-fast';
+  const providers = onlyAgyFast ? [] : (requested.length > 0 ? requested.filter((p) => p !== 'agy-fast') : DEFAULT_PROVIDERS);
+  const shouldUpdateAgyFast = requested.length === 0 || requested.includes('agy-fast');
   const env = buildDirectEnv();
   const failures = [];
 
@@ -130,6 +174,17 @@ async function main() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[auto-update] Prune error for ${provider}: ${message}`);
+    }
+  }
+
+  if (shouldUpdateAgyFast) {
+    console.log('[auto-update] Checking agy-fast GitHub plugin...');
+    try {
+      await runAgyFastAutoUpdate(env);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[auto-update] Failed agy-fast: ${message}`);
+      failures.push({ provider: 'agy-fast', message });
     }
   }
 

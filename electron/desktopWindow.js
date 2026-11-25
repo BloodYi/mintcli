@@ -20,6 +20,18 @@ function isAllowedPermissionOrigin(sourceUrl, controlPlaneUrl) {
   }
 }
 
+function isSafeExternalUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return true;
+    }
+    return parsed.protocol === 'cloudcli:' && parsed.hostname === 'auth';
+  } catch {
+    return false;
+  }
+}
+
 function getWebContentsProcessId(contents) {
   return {
     osProcessId: typeof contents.getOSProcessId === 'function' ? contents.getOSProcessId() : null,
@@ -740,7 +752,9 @@ export class DesktopWindowManager {
     });
 
     this.mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-      void this.openExternalUrl(url).catch((error) => this.actions.showError('Could not open external link', error));
+      if (isSafeExternalUrl(url)) {
+        void this.openExternalUrl(url).catch((error) => this.actions.showError('Could not open external link', error));
+      }
       return { action: 'deny' };
     });
 

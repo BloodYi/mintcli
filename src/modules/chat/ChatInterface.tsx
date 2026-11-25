@@ -63,6 +63,9 @@ type ChatInterfaceProps = {
   sendByCtrlEnter?: boolean;
   agyUseClaude?: boolean;
   agyArmor?: boolean;
+  agyTransam?: boolean;
+  agyFast?: boolean;
+  agyThinkLang?: boolean;
   onAgyApiConnectionChange?: (usingApi: boolean) => void;
   externalMessageUpdate?: number;
   newSessionTrigger?: number;
@@ -97,6 +100,9 @@ function ChatInterface({
   sendByCtrlEnter,
   agyUseClaude = false,
   agyArmor = false,
+  agyTransam = false,
+  agyFast = false,
+  agyThinkLang = false,
   onAgyApiConnectionChange,
   externalMessageUpdate,
   newSessionTrigger,
@@ -317,6 +323,9 @@ function ChatInterface({
     fastMode: supportsFastMode ? fastMode : undefined,
     agyUseClaude: effectiveAgyUseClaude,
     agyArmor: agyArmor,
+    agyTransam: agyTransam,
+    agyFast: agyFast,
+    agyThinkLang: agyThinkLang,
     isLoading: isProcessing,
     processingSessions,
     canAbortSession,
@@ -559,12 +568,15 @@ function ChatInterface({
       options: { model: currentProviderModel, effort: currentProviderEffort, permissionMode,
         ...(supportsFastMode && fastMode !== undefined ? { fastMode } : {}),
         ...(provider === 'antigravity' && effectiveAgyUseClaude ? { useClaudeAgy: true } : {}),
-        ...(provider === 'antigravity' && agyArmor ? { useArmor: true } : {}) },
+        ...(provider === 'antigravity' && agyArmor ? { useArmor: true } : {}),
+        ...(provider === 'antigravity' && agyTransam ? { useTransam: true } : {}),
+        ...(provider === 'antigravity' && agyFast ? { useAgyFast: true } : {}),
+        ...(provider === 'antigravity' && agyThinkLang ? { useThinkLang: true } : {}) },
     });
     if (scheduled) {
       setInput('');
     }
-  }, [effectiveAgyUseClaude, agyArmor, currentProviderEffort, currentProviderModel, input, permissionMode, provider, scheduleMessage, setInput, supportsFastMode, fastMode]);
+  }, [effectiveAgyUseClaude, agyArmor, agyTransam, agyFast, agyThinkLang, currentProviderEffort, currentProviderModel, input, permissionMode, provider, scheduleMessage, setInput, supportsFastMode, fastMode]);
 
   const permissionContextValue = useMemo(() => ({
     pendingPermissionRequests,

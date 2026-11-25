@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import http from 'node:http';
+import { pipeline } from 'node:stream';
 
 import express from 'express';
 
@@ -27,10 +28,14 @@ export function createPluginsRouter(service: ReturnType<typeof createPluginsServ
     try {
       const asset = service.resolveAsset(routeParameter(req.params.name), wildcardPath(req));
       res.setHeader('Content-Type', asset.contentType);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       const stream = fs.createReadStream(asset.path);
-      stream.on('error', next);
-      stream.pipe(res);
+      pipeline(stream, res, (error) => {
+        if (error && (error as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE' && !res.headersSent) {
+          next(error);
+        }
+      });
     } catch (error) { next(error); }
   });
   router.put('/:name/enable', respond((req) => service.setEnabled(routeParameter(req.params.name), req.body?.enabled)));
@@ -50,9 +55,16 @@ export function createPluginsRouter(service: ReturnType<typeof createPluginsServ
         hostname: '127.0.0.1', port, path: `/${wildcardPath(req)}${query}`, method: req.method, headers,
       }, (proxyResponse) => {
         res.writeHead(proxyResponse.statusCode ?? 502, proxyResponse.headers);
-        proxyResponse.pipe(res);
+        pipeline(proxyResponse, res, () => undefined);
       });
-      proxyRequest.on('error', next);
+      res.once('close', () => {
+        if (!res.writableEnded) {
+          proxyRequest.destroy();
+        }
+      });
+      proxyRequest.on('error', (error) => {
+        if (!res.headersSent && !res.destroyed) next(error);
+      });
       if (req.headers['content-length'] && req.body !== undefined) {
         const body = JSON.stringify(req.body);
         proxyRequest.setHeader('content-length', Buffer.byteLength(body));

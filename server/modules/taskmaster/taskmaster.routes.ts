@@ -81,24 +81,118 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
         : null;
     const router = express.Router();
 
-    function runTaskmasterProcess(command, args, options, onComplete) {
+    const TASKMASTER_PROCESS_TIMEOUT_MS = 120_000;
+    const TASKMASTER_PROCESS_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
+    const PRD_FILENAME_PATTERN = /^[a-zA-Z0-9_.\- ]+\.(txt|md)$/i;
+
+    function isValidPrdFileName(fileName) {
+        return (
+            typeof fileName === 'string' &&
+            fileName.length > 0 &&
+            fileName.length <= 255 &&
+            !fileName.startsWith('.') &&
+            !fileName.includes('..') &&
+            !fileName.includes('/') &&
+            !fileName.includes('\\') &&
+            !fileName.includes('\0') &&
+            PRD_FILENAME_PATTERN.test(fileName)
+        );
+    }
+
+    async function resolveSafePrdFilePath(projectPath, fileName) {
+        if (!isValidPrdFileName(fileName)) {
+            return null;
+        }
+        const docsDir = path.resolve(projectPath, '.taskmaster', 'docs');
+        const filePath = path.resolve(docsDir, fileName);
+        const relativePath = path.relative(docsDir, filePath);
+        if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+            return null;
+        }
+        if (typeof fsPromises?.lstat === 'function') {
+            try {
+                const docsStat = await fsPromises.lstat(docsDir);
+                if (docsStat.isSymbolicLink()) {
+                    return null;
+                }
+            } catch (error) {
+                if (error?.code !== 'ENOENT') {
+                    return null;
+                }
+            }
+            try {
+                const targetStat = await fsPromises.lstat(filePath);
+                if (targetStat.isSymbolicLink()) {
+                    return null;
+                }
+            } catch (error) {
+                if (error?.code !== 'ENOENT') {
+                    return null;
+                }
+            }
+        }
+        return { docsDir, filePath };
+    }
+
+    function isValidTaskId(value) {
+        return typeof value === 'string' && value.length > 0 && value.length <= 64 && !value.startsWith('-') && /^[a-zA-Z0-9_.-]+$/.test(value);
+    }
+
+    function isSafeOptionValue(value) {
+        return typeof value === 'string' && value.length > 0 && value.length <= 128 && !value.startsWith('-') && !value.includes('\0');
+    }
+
+    function runTaskmasterProcess(command, args, options, onComplete, timeoutMs = TASKMASTER_PROCESS_TIMEOUT_MS) {
         const child = spawn(command, args, options);
         let stdout = '';
         let stderr = '';
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
         let settled = false;
 
-        child.stdout.on('data', (data) => {
-            stdout += data.toString();
-        });
-        child.stderr.on('data', (data) => {
-            stderr += data.toString();
-        });
+        const killChild = () => {
+            if (typeof child?.kill === 'function') {
+                try {
+                    child.kill('SIGKILL');
+                } catch {
+                    // Ignore kill errors when process already exited.
+                }
+            }
+        };
+
+        const timeoutHandle = setTimeout(() => {
+            killChild();
+            settle(null, new Error(`TaskMaster command timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        timeoutHandle.unref?.();
 
         const settle = (code, error = null) => {
             if (settled) return;
             settled = true;
+            clearTimeout(timeoutHandle);
             onComplete({ code, error, stdout, stderr });
         };
+
+        child.stdout.on('data', (data) => {
+            const chunk = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
+            stdoutBytes += chunk.length;
+            if (stdoutBytes > TASKMASTER_PROCESS_MAX_BUFFER_BYTES) {
+                killChild();
+                settle(null, new Error('TaskMaster command stdout exceeded maxBuffer'));
+                return;
+            }
+            stdout += chunk.toString();
+        });
+        child.stderr.on('data', (data) => {
+            const chunk = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
+            stderrBytes += chunk.length;
+            if (stderrBytes > TASKMASTER_PROCESS_MAX_BUFFER_BYTES) {
+                killChild();
+                settle(null, new Error('TaskMaster command stderr exceeded maxBuffer'));
+                return;
+            }
+            stderr += chunk.toString();
+        });
 
         child.once('error', (error) => settle(null, error));
         child.once('close', (code) => settle(code));
@@ -106,77 +200,36 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
     }
 
     /**
-     * Check if TaskMaster CLI is installed globally
+     * Check if TaskMaster CLI is installed globally without invoking a shell.
      * @returns {Promise<Object>} Installation status result
      */
     async function checkTaskMasterInstallation() {
         return new Promise((resolve) => {
-            // Check if task-master command is available
-            const child = spawn('which', ['task-master'], {
-                stdio: ['ignore', 'pipe', 'pipe'],
-                shell: true
-            });
-
-            let output = '';
-            let errorOutput = '';
-
-            child.stdout.on('data', (data) => {
-                output += data.toString();
-            });
-
-            child.stderr.on('data', (data) => {
-                errorOutput += data.toString();
-            });
-
-            child.on('close', (code) => {
-                if (code === 0 && output.trim()) {
-                    // TaskMaster is installed, get version
-                    const versionChild = spawn('task-master', ['--version'], {
-                        stdio: ['ignore', 'pipe', 'pipe'],
-                        shell: true
-                    });
-
-                    let versionOutput = '';
-
-                    versionChild.stdout.on('data', (data) => {
-                        versionOutput += data.toString();
-                    });
-
-                    versionChild.on('close', (versionCode) => {
+            runTaskmasterProcess(
+                'task-master',
+                ['--version'],
+                { stdio: ['ignore', 'pipe', 'pipe'] },
+                ({ code, error, stdout }) => {
+                    if (code === 0) {
                         resolve({
                             isInstalled: true,
-                            installPath: output.trim(),
-                            version: versionCode === 0 ? versionOutput.trim() : 'unknown',
+                            installPath: 'task-master',
+                            version: stdout.trim() || 'unknown',
                             reason: null
                         });
-                    });
-
-                    versionChild.on('error', () => {
-                        resolve({
-                            isInstalled: true,
-                            installPath: output.trim(),
-                            version: 'unknown',
-                            reason: null
-                        });
-                    });
-                } else {
+                        return;
+                    }
                     resolve({
                         isInstalled: false,
                         installPath: null,
                         version: null,
-                        reason: 'TaskMaster CLI not found in PATH'
+                        reason: error && error.code !== 'ENOENT'
+                            ? `Error checking installation: ${error.message}`
+                            : 'TaskMaster CLI not found in PATH'
                     });
-                }
-            });
-
-            child.on('error', (error) => {
-                resolve({
-                    isInstalled: false,
-                    installPath: null,
-                    version: null,
-                    reason: `Error checking installation: ${error.message}`
-                });
-            });
+                },
+                5_000,
+            );
         });
     }
 
@@ -433,18 +486,17 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
             const { projectId } = req.params;
             const { fileName, content } = req.body;
 
-            if (!fileName || !content) {
+            if (typeof fileName !== 'string' || typeof content !== 'string' || !fileName || !content) {
                 return res.status(400).json({
                     error: 'Missing required fields',
                     message: 'fileName and content are required'
                 });
             }
 
-            // Validate filename
-            if (!fileName.match(/^[\w\-. ]+\.(txt|md)$/)) {
+            if (!isValidPrdFileName(fileName)) {
                 return res.status(400).json({
                     error: 'Invalid filename',
-                    message: 'Filename must end with .txt or .md and contain only alphanumeric characters, spaces, dots, and dashes'
+                    message: 'Filename must end with .txt or .md and contain only alphanumeric characters, spaces, single dots, underscores, and dashes'
                 });
             }
 
@@ -457,8 +509,14 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
                 });
             }
 
-            const docsPath = path.join(projectPath, '.taskmaster', 'docs');
-            const filePath = path.join(docsPath, fileName);
+            const safePrd = await resolveSafePrdFilePath(projectPath, fileName);
+            if (!safePrd) {
+                return res.status(400).json({
+                    error: 'Invalid filename',
+                    message: 'PRD file path must resolve to a regular file inside .taskmaster/docs'
+                });
+            }
+            const { docsDir: docsPath, filePath } = safePrd;
 
             // Ensure docs directory exists
             try {
@@ -515,6 +573,13 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
         try {
             const { projectId, fileName } = req.params;
 
+            if (!isValidPrdFileName(fileName)) {
+                return res.status(400).json({
+                    error: 'Invalid filename',
+                    message: 'Filename must end with .txt or .md and contain no path traversal sequences'
+                });
+            }
+
             const projectPath = await resolveProjectPathFromId(projectId);
             if (!projectPath) {
                 return res.status(404).json({
@@ -523,7 +588,14 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
                 });
             }
 
-            const filePath = path.join(projectPath, '.taskmaster', 'docs', fileName);
+            const safePrd = await resolveSafePrdFilePath(projectPath, fileName);
+            if (!safePrd) {
+                return res.status(400).json({
+                    error: 'Invalid filename',
+                    message: 'PRD file path must resolve to a regular file inside .taskmaster/docs'
+                });
+            }
+            const { filePath } = safePrd;
 
             // Check if file exists
             try {
@@ -654,6 +726,20 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
                 });
             }
 
+            if (priority !== undefined && !isSafeOptionValue(String(priority))) {
+                return res.status(400).json({
+                    error: 'Invalid priority',
+                    message: 'Invalid priority value'
+                });
+            }
+
+            if (dependencies !== undefined && !isSafeOptionValue(String(dependencies))) {
+                return res.status(400).json({
+                    error: 'Invalid dependencies',
+                    message: 'Invalid dependencies value'
+                });
+            }
+
             const projectPath = await resolveProjectPathFromId(projectId);
             if (!projectPath) {
                 return res.status(404).json({
@@ -666,18 +752,18 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
             const args = ['task-master-ai', 'add-task'];
 
             if (prompt) {
-                args.push('--prompt', prompt);
+                args.push(`--prompt=${String(prompt)}`);
                 args.push('--research'); // Use research for AI-generated tasks
             } else {
-                args.push('--prompt', `Create a task titled "${title}" with description: ${description}`);
+                args.push(`--prompt=Create a task titled "${title}" with description: ${description}`);
             }
 
             if (priority) {
-                args.push('--priority', priority);
+                args.push(`--priority=${String(priority)}`);
             }
 
             if (dependencies) {
-                args.push('--dependencies', dependencies);
+                args.push(`--dependencies=${String(dependencies)}`);
             }
 
             // Run task-master add-task command
@@ -730,6 +816,27 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
         try {
             const { projectId, taskId } = req.params;
             const { title, description, status, priority, details } = req.body;
+
+            if (!isValidTaskId(taskId)) {
+                return res.status(400).json({
+                    error: 'Invalid taskId',
+                    message: 'Task ID must contain only alphanumeric characters, dots, underscores, or dashes'
+                });
+            }
+
+            if (status !== undefined && !isSafeOptionValue(String(status))) {
+                return res.status(400).json({
+                    error: 'Invalid status',
+                    message: 'Invalid task status value'
+                });
+            }
+
+            if (priority !== undefined && !isSafeOptionValue(String(priority))) {
+                return res.status(400).json({
+                    error: 'Invalid priority',
+                    message: 'Invalid priority value'
+                });
+            }
 
             const projectPath = await resolveProjectPathFromId(projectId);
             if (!projectPath) {
@@ -825,6 +932,25 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
             const { projectId } = req.params;
             const { fileName = 'prd.txt', numTasks, append = false } = req.body;
 
+            if (!isValidPrdFileName(fileName)) {
+                return res.status(400).json({
+                    error: 'Invalid filename',
+                    message: 'Filename must end with .txt or .md and contain no path traversal sequences'
+                });
+            }
+
+            let parsedNumTasks = null;
+            if (numTasks !== undefined && numTasks !== null && numTasks !== '') {
+                const numericTasks = Number(numTasks);
+                if (!Number.isInteger(numericTasks) || numericTasks < 1 || numericTasks > 200) {
+                    return res.status(400).json({
+                        error: 'Invalid numTasks',
+                        message: 'numTasks must be an integer between 1 and 200'
+                    });
+                }
+                parsedNumTasks = numericTasks;
+            }
+
             const projectPath = await resolveProjectPathFromId(projectId);
             if (!projectPath) {
                 return res.status(404).json({
@@ -833,7 +959,14 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
                 });
             }
 
-            const prdPath = path.join(projectPath, '.taskmaster', 'docs', fileName);
+            const safePrd = await resolveSafePrdFilePath(projectPath, fileName);
+            if (!safePrd) {
+                return res.status(400).json({
+                    error: 'Invalid filename',
+                    message: 'PRD file path must resolve to a regular file inside .taskmaster/docs'
+                });
+            }
+            const { filePath: prdPath } = safePrd;
 
             // Check if PRD file exists
             try {
@@ -848,8 +981,8 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
             // Build the command args
             const args = ['task-master-ai', 'parse-prd', prdPath];
 
-            if (numTasks) {
-                args.push('--num-tasks', numTasks.toString());
+            if (parsedNumTasks !== null) {
+                args.push(`--num-tasks=${parsedNumTasks}`);
             }
 
             if (append) {
@@ -1358,11 +1491,26 @@ Description of the business problem, data sources, and expected insights.
                 });
             }
 
+            if (!isValidPrdFileName(fileName)) {
+                return res.status(400).json({
+                    error: 'Invalid filename',
+                    message: 'Filename must end with .txt or .md and contain no path traversal sequences'
+                });
+            }
+
             const projectPath = await resolveProjectPathFromId(projectId);
             if (!projectPath) {
                 return res.status(404).json({
                     error: 'Project not found',
                     message: `Project "${projectId}" does not exist`
+                });
+            }
+
+            const safePrd = await resolveSafePrdFilePath(projectPath, fileName);
+            if (!safePrd) {
+                return res.status(400).json({
+                    error: 'Invalid filename',
+                    message: 'PRD file path must resolve to a regular file inside .taskmaster/docs'
                 });
             }
 
@@ -1381,20 +1529,22 @@ Description of the business problem, data sources, and expected insights.
             let content = template.content;
 
             // Replace placeholders with customizations
-            for (const [key, value] of Object.entries(customizations)) {
-                const placeholder = `[${key}]`;
-                content = content.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'), 'g'), value);
+            if (customizations && typeof customizations === 'object') {
+                for (const [key, value] of Object.entries(customizations)) {
+                    const placeholder = `[${key}]`;
+                    const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const replacementValue = String(value ?? '');
+                    content = content.replace(new RegExp(escapedPlaceholder, 'g'), () => replacementValue);
+                }
             }
 
             // Ensure .taskmaster/docs directory exists
-            const docsDir = path.join(projectPath, '.taskmaster', 'docs');
+            const { docsDir, filePath } = safePrd;
             try {
                 await fsPromises.mkdir(docsDir, { recursive: true });
             } catch (error) {
                 console.error('Failed to create docs directory:', error);
             }
-
-            const filePath = path.join(docsDir, fileName);
 
             // Write the template content to the file
             try {

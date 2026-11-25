@@ -431,6 +431,9 @@ const runtime: IProviderRuntime = {
         cwd: options.cwd || options.projectPath, turn_id: turnId, continue_conversation: false,
         ...(options.useClaudeAgy === true ? { use_claude_agy: true } : {}),
         ...(options.useArmor === true || options.armor === true ? { use_armor: true } : {}),
+        ...(options.useTransam === true || options.transam === true ? { use_transam: true } : {}),
+        ...(options.useAgyFast === true || options.agyFast === true ? { use_agy_fast: true } : {}),
+        ...(options.useThinkLang === true || options.thinkLang === true ? { use_think_lang: true } : {}),
         ...(api ? { api_connection: { base_url: relay?.baseUrl || api.baseUrl!.replace(/\/v1(?:beta)?$/, ''), api_key: relay?.apiKey || api.apiKey,
           proxy_port: relay ? 0 : Number(api.env.MINTCLI_SELECTED_EGRESS_PORT || 0), chat_compat: Boolean(relay) } } : {}),
       };
@@ -615,7 +618,15 @@ export class AntigravityProvider implements IProvider {
   };
   readonly sessionSynchronizer = {
     async synchronize() {
-      const data = await json(await antigravityBridge.request('GET', '/api/conversations'));
+      let data: AnyRecord;
+      try {
+        data = await json(await antigravityBridge.request('GET', '/api/conversations'));
+      } catch (error) {
+        if (error instanceof AppError && error.code === 'ANTIGRAVITY_UNAVAILABLE') {
+          return 0;
+        }
+        throw error;
+      }
       for (const item of data.conversations || []) {
         const existing = sessionsDb.getSessionByProviderSessionId(item.conversation_id);
         const when = typeof item.updated_at === 'number' ? new Date(item.updated_at * 1000).toISOString() : undefined;

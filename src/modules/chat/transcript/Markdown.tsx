@@ -256,6 +256,96 @@ const markdownComponents = {
   ),
 };
 
+const TRANSAM_TAG_HINT = /<(?:ta|tw)_(?:plan|zh|source|time|status|npc_inner|hub|record|choices|speech_src|speech_zh|noise_pad|user_record|resolve)\b|<bbs_start\b/i;
+
+export function formatTransAmMarkdown(input: string): string {
+  if (!input || !TRANSAM_TAG_HINT.test(input)) {
+    return input;
+  }
+  const codeFences: string[] = [];
+  let out = input.replace(/```[\s\S]*?(?:```|$)/g, (match) => {
+    const idx = codeFences.length;
+    codeFences.push(match);
+    return `\x00TA_FENCE_${idx}\x00`;
+  });
+
+  // Strip noise pads, user_record, and resolve markers
+  out = out.replace(/<ta_noise_pad\s*>[^<>]*?<\/ta_noise_pad\s*>/gi, '');
+  out = out.replace(/<(?:ta|tw)_user_record\b[^>]*>[\s\S]*?<\/(?:ta|tw)_user_record\s*>/gi, '');
+  out = out.replace(/<ta_resolve\b[^>]*>[\s\S]*?<\/ta_resolve\s*>[ \t]*(?:\r?\n)?/gi, '');
+
+  // Format <ta_plan> creative brief
+  out = out.replace(
+    /<(?:ta|tw)_plan\s*>([\s\S]*?)<\/(?:ta|tw)_plan\s*>/gi,
+    (_m, body: string) => {
+      const lines = body.trim().split(/\r?\n/).map((l) => `> ${l}`).join('\n');
+      return `\n\n> 🧠 **TRANS-AM 创作简报**\n${lines}\n\n`;
+    },
+  );
+
+  // Format <ta_time> / <bbs_start>
+  out = out.replace(
+    /<(bbs_start|(?:ta|tw)_time)\b[^>]*>\s*([^<>\r\n]+?)\s*<\/\1\s*>/gi,
+    (_m, _tag, timeText: string) => `\n\n> 🕒 **${timeText.trim()}**\n\n`,
+  );
+
+  // Format bilingual dialogue <ta_speech_src>...<ta_speech_zh>...
+  out = out.replace(
+    /<(?:ta|tw)_speech_src\b[^>]*>([\s\S]*?)<\/(?:ta|tw)_speech_(?:src|zh)\s*>\s*<(?:ta|tw)_speech_zh\b[^>]*>([\s\S]*?)<\/(?:ta|tw)_speech_zh\s*>/gi,
+    (_m, src: string, zh: string) => {
+      const s = src.trim();
+      const z = zh.trim();
+      return s === z ? z : `${s}（${z}）`;
+    },
+  );
+  out = out.replace(/<\/?(?:ta|tw)_speech_(?:src|zh)\b[^>]*>/gi, '');
+
+  // Unwrap <ta_zh> and <ta_source>
+  out = out.replace(/<\/?(?:ta|tw)_(?:zh|source)\b[^>]*>/gi, '\n\n');
+
+  // Format <ta_status>
+  out = out.replace(
+    /<(?:ta|tw)_status\b[^>]*>([\s\S]*?)<\/(?:ta|tw)_status\s*>/gi,
+    (_m, statusText: string) => `\n\n> 📡 **TRANS-AM 状态**：${statusText.trim()}\n\n`,
+  );
+
+  // Format <ta_npc_inner>
+  out = out.replace(
+    /<(?:ta|tw)_npc_inner\b[^>]*>([\s\S]*?)<\/(?:ta|tw)_npc_inner\s*>/gi,
+    (_m, innerText: string) => {
+      const lines = innerText.trim().split(/\r?\n/).map((l) => `> ${l}`).join('\n');
+      return `\n\n> 💭 **人物心声**\n${lines}\n\n`;
+    },
+  );
+
+  // Format <ta_hub>
+  out = out.replace(
+    /<(?:ta|tw)_hub\s*>([\s\S]*?)<\/(?:ta|tw)_hub\s*>/gi,
+    (_m, hubJson: string) => `\n\n\`\`\`json\n${hubJson.trim()}\n\`\`\`\n\n`,
+  );
+
+  // Format <ta_record>
+  out = out.replace(
+    /<(?:ta|tw)_record\s*>([\s\S]*?)<\/(?:ta|tw)_record\s*>/gi,
+    (_m, recText: string) => {
+      const lines = recText.trim().split(/\r?\n/).map((l) => `> ${l}`).join('\n');
+      return `\n\n> 📚 **剧情存档**\n${lines}\n\n`;
+    },
+  );
+
+  // Format <ta_choices> 4-way suggestions
+  out = out.replace(
+    /<(?:ta|tw)_choices\s*>\s*<(?:ta|tw)_plot>([\s\S]*?)<\/(?:ta|tw)_plot>\s*<(?:ta|tw)_bond>([\s\S]*?)<\/(?:ta|tw)_bond>\s*<(?:ta|tw)_fun>([\s\S]*?)<\/(?:ta|tw)_fun>\s*<(?:ta|tw)_explore>([\s\S]*?)<\/(?:ta|tw)_explore>\s*<\/(?:ta|tw)_choices\s*>/gi,
+    (_m, plot: string, bond: string, fun: string, explore: string) =>
+      `\n\n> 🎯 **四向行动建议**\n> - 🗡️ **剧情推进**：${plot.trim()}\n> - 💗 **关系羁绊**：${bond.trim()}\n> - 🎭 **趣味互动**：${fun.trim()}\n> - 🧭 **自由探索**：${explore.trim()}\n\n`,
+  );
+
+  if (codeFences.length > 0) {
+    out = out.replace(/\x00TA_FENCE_(\d+)\x00/g, (_m, idx) => codeFences[Number(idx)] ?? '');
+  }
+  return out;
+}
+
 /**
  * Used by chat's MessageComponent, ToolErrorDisplay and MarkdownContent to
  * render model-authored markdown with this module's shared prose styling,
@@ -265,7 +355,7 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
   const content = useMemo(
     // The LaTeX pass runs second because it reads the code spans the fence pass
     // normalizes, and must leave the LaTeX inside them literal.
-    () => normalizeLatexDelimiters(normalizeInlineCodeFences(String(children ?? ''))),
+    () => normalizeLatexDelimiters(normalizeInlineCodeFences(formatTransAmMarkdown(String(children ?? '')))),
     [children],
   );
   // Math support costs a remark tree pass plus a full KaTeX walk on every

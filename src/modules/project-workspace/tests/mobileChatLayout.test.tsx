@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '@/modules/i18n';
-import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessagePopover';
+import { ScheduleMessagePopover } from '@/modules/chat';
 import MobileAccountSheet from '@/modules/project-workspace/MobileAccountSheet';
 import MobileWorkspaceSheet from '@/modules/project-workspace/MobileWorkspaceSheet';
 import WorkspaceHeader from '@/modules/project-workspace/WorkspaceHeader';
@@ -86,6 +86,8 @@ describe('Mobile chat floating header, separate sheets, and popover viewport cla
         onToggleAgyUseClaude={vi.fn()}
         agyArmor={true}
         onToggleAgyArmor={vi.fn()}
+        agyTransam={true}
+        onToggleAgyTransam={vi.fn()}
       />,
     );
 
@@ -107,6 +109,7 @@ describe('Mobile chat floating header, separate sheets, and popover viewport cla
     // Top-right button opens the separate Workspace & Tools sheet and shows both Armor (amber) & Claude->agy (emerald) dots.
     const controlsBtn = screen.getByRole('button', { name: '打开控制菜单' });
     expect(controlsBtn.querySelector('.bg-amber-500')).not.toBeNull();
+    expect(controlsBtn.querySelector('.bg-rose-500')).not.toBeNull();
     expect(controlsBtn.querySelector('.bg-emerald-500')).not.toBeNull();
     fireEvent.click(controlsBtn);
     expect(onOpenMobileControls).toHaveBeenCalledTimes(1);

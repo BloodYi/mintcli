@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import copy
 import json
 from pathlib import Path
@@ -10,61 +11,115 @@ import re
 import time
 import uuid
 
+_QUOTE_RE = re.compile(r'(?: {0,3}>[ \t]?)+')
+_FENCE_RE = re.compile(r'(?: {0,3}>[ \t]?)* {0,3}(`{3,}|~{3,})([^\n]*)(?:\n|$)')
+_INDENTED_RE = re.compile(r'(?: {4}|\t)[^\n]*(?:\n|$)')
+_TICKS_RE = re.compile(r'`+')
+_THINK_TAG_RE = re.compile(r'</?think>', re.I)
+_PLAIN_SPAN_RE = re.compile(r'[^\n\\`<]+')
+
+
+def _write_snapshot_file(path: Path, temporary: Path, payload: list[dict]) -> None:
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    temporary.replace(path)
+
 
 def _extract(raw, streaming=False):
     """Match the browser's think-tag rules, including literal Markdown examples."""
+    if not raw:
+        return {'content': '', 'thinking': ''}
     content, thought, thoughts = [], [], []
     depth, ticks, fence, tagged, index = 0, 0, None, False, 0
+    length = len(raw)
+
     def append(value):
         (thought if depth else content).append(value)
+
     def flush():
         value = ''.join(thought).strip()
         if value and value != '...':
             thoughts.append(value)
         thought.clear()
-    while index < len(raw):
-        tail = raw[index:]
+
+    while index < length:
         if not ticks and (index == 0 or raw[index - 1] == '\n'):
-            quote = re.match(r'^(?: {0,3}>[ \t]?)+', tail)
-            quote_depth = quote[0].count('>') if quote else 0
+            quote = _QUOTE_RE.match(raw, index)
+            quote_depth = quote.group(0).count('>') if quote else 0
             if fence and fence[2] > quote_depth:
                 fence = None
-            marker = re.match(r'^(?: {0,3}>[ \t]?)* {0,3}(`{3,}|~{3,})([^\n]*)(?:\n|$)', tail)
+            marker = _FENCE_RE.match(raw, index)
             if marker:
+                fence_chars = marker.group(1)
                 if not fence:
-                    fence = (marker[1][0], len(marker[1]), quote_depth)
-                elif marker[1][0] == fence[0] and len(marker[1]) >= fence[1] and not marker[2].strip():
+                    fence = (fence_chars[0], len(fence_chars), quote_depth)
+                elif fence_chars[0] == fence[0] and len(fence_chars) >= fence[1] and not marker.group(2).strip():
                     fence = None
-                append(marker[0]); index += len(marker[0]); continue
-            indented = re.match(r'^(?: {4}|\t)[^\n]*(?:\n|$)', tail) if not fence else None
+                append(marker.group(0))
+                index = marker.end()
+                continue
+            indented = _INDENTED_RE.match(raw, index) if not fence else None
             if indented:
-                append(indented[0]); index += len(indented[0]); continue
+                append(indented.group(0))
+                index = indented.end()
+                continue
         if fence:
-            append(raw[index]); index += 1; continue
-        if not ticks and raw[index] == '\\' and index + 1 < len(raw):
-            append(raw[index:index + 2]); index += 2; continue
-        if raw[index] == '`':
-            marker = re.match(r'^`+', tail)[0]
-            append(marker)
-            if not ticks and (streaming or any(len(value) == len(marker) for value in re.findall(r'`+', tail[len(marker):]))):
-                ticks = len(marker)
-            elif ticks == len(marker):
+            newline_pos = raw.find('\n', index)
+            if newline_pos == -1:
+                append(raw[index:])
+                break
+            append(raw[index:newline_pos + 1])
+            index = newline_pos + 1
+            continue
+        ch = raw[index]
+        if not ticks and ch == '\\' and index + 1 < length:
+            append(raw[index:index + 2])
+            index += 2
+            continue
+        if ch == '`':
+            tick_match = _TICKS_RE.match(raw, index)
+            marker_str = tick_match.group(0)
+            marker_len = len(marker_str)
+            append(marker_str)
+            if not ticks and (
+                streaming
+                or any(m.end() - m.start() == marker_len for m in _TICKS_RE.finditer(raw, tick_match.end()))
+            ):
+                ticks = marker_len
+            elif ticks == marker_len:
                 ticks = 0
-            index += len(marker); continue
-        if not ticks and raw[index] == '<':
-            tag = re.match(r'^</?think>', tail, re.I)
-            if tag and (not tag[0].startswith('</') or depth):
+            index = tick_match.end()
+            continue
+        if not ticks and ch == '<':
+            tag = _THINK_TAG_RE.match(raw, index)
+            if tag and (not tag.group(0).startswith('</') or depth):
                 tagged = True
-                if tag[0].startswith('</'):
+                if tag.group(0).startswith('</'):
                     depth -= 1
                     if not depth:
                         flush()
                 else:
                     depth += 1
-                index += len(tag[0]); continue
-            if streaming and any(value.startswith(tail.lower()) for value in ('<think>', '</think>')):
+                index = tag.end()
+                continue
+            if streaming and (length - index) < 8:
+                tail_lower = raw[index:].lower()
+                if '<think>'.startswith(tail_lower) or '</think>'.startswith(tail_lower):
+                    break
+        if ticks:
+            next_tick = raw.find('`', index + 1)
+            if next_tick == -1:
+                append(raw[index:])
                 break
-        append(raw[index]); index += 1
+            append(raw[index:next_tick])
+            index = next_tick
+            continue
+        span = _PLAIN_SPAN_RE.match(raw, index)
+        if span:
+            append(span.group(0))
+            index = span.end()
+            continue
+        append(ch)
+        index += 1
     if depth:
         flush()
     value = ''.join(content)
@@ -91,6 +146,7 @@ class WebTurn:
         self.status, self.sequence, self.history = 'running', 0, deque(maxlen=256)
         self.changed, self.saved_at, self.task, self.updated_at = asyncio.Event(), 0, None, time.time()
         self.stop_requested = False
+        self._pending_save_future = None
 
     def _new_assistant(self, created_at: float | None = None):
         return {
@@ -128,7 +184,7 @@ class WebTurn:
             self.messages.append(next_assistant)
             self._turn_assistants.append(next_assistant)
             self._pending_segments[msg_id] = next_assistant
-            self.save(True)
+            await self.save_async(True)
             return {
                 'id': self.id,
                 'conversation_id': self.cid,
@@ -163,15 +219,40 @@ class WebTurn:
         self.updated_at = time.time()
         self.changed.set()
 
+    def _snapshot_for_disk(self) -> tuple[Path, Path, list[dict]]:
+        path = self.manager.directory / (self.cid + '.json')
+        temporary = path.with_name(path.name + '.' + self.id + '.tmp')
+        payload = copy.deepcopy(self.manager.serializable(self.messages))
+        return path, temporary, payload
+
     def save(self, force=False):
         if not self.cid or (not force and time.monotonic() - self.saved_at < 1):
             return
-        # Synchronous replace serializes with API snapshot writes on this event loop.
-        path = self.manager.directory / (self.cid + '.json')
-        temporary = path.with_name(path.name + '.' + self.id + '.tmp')
-        temporary.write_text(json.dumps(self.manager.serializable(self.messages), ensure_ascii=False, indent=2), encoding='utf-8')
-        temporary.replace(path)
+        path, temporary, payload = self._snapshot_for_disk()
+        self.manager._save_executor.submit(_write_snapshot_file, path, temporary, payload).result()
         self.saved_at = time.monotonic()
+
+    async def save_async(self, force=False):
+        if not self.cid:
+            return
+        now = time.monotonic()
+        if not force:
+            if now - self.saved_at < 1:
+                return
+            if self._pending_save_future is not None and not self._pending_save_future.done():
+                return
+            path, temporary, payload = self._snapshot_for_disk()
+            self.saved_at = now
+            loop = asyncio.get_running_loop()
+            fut = loop.run_in_executor(self.manager._save_executor, _write_snapshot_file, path, temporary, payload)
+            self._pending_save_future = fut
+            return
+        path, temporary, payload = self._snapshot_for_disk()
+        self.saved_at = now
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(self.manager._save_executor, _write_snapshot_file, path, temporary, payload)
+        self._pending_save_future = fut
+        await asyncio.shield(fut)
 
     def _text_for(self, message: dict):
         raw, final = message['rawText'], message['finalResponse']
@@ -456,10 +537,10 @@ class WebTurn:
     async def run(self):
         outcome = 'error'
         try:
-            self.save(True)
+            await self.save_async(True)
             async for event in self.stream:
                 meta = self.absorb(event)
-                self.save(event.get('event') in ('init', 'user_message_applied'))
+                await self.save_async(event.get('event') in ('init', 'user_message_applied'))
                 self.publish({**event, **meta} if meta else event)
             # Later deltas may follow an error; they must not erase its outcome.
             outcome = 'error' if any(asst.get('errorText') for asst in self._turn_assistants) else 'complete'
@@ -497,7 +578,7 @@ class WebTurn:
                     self._turn_assistants.remove(self.assistant)
                     self.assistant = self._turn_assistants[-1]
                 try:
-                    self.save(True)
+                    await self.save_async(True)
                 except Exception:
                     self.manager.logger.exception('Could not save background reply')
                 self.publish(self.snapshot())
@@ -533,6 +614,7 @@ class TurnManager:
         self.turns, self.by_conversation = {}, {}
         self.cancelled_ids = {}
         self.shutting_down = False
+        self._save_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='agy-turn-save')
 
     async def shutdown(self, drain_timeout: float = 22.0) -> None:
         """Allow active turns to finish naturally on service restart; cancel cleanly if timeout expires."""
@@ -542,26 +624,26 @@ class TurnManager:
             for job in list(self.turns.values())
             if job.status == 'running' and job.task is not None and not job.task.done()
         ]
-        if not running_jobs:
-            return
-        self.logger.info(
-            'Gracefully draining %d active turn(s) before shutdown (timeout=%.1fs)...',
-            len(running_jobs),
-            drain_timeout,
-        )
-        _, pending = await asyncio.wait(
-            [job.task for job in running_jobs],
-            timeout=max(0.1, drain_timeout),
-        )
-        if pending:
-            for job in running_jobs:
-                if job.task in pending and not job.stop_requested:
-                    job.stop_requested = True
-                    job.task.cancel()
-            await asyncio.gather(
-                *(job.task for job in running_jobs if job.task in pending),
-                return_exceptions=True,
+        if running_jobs:
+            self.logger.info(
+                'Gracefully draining %d active turn(s) before shutdown (timeout=%.1fs)...',
+                len(running_jobs),
+                drain_timeout,
             )
+            _, pending = await asyncio.wait(
+                [job.task for job in running_jobs],
+                timeout=max(0.1, drain_timeout),
+            )
+            if pending:
+                for job in running_jobs:
+                    if job.task in pending and not job.stop_requested:
+                        job.stop_requested = True
+                        job.task.cancel()
+                await asyncio.gather(
+                    *(job.task for job in running_jobs if job.task in pending),
+                    return_exceptions=True,
+                )
+        await asyncio.get_running_loop().run_in_executor(self._save_executor, lambda: None)
 
     @staticmethod
     def serializable(messages):
@@ -644,7 +726,7 @@ class TurnManager:
                 job.assistant['errorText'] += '\n\n_Stopped: Response cancelled_'
                 job.text()
                 job.finalize_steps()
-                job.save(True)
+                await job.save_async(True)
                 job.publish(job.snapshot())
                 job.publish({'event': 'done', 'status': 'stopped'})
         return job.info()

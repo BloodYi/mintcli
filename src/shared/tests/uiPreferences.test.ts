@@ -40,6 +40,9 @@ test('a fresh install gets the documented defaults', () => {
     voiceEnabled: false,
     agyUseClaude: false,
     agyArmor: false,
+    agyTransam: false,
+    agyFast: false,
+    agyThinkLang: false,
   });
 });
 

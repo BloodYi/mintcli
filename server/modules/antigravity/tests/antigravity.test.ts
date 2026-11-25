@@ -116,3 +116,30 @@ test('allows authenticated live turn message injection endpoint', async () => {
     { ok: true, message_id: 'm2' },
   );
 });
+
+test('allows authenticated agy-fast plugin endpoints and rejects unknown agy-fast paths', async () => {
+  const seen: string[] = [];
+  const bridge = createAntigravityBridge({ credentialsFile: '/not-present', fetch: async (url) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname === '/api/login') {
+      return new Response('{}', { headers: { 'set-cookie': 'agy_session=fixture' } });
+    }
+    seen.push(parsed.pathname);
+    return Response.json({ ok: true });
+  } });
+  for (const [method, endpoint] of [
+    ['GET', '/api/agy-fast/status'],
+    ['POST', '/api/agy-fast/check-update'],
+    ['POST', '/api/agy-fast/update'],
+    ['POST', '/api/agy-fast/config'],
+  ] as const) {
+    assert.equal((await bridge.request(method, endpoint, method === 'POST' ? {} : undefined)).status, 200);
+  }
+  assert.deepEqual(seen, [
+    '/api/agy-fast/status',
+    '/api/agy-fast/check-update',
+    '/api/agy-fast/update',
+    '/api/agy-fast/config',
+  ]);
+  await assert.rejects(bridge.request('POST', '/api/agy-fast/unknown'));
+});

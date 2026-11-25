@@ -65,6 +65,17 @@ export function createAuthService(dependencies: AuthDependencies) {
         );
       }
 
+      if (dependencies.users.hasUsers()) {
+        throw new AppError('User already exists. This is a single-user system.', {
+          code: 'AUTH_USER_ALREADY_CONFIGURED',
+          statusCode: 403,
+        });
+      }
+
+      // Hash outside the SQLite transaction so an async bcrypt yield never holds
+      // an open transaction on the shared singleton connection across requests.
+      const passwordHash = await dependencies.hashPassword(password);
+
       dependencies.transaction.begin();
       try {
         if (dependencies.users.hasUsers()) {
@@ -74,7 +85,6 @@ export function createAuthService(dependencies: AuthDependencies) {
           });
         }
 
-        const passwordHash = await dependencies.hashPassword(password);
         const user = dependencies.users.createUser(username, passwordHash);
         const token = dependencies.generateToken(user);
         dependencies.transaction.commit();

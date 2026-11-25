@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { pipeline } from 'node:stream';
+
 import express from 'express';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
@@ -7,6 +10,38 @@ import type {
   FileTreeUploadedFile,
 } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
+
+const ACTIVE_DOCUMENT_EXTENSIONS = new Set([
+  '.html',
+  '.htm',
+  '.xhtml',
+  '.svg',
+  '.xml',
+  '.mhtml',
+  '.swf',
+]);
+
+const ACTIVE_DOCUMENT_MIME_TYPES = new Set([
+  'text/html',
+  'application/xhtml+xml',
+  'image/svg+xml',
+  'application/xml',
+  'text/xml',
+  'multipart/related',
+  'application/x-shockwave-flash',
+]);
+
+function shouldForceAttachmentDownload(filePath: string, contentType: string): boolean {
+  if (filePath.startsWith('/mnt/data/')) {
+    return true;
+  }
+  const normalizedMime = contentType.split(';')[0]?.trim().toLowerCase() ?? '';
+  if (ACTIVE_DOCUMENT_MIME_TYPES.has(normalizedMime)) {
+    return true;
+  }
+  const extension = path.extname(filePath).toLowerCase();
+  return ACTIVE_DOCUMENT_EXTENSIONS.has(extension);
+}
 
 type FileTreeUploadLimits = {
   maximumFileSizeMegabytes: number;
@@ -133,17 +168,25 @@ export function createFileTreeRouter(
   router.get('/projects/:projectId/files/content', createRouteHandler(async (request, response) => {
     const filePath = readRequiredString(request.query.path, 'path', 'Invalid file path');
     const file = await services.openFile(readProjectId(request), filePath);
-    if (filePath.startsWith('/mnt/data/')) {
-      response.attachment();
-      response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+    if (shouldForceAttachmentDownload(filePath, file.contentType)) {
+      const safeName = path.basename(filePath).replace(/["\r\n]/g, '_') || 'download';
+      response.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
     }
     response.setHeader('Content-Type', file.contentType);
-    file.stream.pipe(response);
-    file.stream.on('error', (error) => {
-      logger.error('Error streaming File Tree content', error);
-      if (!response.headersSent) {
-        response.status(500).json({ error: 'Error reading file' });
-      }
+    await new Promise<void>((resolve) => {
+      pipeline(file.stream, response, (error) => {
+        if (error && (error as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+          logger.error('Error streaming File Tree content', error);
+          if (!response.headersSent) {
+            response.status(500).json({ error: 'Error reading file' });
+          } else if (!response.writableEnded) {
+            response.destroy();
+          }
+        }
+        resolve();
+      });
     });
   }, logger));
 

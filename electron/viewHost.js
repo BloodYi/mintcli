@@ -31,10 +31,13 @@ function buildPlaceholderHtml(title, message, logs = []) {
   ].join('');
 }
 
-function isHttpUrl(url) {
+function isSafeExternalUrl(url) {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return true;
+    }
+    return parsed.protocol === 'cloudcli:' && parsed.hostname === 'auth';
   } catch {
     return false;
   }
@@ -82,7 +85,11 @@ export class ViewHost {
 
   configureChildWebContents(webContents) {
     webContents.setWindowOpenHandler(({ url }) => {
-      void this.openExternalUrl(url).catch((error) => this.showError('Could not open external link', error));
+      if (isSafeExternalUrl(url)) {
+        void this.openExternalUrl(url).catch((error) => this.showError('Could not open external link', error));
+      } else {
+        console.warn('[Security] Blocked unsafe window.open URL protocol:', url);
+      }
       return { action: 'deny' };
     });
 

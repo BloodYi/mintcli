@@ -133,12 +133,27 @@ function getDesktopState() {
 }
 
 async function openExternalUrl(url) {
-  if (String(url).startsWith(CALLBACK_PROTOCOL + "://")) {
-    await handleDeepLink(url);
+  const candidate = String(url || '').trim();
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error('Refusing to open malformed external URL.');
+  }
+
+  if (parsed.protocol === `${CALLBACK_PROTOCOL}:`) {
+    if (parsed.hostname !== 'auth') {
+      throw new Error(`Unsupported ${CALLBACK_PROTOCOL}:// deep link host.`);
+    }
+    await handleDeepLink(candidate);
     return;
   }
 
-  await shell.openExternal(url);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Refusing to open external URL with unsupported protocol: ${parsed.protocol}`);
+  }
+
+  await shell.openExternal(parsed.toString());
 }
 
 async function showError(title, error) {
@@ -424,7 +439,10 @@ async function openEnvironmentInBrowser(environment) {
 }
 
 function getProjectFolder(environment) {
-  return String(environment.name || environment.subdomain || 'workspace').replace(/[^a-zA-Z0-9-]/g, '');
+  const sanitized = String(environment?.name || environment?.subdomain || 'workspace')
+    .replace(/[^a-zA-Z0-9-]/g, '')
+    .replace(/^-+|-+$/g, '');
+  return sanitized || 'workspace';
 }
 
 function getSshTarget(credentials) {

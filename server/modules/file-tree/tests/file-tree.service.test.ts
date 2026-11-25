@@ -62,7 +62,7 @@ function createFakeFileSystem(
     openDirectory: () => ({
       [Symbol.asyncIterator]: () => ({ next: unexpectedOperation }),
     }),
-    realpath: unexpectedOperation,
+    realpath: async (candidatePath) => path.resolve(candidatePath),
     readTextFile: unexpectedOperation,
     writeTextFile: unexpectedOperation,
     makeDirectory: unexpectedOperation,
@@ -570,6 +570,33 @@ test('a file in another folder of the workspace can be read, but never written t
       service.readTextFile('project-1', path.join(workspaceRoot, 'escape', 'secret.txt')),
       (error: unknown) => (error as AppError).code === 'PATH_OUTSIDE_PROJECT',
     );
+
+    // Symlinks planted inside the project itself cannot read or write outside it,
+    // including dangling symlinks whose targets do not yet exist.
+    await fsPromises.symlink(outsideDirectory, path.join(projectRoot, 'project-escape-dir'));
+    await fsPromises.symlink(
+      path.join(outsideDirectory, 'nonexistent.txt'),
+      path.join(projectRoot, 'dangling-escape.txt'),
+    );
+    await assert.rejects(
+      service.readTextFile('project-1', 'project-escape-dir/secret.txt'),
+      (error: unknown) => (error as AppError).code === 'PATH_OUTSIDE_PROJECT',
+    );
+    await assert.rejects(
+      service.saveTextFile('project-1', 'project-escape-dir/new.txt', 'blocked'),
+      (error: unknown) => (error as AppError).code === 'PATH_OUTSIDE_PROJECT',
+    );
+    await assert.rejects(
+      service.saveTextFile('project-1', 'dangling-escape.txt', 'blocked'),
+      (error: unknown) => (error as AppError).code === 'PATH_OUTSIDE_PROJECT',
+    );
+    await assert.rejects(
+      service.deleteEntry({ projectId: 'project-1', targetPath: 'project-escape-dir/secret.txt' }),
+      (error: unknown) => (error as AppError).code === 'PATH_OUTSIDE_PROJECT',
+    );
+    // Deleting the symlink entry itself unlinks the symlink without deleting the external directory.
+    await service.deleteEntry({ projectId: 'project-1', targetPath: 'project-escape-dir' });
+    assert.equal(await fsPromises.readFile(path.join(outsideDirectory, 'secret.txt'), 'utf8'), 'secret');
   } finally {
     await fsPromises.rm(workspaceRoot, { recursive: true, force: true });
     await fsPromises.rm(outsideDirectory, { recursive: true, force: true });
