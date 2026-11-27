@@ -1686,6 +1686,8 @@ export type ReplyModelEvidence = {
   reportedModel: string | null;
   durationMs?: number | null;
   tokensPerSec?: number | null;
+  transport?: string | null;
+  plugins?: string[];
 };
 
 /** One timed/attributed usage entry from a session transcript or native AGY snapshot. */
@@ -1743,5 +1745,58 @@ export type MonitorGlobalSummary = {
   timedOutputTokens: number;
   timedDurationMs: number;
   speed: number | null;
+};
+
+/** One privacy-safe thinking-translation telemetry record (never stores reasoning text, prompts, or credentials). */
+export type MonitorThinkTranslateEvent = {
+  timestamp: string;
+  platform: 'agy' | 'codex';
+  accountLabel: string;
+  requestedModel: string | null;
+  reportedModel: string | null;
+  tokens: MonitorTokens | null;
+  durationMs: number | null;
+  tokensPerSec: number | null;
+  cached: boolean;
+  fallbackUsed: boolean;
+  fallbackReason: string | null;
+  status: 'ok' | 'error';
+  errorMessage: string | null;
+};
+
+/** Per-model token and throughput summary for thinking-translation invocations. */
+export type MonitorThinkTranslateModelRow = {
+  model: string;
+  platform: 'agy' | 'codex' | 'mixed';
+  callCount: number;
+  tokens: MonitorTokens;
+  timedOutputTokens: number;
+  timedDurationMs: number;
+  speed: number | null;
+};
+
+/** Active quota or auth cooldown entry reported for a translation account or model. */
+export type MonitorThinkTranslateCooldown = {
+  accountId: string;
+  model: string;
+  reason: string;
+  remainingSeconds: number;
+};
+
+/** Aggregate thinking-translation usage, failover health, and recent call telemetry exposed to Token Monitor. */
+export type MonitorThinkTranslateSummary = {
+  configuredAccountId: string;
+  configuredModel: string;
+  totalCalls: number;
+  cachedCalls: number;
+  fallbackCalls: number;
+  failedCalls: number;
+  tokens: MonitorTokens;
+  timedOutputTokens: number;
+  timedDurationMs: number;
+  speed: number | null;
+  models: MonitorThinkTranslateModelRow[];
+  cooldowns: MonitorThinkTranslateCooldown[];
+  recent: MonitorThinkTranslateEvent[];
 };
 // ---------------------------

@@ -6,13 +6,30 @@ export type ThinkTranslateAccount = AntigravityAccount & {
   platform?: 'agy' | 'codex';
   label?: string;
   raw_id?: string;
+  subscription_tier?: string;
 };
 
+export type ThinkTranslateResultMeta = {
+  accountId?: string;
+  model?: string;
+  reportedModel?: string | null;
+  fallbackUsed?: boolean;
+  fallbackReason?: string | null;
+};
+
+/** Used by WorkspaceHeader, MobileWorkspaceSheet, and AntigravityWorkspace to render readable translation account options. */
 export function formatThinkTranslateAccountLabel(acc: ThinkTranslateAccount): string {
-  if (acc.label && acc.label.trim()) return acc.label.trim();
+  const tier = typeof acc.subscription_tier === 'string' && acc.subscription_tier.trim()
+    ? acc.subscription_tier.trim()
+    : '';
+  if (acc.label && acc.label.trim()) {
+    const base = acc.label.trim();
+    if (tier && !base.includes(`(${tier})`)) return `${base} (${tier})`;
+    return base;
+  }
   const platform = acc.platform || (acc.id.startsWith('codex:') ? 'codex' : 'agy');
   const identifier = acc.email || acc.name || acc.raw_id || acc.id.replace(/^(?:agy|codex):/, '');
-  return `${platform}:${identifier}`;
+  return tier ? `${platform}:${identifier} (${tier})` : `${platform}:${identifier}`;
 }
 
 export type ThinkTranslateConfig = {
@@ -34,6 +51,7 @@ type ConfigChangedPayload = {
 
 const CONFIG_CHANGED_EVENT = 'mintcli:think-translate-config-changed';
 const translationCache = new Map<string, string>();
+const translationMetaCache = new Map<string, ThinkTranslateResultMeta>();
 const inFlightTranslations = new Map<string, Promise<string>>();
 const MAX_CLIENT_CACHE = 200;
 
@@ -50,12 +68,21 @@ function cacheKeyFor(text: string): string {
 
 export function clearClientTranslationCache(): void {
   translationCache.clear();
+  translationMetaCache.clear();
 }
 
+/** Used by ThinkingTranslateBlock to read already-cached translations synchronously on mount. */
 export function getCachedThinkingTranslation(text: string): string | null {
   const cleaned = text.trim();
   if (!cleaned) return null;
   return translationCache.get(cacheKeyFor(cleaned)) ?? null;
+}
+
+/** Used by ThinkingTranslateBlock to display automatic quota-failover provenance on translated blocks. */
+export function getCachedThinkingTranslationMeta(text: string): ThinkTranslateResultMeta | null {
+  const cleaned = text.trim();
+  if (!cleaned) return null;
+  return translationMetaCache.get(cacheKeyFor(cleaned)) ?? null;
 }
 
 /**
@@ -85,15 +112,35 @@ export async function translateThinkingText(text: string): Promise<string> {
 
   const promise = (async () => {
     const res = await api.antigravity.translateThinking({ text: cleaned });
-    const data = await readApiJson<{ ok?: boolean; translated?: string; detail?: string; error?: string }>(res);
+    const data = await readApiJson<{
+      ok?: boolean;
+      translated?: string;
+      account_id?: string;
+      model?: string;
+      reported_model?: string | null;
+      fallback_used?: boolean;
+      fallback_reason?: string | null;
+      detail?: string;
+      error?: string;
+    }>(res);
     if (!res.ok || !data?.translated) {
       throw new Error(data?.detail || data?.error || '思考翻译失败，请检查所选账号和模型');
     }
     if (translationCache.size >= MAX_CLIENT_CACHE) {
       const oldestKey = translationCache.keys().next().value;
-      if (oldestKey !== undefined) translationCache.delete(oldestKey);
+      if (oldestKey !== undefined) {
+        translationCache.delete(oldestKey);
+        translationMetaCache.delete(oldestKey);
+      }
     }
     translationCache.set(key, data.translated);
+    translationMetaCache.set(key, {
+      accountId: data.account_id,
+      model: data.model,
+      reportedModel: data.reported_model ?? null,
+      fallbackUsed: Boolean(data.fallback_used),
+      fallbackReason: data.fallback_reason ?? null,
+    });
     return data.translated;
   })();
 

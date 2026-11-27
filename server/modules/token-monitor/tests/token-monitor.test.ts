@@ -107,18 +107,28 @@ test('indexed Codex history resolves titles from the owning home and provider th
   ].map(row => JSON.stringify(row)).join('\n'));
   const sessions = [
     { session_id: 'app-active', provider_session_id: 'native-active', jsonl_path: path.join(active, 'active.jsonl') },
-    { session_id: 'app-archived', provider_session_id: 'native-archived', jsonl_path: path.join(archive, 'old.jsonl'), isArchived: 1, custom_name: 'Untitled Codex Session' },
-    { session_id: 'app-named', provider_session_id: 'native-active', jsonl_path: path.join(active, 'named.jsonl'), custom_name: 'User title' },
-    { session_id: 'app-missing', provider_session_id: 'native-missing', jsonl_path: path.join(active, 'missing.jsonl') },
+    { session_id: 'app-archived', provider_session_id: 'native-archived', jsonl_path: path.join(archive, 'old.jsonl'), project_path: '/projects/archive', isArchived: 1, custom_name: 'Untitled Codex Session' },
+    { session_id: 'app-named', provider_session_id: 'native-active', jsonl_path: path.join(active, 'named.jsonl'), project_path: '/projects/named', custom_name: 'User title' },
+    { session_id: 'app-missing', provider_session_id: 'native-missing', jsonl_path: path.join(active, 'missing.jsonl'), project_path: '/projects/Project fallback/' },
     { session_id: 'app-other', provider_session_id: 'native-active', jsonl_path: path.join(otherHome, 'sessions', 'other.jsonl') },
   ].map(row => ({ ...row, provider: 'codex' }));
   await Promise.all(sessions.map(row => writeFile(row.jsonl_path, '{}\n')));
   const service = createTokenMonitorService({ getSession: () => null, listSessions: () => sessions });
 
   const result = await service.sessions();
-  assert.deepEqual(result.sessions.map(row => row.title), ['Task title', 'Archived task', 'User title', 'app-missing', 'app-other']);
+  assert.deepEqual(result.sessions.map(row => row.title), ['Task title', 'Archived task', 'User title', 'Project fallback', 'app-other']);
   assert.equal(result.sessions[1].archived, true);
   assert.equal(result.sessions[1].sessionId, 'app-archived');
+});
+
+test('history identifies untitled rows by their project and preserves the fallback for a root path', async () => {
+  const sessions = [
+    { session_id: 'claude', provider: 'claude', custom_name: 'Untitled Claude Session', project_path: String.raw`C:\work\Project` },
+    { session_id: 'untitled', provider: 'codex', custom_name: 'Untitled Codex Session', project_path: '/' },
+  ];
+  const service = createTokenMonitorService({ getSession: () => null, listSessions: () => sessions });
+  const result = await service.sessions();
+  assert.deepEqual(result.sessions.map(row => row.title), ['Project', 'Untitled Codex Session']);
 });
 
 test('full history totals survive a transcript tail containing no usage, with Claude response deduplication', async () => {

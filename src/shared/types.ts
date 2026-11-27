@@ -1988,6 +1988,8 @@ export type ReplyModelEvidence = {
   reportedModel: string | null;
   durationMs?: number | null;
   tokensPerSec?: number | null;
+  transport?: string | null;
+  plugins?: string[];
 };
 
 /** Session-scoped model metadata shared by the monitor provider and reply annotations. */
@@ -2057,11 +2059,65 @@ export type MonitorHistorySession = {
   modelUsage?: MonitorSessionModelUsage[];
 };
 
+/** Single privacy-safe thinking-translation invocation entry displayed in Token Monitor. */
+export type MonitorThinkTranslateEvent = {
+  timestamp: string;
+  platform: 'agy' | 'codex';
+  accountLabel: string;
+  requestedModel: string | null;
+  reportedModel: string | null;
+  tokens: MonitorTokens | null;
+  durationMs: number | null;
+  tokensPerSec: number | null;
+  cached: boolean;
+  fallbackUsed: boolean;
+  fallbackReason: string | null;
+  status: 'ok' | 'error';
+  errorMessage: string | null;
+};
+
+/** Per-model aggregate token and tok/s summary for thinking-translation calls. */
+export type MonitorThinkTranslateModelRow = {
+  model: string;
+  platform: 'agy' | 'codex' | 'mixed';
+  callCount: number;
+  tokens: MonitorTokens;
+  timedOutputTokens: number;
+  timedDurationMs: number;
+  speed: number | null;
+};
+
+/** Active quota/auth cooldown reported for a translation account or model. */
+export type MonitorThinkTranslateCooldown = {
+  accountId: string;
+  model: string;
+  reason: string;
+  remainingSeconds: number;
+};
+
+/** Aggregate thinking-translation telemetry attached to `/api/token-monitor/sessions`. */
+export type MonitorThinkTranslateSummary = {
+  configuredAccountId: string;
+  configuredModel: string;
+  totalCalls: number;
+  cachedCalls: number;
+  fallbackCalls: number;
+  failedCalls: number;
+  tokens: MonitorTokens;
+  timedOutputTokens: number;
+  timedDurationMs: number;
+  speed: number | null;
+  models: MonitorThinkTranslateModelRow[];
+  cooldowns: MonitorThinkTranslateCooldown[];
+  recent: MonitorThinkTranslateEvent[];
+};
+
 /** Full response payload of `/api/token-monitor/sessions`, shared by history and model overview. */
 export type MonitorSessionsPayload = {
   sessions: MonitorHistorySession[];
   models?: MonitorGlobalModelUsage[];
   summary?: MonitorGlobalSummary;
+  thinkTranslate?: MonitorThinkTranslateSummary;
   checkedAt?: number;
 };
 // ---------------------------

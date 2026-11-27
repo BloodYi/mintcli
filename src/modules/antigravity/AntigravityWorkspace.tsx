@@ -7,6 +7,7 @@ import { useAntigravity } from '@/modules/antigravity/hooks/useAntigravity';
 import { useAgyFastStatus } from '@/modules/antigravity/hooks/useAgyFastStatus';
 import { formatThinkTranslateAccountLabel, useThinkTranslateConfig } from '@/modules/antigravity/hooks/useThinkTranslate';
 import { MarkdownImage, MarkdownVideo, ThinkingTranslateBlock, formatTransAmMarkdown, isImagePath, isVideoPath } from '@/modules/chat';
+import { MonitorButton, TokenMonitorProvider } from '@/modules/token-monitor';
 import { QuotaWindow } from '@/shared/ui/QuotaWindow';
 import { readStoredUiPreferences } from '@/shared/uiPreferences';
 import { subscribeToUserPreferences, writeUserPreference } from '@/shared/userSettings';
@@ -97,7 +98,7 @@ export function AntigravityWorkspace() {
   });
   const closeManager = () => { setManager(false); setAuthorization(''); };
 
-  return <section aria-label="Antigravity 工作台" className="fixed inset-x-0 bottom-0 top-12 flex min-w-0 bg-background text-foreground">
+  return <TokenMonitorProvider sessionId={agent.conversationId} model={model || undefined}><section aria-label="Antigravity 工作台" className="fixed inset-x-0 bottom-0 top-12 flex min-w-0 bg-background text-foreground">
     <aside aria-label="Antigravity 历史聊天" className={(historyOpen ? 'absolute inset-y-0 left-0 z-20 flex shadow-xl ' : 'hidden ') + 'w-72 max-w-[85vw] shrink-0 flex-col border-r border-border bg-background md:static md:flex md:shadow-none'}>
       <div className="flex items-center gap-2 border-b border-border p-3">
         <button type="button" className={CONTROL + ' flex-1'} disabled={agent.busy || agent.loading} onClick={() => { agent.newConversation(); setHistoryOpen(false); }}>＋ 新建 agy 聊天</button>
@@ -261,7 +262,10 @@ export function AntigravityWorkspace() {
             remainingPercent={item.percentage} resetsAt={item.resets_at ? Date.parse(item.resets_at) / 1000 : null} /></div>)}
         </div>}
         {!visibleQuota?.quotas.length && <span className="text-muted-foreground">{agent.quotaLoading ? '正在读取原生 agy 额度…' : '尚未取得额度，请刷新或检查账号登录。'}</span>}
-        <button type="button" className="ml-auto min-h-9 shrink-0 rounded border border-border px-2 disabled:opacity-50" disabled={agent.quotaLoading || pending || agent.busy} onClick={() => void agent.refreshQuota(true)}>刷新额度</button>
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <button type="button" className="min-h-9 shrink-0 rounded border border-border px-2 disabled:opacity-50" disabled={agent.quotaLoading || pending || agent.busy} onClick={() => void agent.refreshQuota(true)}>刷新额度</button>
+          <MonitorButton />
+        </div>
       </div>
       {agent.notice && <div role="status" className="shrink-0 border-b border-border bg-muted px-4 py-3 text-sm">{agent.notice}</div>}
       <div role="log" aria-label="agy 聊天消息" className="min-h-0 flex-1 overflow-y-auto p-4">
@@ -367,5 +371,5 @@ export function AntigravityWorkspace() {
         <p className="text-xs text-muted-foreground">整合层不增加账号数量上限；账号切换由你手动选择。正在回复时请先等待结束或停止生成。</p>
       </form>
     </dialog>
-  </section>;
+  </section></TokenMonitorProvider>;
 }

@@ -41,7 +41,7 @@ from agy_metadata import (
 )
 from acp_client import probe_agy_acp_info, stream_agy_acp
 from agy_client_profile import DesktopProfileProxy
-from claude_agy import stream_claude_agy
+from claude_agy import resolve_active_claude_output_style, stream_claude_agy
 from process_lifecycle import reap_cli_process
 from project_updates import ProjectUpdater
 from update_common import UpdateError
@@ -77,6 +77,10 @@ from agy_fast_engine import (
     update_agy_fast_plugin,
 )
 from think_translate_engine import (
+    TranslateCallError,
+    clear_translate_cooldowns,
+    get_translate_cooldown_reason,
+    list_active_translate_cooldowns,
     load_think_translate_config,
     save_think_translate_config,
     translate_thinking_text,
@@ -1405,14 +1409,93 @@ def _pick_cached_fast_translate_model(account_id: str) -> str:
     return ""
 
 
+def _translate_account_tier_rank(tier: str | None) -> int:
+    t = (tier or "").strip().lower()
+    if "ultra" in t:
+        return 0
+    if "paid" in t:
+        return 1
+    if "free" in t:
+        return 2
+    if "starter" in t:
+        return 4
+    return 3
+
+
+def _build_agy_translate_candidates(
+    selected_account: str,
+    selected_model: str,
+    stored_accounts: list[dict[str, Any]],
+) -> list[tuple[str, str, bool]]:
+    """Build ordered (account_id, model, is_fallback) candidates for resilient thinking translation."""
+    clean_model = (selected_model or "").strip()
+    if clean_model == "default":
+        clean_model = ""
+    if clean_model and _is_orchestrator_model(clean_model, None):
+        clean_model = ""
+
+    active_id = next((str(a.get("id") or "").strip() for a in stored_accounts if a.get("active")), "")
+    primary_acc = selected_account or active_id
+    primary_exists = (not primary_acc) or (_resolve_account_file(primary_acc) is not None)
+
+    raw_candidates: list[tuple[str, str, bool]] = []
+    if primary_exists:
+        primary_effective = clean_model or _pick_cached_fast_translate_model(primary_acc)
+        raw_candidates.append((primary_acc, primary_effective, False))
+        primary_fast = _pick_cached_fast_translate_model(primary_acc) or "gemini-3.8-flash-low"
+        if primary_effective != primary_fast:
+            raw_candidates.append((primary_acc, primary_fast, True))
+
+    backups = [
+        acc
+        for acc in stored_accounts
+        if str(acc.get("id") or "").strip() and str(acc.get("id") or "").strip() != primary_acc
+    ]
+    backups.sort(
+        key=lambda acc: (
+            0 if acc.get("active") else 1,
+            _translate_account_tier_rank(acc.get("subscription_tier")),
+        )
+    )
+
+    for acc in backups[:4]:
+        b_id = str(acc.get("id") or "").strip()
+        if not b_id or _resolve_account_file(b_id) is None:
+            continue
+        b_fast = _pick_cached_fast_translate_model(b_id) or "gemini-3.8-flash-low"
+        if clean_model and clean_model != b_fast:
+            cached_entry = _account_models_cache.get(b_id)
+            cached_ids = {
+                str(m.get("id") or "").strip()
+                for m in (cached_entry[1] if cached_entry and cached_entry[1] else [])
+                if isinstance(m, dict)
+            }
+            tier_rank = _translate_account_tier_rank(acc.get("subscription_tier"))
+            if (cached_ids and clean_model in cached_ids) or (not cached_ids and tier_rank <= 1):
+                raw_candidates.append((b_id, clean_model, True))
+        raw_candidates.append((b_id, b_fast, True))
+
+    deduped: list[tuple[str, str, bool]] = []
+    seen: set[tuple[str, str]] = set()
+    for acc_id, mod_id, is_fb in raw_candidates:
+        key = (acc_id, mod_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((acc_id, mod_id, is_fb))
+    return deduped
+
+
 @app.get("/api/think-translate/config")
 async def api_think_translate_config(account_id: str | None = None, lite: bool = False) -> dict:
     cfg = load_think_translate_config(_think_translate_config_path())
+    cooldowns = list_active_translate_cooldowns()
     if lite:
         return {
             **cfg,
             "accounts": [],
             "models": [],
+            "cooldowns": cooldowns,
         }
     raw_accounts = _list_stored_accounts()
     accounts = [
@@ -1432,6 +1515,7 @@ async def api_think_translate_config(account_id: str | None = None, lite: bool =
         **cfg,
         "accounts": accounts,
         "models": model_list,
+        "cooldowns": cooldowns,
     }
 
 
@@ -1447,6 +1531,7 @@ async def api_think_translate_save_config(req: ThinkTranslateConfigRequest) -> d
         model=req.model,
         target_lang=req.target_lang,
     )
+    clear_translate_cooldowns(clean_acc)
     return {"ok": True, **cfg}
 
 
@@ -1459,30 +1544,92 @@ async def api_think_translate(req: ThinkTranslateRequest) -> dict:
     selected_model = (req.model if req.model is not None else cfg.get("model") or "").strip()
     target_lang = (req.target_lang if req.target_lang is not None else cfg.get("target_lang") or "zh-CN").strip() or "zh-CN"
 
-    if selected_account and _resolve_account_file(selected_account) is None:
+    stored_accounts = _list_stored_accounts()
+    acc_email_map = {
+        str(a.get("id") or "").strip(): str(a.get("email") or a.get("name") or a.get("id") or "").strip()
+        for a in stored_accounts
+    }
+
+    if selected_account and _resolve_account_file(selected_account) is None and not stored_accounts:
         raise HTTPException(status_code=404, detail="配置的翻译账号不存在，请重新选择翻译账号。")
 
-    effective_model = selected_model
-    if not effective_model or effective_model == "default":
-        effective_model = _pick_cached_fast_translate_model(selected_account)
+    candidates = _build_agy_translate_candidates(selected_account, selected_model, stored_accounts)
+    if not candidates:
+        candidates = [("", selected_model if selected_model != "default" else "", False)]
 
-    run_env = _agy_environment(account_id=selected_account) if selected_account else _agy_environment()
-    try:
-        result = await translate_thinking_text(
-            text=req.text,
-            target_lang=target_lang,
-            account_id=selected_account,
-            model=effective_model,
-            agy_bin=AGY_BIN,
-            run_env=run_env,
-            scratch_dir=SCRATCH,
-        )
-        return result
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
-    finally:
-        if selected_account:
-            _sync_account_home_token_to_storage(selected_account)
+    first_failure_reason: str | None = None
+    last_error_message: str | None = None
+    failed_accounts_wide: set[str] = set()
+    exec_attempts = 0
+    max_exec_attempts = 3
+
+    if selected_account and _resolve_account_file(selected_account) is None:
+        first_failure_reason = f"原配置账号 {selected_account} 已不存在"
+
+    for cand_acc, cand_model, is_fallback in candidates:
+        if cand_acc and cand_acc in failed_accounts_wide:
+            continue
+        cooldown_msg = get_translate_cooldown_reason(cand_acc, cand_model) if cand_acc else None
+        if cooldown_msg:
+            if first_failure_reason is None:
+                first_failure_reason = cooldown_msg
+            last_error_message = cooldown_msg
+            continue
+        if exec_attempts >= max_exec_attempts:
+            break
+
+        exec_attempts += 1
+        try:
+            run_env = _agy_environment(account_id=cand_acc) if cand_acc else _agy_environment()
+        except Exception as exc:
+            msg = f"准备翻译账号环境失败：{exc}"
+            if first_failure_reason is None:
+                first_failure_reason = msg
+            last_error_message = msg
+            if cand_acc:
+                failed_accounts_wide.add(cand_acc)
+            continue
+
+        try:
+            result = await translate_thinking_text(
+                text=req.text,
+                target_lang=target_lang,
+                account_id=cand_acc,
+                model=cand_model,
+                agy_bin=AGY_BIN,
+                run_env=run_env,
+                scratch_dir=SCRATCH,
+            )
+            used_fallback = bool(is_fallback or first_failure_reason)
+            return {
+                **result,
+                "account_id": cand_acc,
+                "account_email": acc_email_map.get(cand_acc, cand_acc),
+                "requested_account_id": selected_account,
+                "requested_model": selected_model,
+                "fallback_used": used_fallback,
+                "fallback_reason": first_failure_reason if used_fallback else None,
+            }
+        except TranslateCallError as exc:
+            msg = str(exc)
+            if first_failure_reason is None:
+                first_failure_reason = msg
+            last_error_message = msg
+            if exc.account_wide and cand_acc:
+                failed_accounts_wide.add(cand_acc)
+            elif exc.category not in {"quota_exhausted", "auth_error", "model_unavailable", "timeout", "empty_output"}:
+                break
+        except RuntimeError as exc:
+            msg = str(exc)
+            if first_failure_reason is None:
+                first_failure_reason = msg
+            last_error_message = msg
+        finally:
+            if cand_acc:
+                _sync_account_home_token_to_storage(cand_acc)
+
+    detail_msg = last_error_message or first_failure_reason or "思考翻译失败，请检查可用账号额度与模型状态。"
+    raise HTTPException(status_code=502, detail=detail_msg) from None
 
 
 def _resolve_agy_fast_turn() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -1567,6 +1714,7 @@ async def inspect_selected_route(req: InspectRouteRequest) -> dict:
             model = requested_model if requested_model and requested_model != "default" else await _default_claude_agy_model()
             run_env = _agy_environment()
             agy_home = run_env.get("HOME") or HOME
+            active_output_style = resolve_active_claude_output_style(run_env, folder)
             if _is_orchestrator_model(model, None):
                 async for event in stream_agy_acp(
                     agy_bin=AGY_BIN,
@@ -1576,10 +1724,15 @@ async def inspect_selected_route(req: InspectRouteRequest) -> dict:
                     run_env=run_env,
                     scratch_dir=SCRATCH,
                     persist_conversation=False,
-                    route_info_factory=lambda rid, m: {**_new_route_info(rid, m), "transport": "acp", "prompt_mode": "claude_code_enhanced"},
+                    route_info_factory=lambda rid, m: {
+                        **_new_route_info(rid, m),
+                        "transport": "acp",
+                        "prompt_mode": "claude_code_enhanced",
+                        **({"output_style": active_output_style["name"]} if active_output_style else {}),
+                    },
                     route_enricher=lambda r, trace: _apply_claude_agy_trace(r, agy_home, trace),
                     system_append=_compose_system_append(
-                        None,
+                        _claude_agy_orchestrator_system_append(None, output_style=active_output_style),
                         use_armor=req.use_armor,
                         use_transam=False,
                         agent_tools=True,
@@ -1595,6 +1748,8 @@ async def inspect_selected_route(req: InspectRouteRequest) -> dict:
                 return
             info["transport"] = "claude_agy"
             info["cli_config_model"] = model
+            if active_output_style:
+                info["output_style"] = active_output_style["name"]
             if req.use_armor:
                 info["armor"] = {"enabled": True, "status": "armed", "retries": 0}
             _StampProbeFlags(info, model)
@@ -4169,8 +4324,15 @@ def _claude_agy_system_append(system: str | None) -> str:
     return "\n\n".join(parts)
 
 
-def _claude_agy_orchestrator_system_append(system: str | None) -> str:
-    parts: list[str] = [CLAUDE_CODE_ORCHESTRATOR_PROMPT]
+def _claude_agy_orchestrator_system_append(
+    system: str | None,
+    output_style: dict[str, Any] | None = None,
+) -> str:
+    parts: list[str] = []
+    if not output_style or output_style.get("keep_coding_instructions", False):
+        parts.append(CLAUDE_CODE_ORCHESTRATOR_PROMPT)
+    if output_style and output_style.get("body"):
+        parts.append(str(output_style["body"]).strip())
     base = _claude_agy_system_append(system)
     if base:
         parts.append(base)
@@ -4401,10 +4563,14 @@ async def chat(req: ChatRequest):
                             )
                     lease = updater.acquire_turn() if updater else None
 
+                    active_output_style = resolve_active_claude_output_style(run_env, target_cwd)
+
                     def _orchestrator_route_factory(request_id: str | None, requested: str | None) -> dict:
                         info = _new_route_info(request_id, requested)
                         info["transport"] = "acp"
                         info["prompt_mode"] = "claude_code_enhanced"
+                        if active_output_style:
+                            info["output_style"] = active_output_style["name"]
                         if transam_meta:
                             info["transam"] = dict(transam_meta)
                         return info
@@ -4415,7 +4581,7 @@ async def chat(req: ChatRequest):
                         or has_agy_fast_session_snapshot(cid, target_cwd)
                     )
                     orch_system_append = await _compose_system_append_async(
-                        _claude_agy_orchestrator_system_append(req.system),
+                        _claude_agy_orchestrator_system_append(req.system, output_style=active_output_style),
                         use_armor=req.use_armor,
                         use_transam=req.use_transam,
                         use_agy_fast=bool(agy_fast_meta),
@@ -4475,10 +4641,13 @@ async def chat(req: ChatRequest):
                             lease.close()
                     return
 
+                active_output_style = resolve_active_claude_output_style(run_env, target_cwd)
                 stable_id = cid or "mintcli-claude-" + uuid.uuid4().hex
                 route = _new_route_info(uuid.uuid4().hex, model)
                 route["transport"] = "claude_agy"
                 route["cli_config_model"] = model
+                if active_output_style:
+                    route["output_style"] = active_output_style["name"]
                 if req.use_armor:
                     route["armor"] = {"enabled": True, "status": "armed", "retries": 0}
                 if agy_fast_meta:

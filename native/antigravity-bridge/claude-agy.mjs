@@ -750,7 +750,7 @@ async function run() {
         ...(sandboxDisallowedTools.length > 0 ? { disallowedTools: sandboxDisallowedTools } : {}),
         ...(sandboxCanUseTool ? { canUseTool: sandboxCanUseTool } : {}),
         ...(hasAgyFastMcp ? { mcpServers: input.agyFastMcpServers } : {}),
-        settingSources: [], includePartialMessages: true, persistSession: false,
+        settingSources: ['user'], includePartialMessages: true, persistSession: false,
         extraArgs: { 'replay-user-messages': null },
         ...(input.sandbox ? { sandbox: {
           enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,

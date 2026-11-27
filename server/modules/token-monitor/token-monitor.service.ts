@@ -12,8 +12,10 @@ import { createRequire } from 'node:module';
 import { sessionsDb } from '@/modules/database/index.js';
 import { AppError, buildLookupMap, findApplicationRoot, getModuleDirectory, normalizeSessionName } from '@/shared/index.js';
 
+import { getThinkTranslateMonitorSummary } from '@/modules/antigravity/index.js';
 import type {
   AnyRecord as Row,
+  MonitorThinkTranslateSummary,
   MonitorTimedUsageEvent,
   MonitorTokens as Tokens,
 } from '@/shared/index.js';
@@ -41,20 +43,28 @@ function codexTitleIndexPath(transcript: string): string | null {
 }
 
 async function historyTitle(session: Row, titleIndexes: Map<string, Promise<Map<string, string>>>): Promise<string> {
-  const title = session.custom_name || session.session_id;
-  if (session.provider !== 'codex' || !session.provider_session_id || !session.jsonl_path ||
-      (session.custom_name && session.custom_name !== 'Untitled Codex Session')) return title;
+  const existingTitle = session.custom_name || session.session_id;
+  const isPlaceholder = (session.provider === 'codex' && session.custom_name === 'Untitled Codex Session')
+    || (session.provider === 'claude' && session.custom_name === 'Untitled Claude Session')
+    || (session.provider === 'antigravity' && (session.custom_name === 'Conversation' || session.custom_name === 'Untitled Antigravity Session'));
+  if (session.custom_name && !isPlaceholder) return existingTitle;
+
+  // Use the indexed project directory for otherwise untitled rows. Accept persisted Windows paths too.
+  const projectPath = typeof session.project_path === 'string' ? session.project_path : '';
+  const projectName = /^[A-Za-z]:[\\/]|^\\\\/.test(projectPath) ? path.win32.basename(projectPath) : path.basename(projectPath);
+  const fallback = normalizeSessionName(projectName, existingTitle);
+  if (session.provider !== 'codex' || !session.provider_session_id || !session.jsonl_path) return fallback;
 
   // The indexed rollout identifies the owning home. Keep titles scoped to that
   // home and join on the provider thread ID, which can differ from the app ID.
   const indexPath = codexTitleIndexPath(session.jsonl_path);
-  if (!indexPath) return title;
+  if (!indexPath) return fallback;
   let index = titleIndexes.get(indexPath);
   if (!index) {
     index = buildLookupMap(indexPath, 'id', 'thread_name');
     titleIndexes.set(indexPath, index);
   }
-  return normalizeSessionName((await index).get(session.provider_session_id), title);
+  return normalizeSessionName((await index).get(session.provider_session_id), fallback);
 }
 
 function number(value: unknown) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0; }
@@ -102,8 +112,20 @@ function untimedFallbackTurns(events: UsageEvent[]): MonitorTimedUsageEvent[] {
     }));
 }
 
+const defaultMonitorDependencies = {
+  getSession: (id: string) => sessionsDb.getSessionById(id) ?? sessionsDb.getSessionByProviderSessionId(id),
+  listSessions: () => sessionsDb.getMonitorSessions(),
+  readThinkTranslate: (): Promise<MonitorThinkTranslateSummary | undefined> => getThinkTranslateMonitorSummary(),
+};
+
 /** Used by monitoring routes and focused tests; reads only DB-indexed transcripts, never caller-supplied paths. */
-export function createTokenMonitorService(dependencies: { getSession: (id: string) => Row | null; listSessions?: () => Row[] } = { getSession: (id: string) => sessionsDb.getSessionById(id), listSessions: () => sessionsDb.getMonitorSessions() }) {
+export function createTokenMonitorService(
+  dependencies: {
+    getSession: (id: string) => Row | null;
+    listSessions?: () => Row[];
+    readThinkTranslate?: () => Promise<MonitorThinkTranslateSummary | undefined>;
+  } = defaultMonitorDependencies,
+) {
   // Coalesce release checks across tabs and users; network failure is cached briefly, not reported as up-to-date.
   let releaseCache: { expires: number; value: Row } | null = null;
   let releasePending: Promise<Row> | null = null;
@@ -171,7 +193,14 @@ export function createTokenMonitorService(dependencies: { getSession: (id: strin
         })));
       }
       const { models, summary } = aggregateGlobalModelUsage(results);
-      return { sessions: results, models, summary, checkedAt: Date.now() };
+      const thinkTranslate = await dependencies.readThinkTranslate?.().catch(() => undefined);
+      return {
+        sessions: results,
+        models,
+        summary,
+        ...(thinkTranslate ? { thinkTranslate } : {}),
+        checkedAt: Date.now(),
+      };
     },
     async updates() {
       if (releaseCache && releaseCache.expires > Date.now()) return releaseCache.value;

@@ -2,6 +2,7 @@ import { ModelUsageOverview } from '@/modules/token-monitor/ModelUsageOverview';
 import { ReplyModelProvider } from '@/modules/token-monitor/ReplyModels';
 import { MonitorUpdater } from '@/modules/token-monitor/MonitorUpdater';
 import { SessionHistory } from '@/modules/token-monitor/SessionHistory';
+import { ThinkTranslateOverview } from '@/modules/token-monitor/ThinkTranslateOverview';
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Activity, X } from 'lucide-react';
@@ -228,6 +229,7 @@ export function TokenMonitorProvider({ sessionId, model, children }: { sessionId
       <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
         <div className="flex items-start justify-between gap-3"><DialogTitle>Token Monitor · 真实返回与用量</DialogTitle><button type="button" aria-label="关闭监控窗口" onClick={() => setOpen(false)} className="rounded p-1 hover:bg-muted"><X className="h-4 w-4" /></button></div>
         {open && <ModelUsageOverview data={historyData} />}
+        {open && <ThinkTranslateOverview summary={historyData?.thinkTranslate} />}
         {open && <SessionHistory selectedId={inspectedId} onSelect={id => setSelection({ source: sessionId, id })} revision={revision} onData={setHistoryData} />}
         {inspectedId !== sessionId && sessionId && <button type="button" className="mb-3 rounded border border-border px-3 py-1 text-xs" onClick={() => setSelection(null)}>返回当前会话</button>}
         {!inspectedId ? <p className="text-sm text-muted-foreground">展开上方历史会话选择任意对话，或发送一条消息开始监控当前会话。</p> : <>
@@ -251,7 +253,7 @@ export function TokenMonitorProvider({ sessionId, model, children }: { sessionId
           {current?.status === 'ok' && !current.replies.length && <p className="text-sm text-muted-foreground">尚未记录到模型回复。</p>}
           {current && <p className="text-xs text-muted-foreground">更新于 {new Date(current.checkedAt).toLocaleTimeString()}</p>}
         </>}
-        <div className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground"><a href="https://github.com/Javis603/token-monitor" target="_blank" rel="noopener noreferrer" className="underline">Javis603/token-monitor</a> · <a href="https://github.com/junhoyeo/tokscale" target="_blank" rel="noopener noreferrer" className="underline">tokscale</a> · mintcli 适配版{update && <> · 解析器 {update.installedVersion}<div className="mt-1 flex items-start gap-2"><p className="min-w-0 flex-1">{update.status !== 'ok' ? '上游版本检查暂不可用，稍后自动重试' : update.updateAvailable ? `发现上游新版本 ${update.latestVersion}，可更新适配器并检查接口兼容性` : `上游版本已检查：${update.latestVersion}`} · <a href={update.url} target="_blank" rel="noopener noreferrer" className="underline">查看更新</a></p><MonitorUpdater available={update.status === 'ok' && update.updateAvailable} /></div></>}</div>
+        <div className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground"><a href="https://github.com/Javis603/token-monitor" target="_blank" rel="noopener noreferrer" className="underline">Javis603/token-monitor</a> · <a href="https://github.com/junhoyeo/tokscale" target="_blank" rel="noopener noreferrer" className="underline">tokscale</a> · mintcli 适配版 v1.19.0{update && <> · 解析器 {update.installedVersion}<div className="mt-1 flex items-start gap-2"><p className="min-w-0 flex-1">{update.status !== 'ok' ? '上游版本检查暂不可用，稍后自动重试' : update.updateAvailable ? `发现上游新版本 ${update.latestVersion}，可更新适配器并检查接口兼容性` : `上游版本已检查：${update.latestVersion}`} · <a href={update.url} target="_blank" rel="noopener noreferrer" className="underline">查看更新</a></p><MonitorUpdater available={update.status === 'ok' && update.updateAvailable} /></div></>}</div>
       </DialogContent>
     </Dialog>
   </MonitorContext.Provider></ReplyModelProvider>;

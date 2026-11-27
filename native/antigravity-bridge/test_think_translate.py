@@ -12,10 +12,14 @@ from unittest import TestCase
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from think_translate_engine import (  # noqa: E402
+    TranslateCallError,
     build_translation_prompt,
     clear_translation_cache,
     extract_text_from_stream_json,
+    extract_translate_stream_details,
+    get_translate_cooldown_reason,
     load_think_translate_config,
+    parse_agy_error_detail,
     save_think_translate_config,
     translate_thinking_text,
 )
@@ -185,3 +189,75 @@ class ThinkTranslateEngineTests(TestCase):
             # Refreshed OAuth token was safely synced back to source HOME
             synced = json.loads(src_token.read_text(encoding="utf-8"))
             self.assertEqual(synced["access_token"], "refreshed-tok")
+
+    def test_parses_agy_quota_error_and_records_account_cooldown(self) -> None:
+        raw_stderr = (
+            'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. '
+            'Please upgrade your subscription to increase your limits. Resets in 163h9m22s.",'
+            '"status":"RESOURCE_EXHAUSTED","error_code":429,"code_kind":"http","retryable":false}'
+        )
+        parsed = parse_agy_error_detail(raw_stderr, "", 1)
+        self.assertEqual(parsed["category"], "quota_exhausted")
+        self.assertEqual(parsed["error_code"], 429)
+        self.assertTrue(parsed["account_wide"])
+        self.assertEqual(parsed["reset_hint"], "163h9m22s")
+        self.assertGreater(parsed["reset_seconds"], 163 * 3600)
+        self.assertIn("翻译模型额度已耗尽", parsed["message"])
+        self.assertNotIn('{"short_error"', parsed["message"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_cli = tmp_path / "fake_agy_429.py"
+            fake_cli.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                f"sys.stderr.write({raw_stderr!r} + '\\n')\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            fake_cli.chmod(0o755)
+            with self.assertRaises(TranslateCallError) as ctx:
+                asyncio.run(
+                    translate_thinking_text(
+                        text="Translate quota check.",
+                        target_lang="zh-CN",
+                        account_id="user-a@example.com",
+                        model="gemini-4-hydrogen-medium",
+                        agy_bin=str(fake_cli),
+                        run_env={"PATH": "/usr/bin:/bin"},
+                        scratch_dir=tmp_path,
+                    )
+                )
+            self.assertEqual(ctx.exception.category, "quota_exhausted")
+            self.assertTrue(ctx.exception.account_wide)
+            # Account-wide cooldown blocks any model on that exhausted account immediately
+            self.assertIsNotNone(get_translate_cooldown_reason("user-a@example.com", "gemini-3.8-flash-low"))
+
+    def test_extracts_usage_duration_and_reported_model_from_stream_json(self) -> None:
+        lines = [
+            json.dumps({"event": "init", "conversation_id": "c-1", "init": {"model": "gemini-3.8-flash-low"}}),
+            json.dumps({"event": "step_update", "step_update": {"step_index": 1, "state": "ACTIVE", "step_type": "agent_response", "text_delta": "译文测试"}}),
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "SUCCESS",
+                    "response": "译文测试",
+                    "duration_seconds": 1.82,
+                    "usage": {
+                        "input_tokens": 9200,
+                        "output_tokens": 24,
+                        "thinking_tokens": 0,
+                        "cache_read_tokens": 4000,
+                        "total_tokens": 9224,
+                    },
+                },
+            }),
+        ]
+        details = extract_translate_stream_details("\n".join(lines))
+        self.assertEqual(details["text"], "译文测试")
+        self.assertEqual(details["reported_model"], "gemini-3.8-flash-low")
+        self.assertEqual(details["duration_ms"], 1820)
+        self.assertEqual(
+            details["usage"],
+            {"input": 9200, "output": 24, "cacheRead": 4000, "cacheWrite": 0, "reasoning": 0, "total": 9224},
+        )

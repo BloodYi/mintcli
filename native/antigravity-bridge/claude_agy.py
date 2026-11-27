@@ -1,12 +1,15 @@
 """Run one opt-in Claude Code turn against the local agy provider."""
 
 import asyncio
+from collections.abc import Mapping
 import json
 import logging
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
+from typing import Any
 
 from armor_engine import (
     MAX_ARMOR_RETRIES,
@@ -88,6 +91,230 @@ _environment_keys = {
 }
 
 
+_MAX_STYLE_FILE_BYTES = 2 * 1024 * 1024
+_SAFE_STYLE_SETTINGS_KEYS = ("outputStyle", "language")
+_FRONTMATTER_RE = re.compile(
+    r"\A\ufeff?---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)(.*)\Z",
+    re.DOTALL,
+)
+
+
+def _read_regular_bytes(path: Path, max_bytes: int = _MAX_STYLE_FILE_BYTES) -> bytes | None:
+    try:
+        st = os.stat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_size <= 0 or st.st_size > max_bytes:
+            return None
+        data = path.read_bytes()
+        return data if len(data) <= max_bytes else None
+    except OSError:
+        return None
+
+
+def _candidate_claude_dirs(
+    source: Mapping[str, str] | None,
+    cwd: str | Path | None = None,
+) -> list[Path]:
+    env_map = source or {}
+    dirs: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(candidate: Path | None) -> None:
+        if candidate is None:
+            return
+        key = os.path.normpath(str(candidate))
+        if key and key not in seen:
+            seen.add(key)
+            dirs.append(Path(key))
+
+    if "MINTCLI_CLAUDE_CONFIG_DIR" in env_map:
+        override = str(env_map.get("MINTCLI_CLAUDE_CONFIG_DIR") or "").strip()
+        if override:
+            _add(Path(override))
+    else:
+        source_home = str(env_map.get("HOME") or env_map.get("home") or "").strip()
+        if source_home:
+            hp = Path(source_home)
+            for anc in (hp, *hp.parents):
+                if anc.name == "antigravity-home" and anc.parent != anc:
+                    _add(anc.parent / ".claude")
+            _add(hp / ".claude")
+
+        claude_bin = str(env_map.get("MINTCLI_CLAUDE_PATH") or "").strip()
+        if claude_bin:
+            cp = Path(claude_bin)
+            if cp.parent.name == "bin" and cp.parent.parent.name == "cli":
+                _add(cp.parents[2] / ".claude")
+
+        path_env = str(env_map.get("PATH") or env_map.get("path") or "")
+        for entry in path_env.split(os.pathsep):
+            clean = entry.strip()
+            if not clean:
+                continue
+            ep = Path(clean)
+            if ep.name == "bin" and ep.parent.name == "cli":
+                _add(ep.parents[1] / ".claude")
+
+    if cwd:
+        cwd_str = str(cwd).strip()
+        if cwd_str:
+            _add(Path(cwd_str) / ".claude")
+
+    return dirs
+
+
+def sync_claude_style_profile(
+    profile_dir: str | Path,
+    source: Mapping[str, str] | None,
+    cwd: str | Path | None = None,
+) -> dict[str, str]:
+    """Mirror safe user/project Claude output styles & style settings into isolated CLAUDE_CONFIG_DIR."""
+    profile = Path(profile_dir)
+    profile.mkdir(parents=True, exist_ok=True, mode=0o700)
+    styles_dst = profile / "output-styles"
+    merged_settings: dict[str, str] = {}
+
+    for cdir in _candidate_claude_dirs(source, cwd):
+        styles_src = cdir / "output-styles"
+        try:
+            is_styles_dir = styles_src.is_dir()
+        except OSError:
+            is_styles_dir = False
+        if is_styles_dir:
+            try:
+                md_files = sorted(styles_src.rglob("*.md"))
+            except OSError:
+                md_files = []
+            for src_file in md_files:
+                try:
+                    rel = src_file.relative_to(styles_src)
+                except ValueError:
+                    continue
+                if any(part.startswith(".") or part == ".." for part in rel.parts):
+                    continue
+                raw = _read_regular_bytes(src_file)
+                if raw is None:
+                    continue
+                dst_file = styles_dst / rel
+                dst_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                dst_file.write_bytes(raw)
+
+        for cfg_name in ("settings.json", "settings.local.json"):
+            raw_cfg = _read_regular_bytes(cdir / cfg_name)
+            if raw_cfg is None:
+                continue
+            try:
+                parsed = json.loads(raw_cfg.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            for key in _SAFE_STYLE_SETTINGS_KEYS:
+                val = parsed.get(key)
+                if isinstance(val, str) and val.strip():
+                    merged_settings[key] = val.strip()
+
+    if merged_settings:
+        (profile / "settings.json").write_text(
+            json.dumps(merged_settings, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    return merged_settings
+
+
+def _parse_output_style_markdown(text: str, stem: str) -> dict[str, Any]:
+    name = stem
+    keep_coding = False
+    body = text.strip()
+    match = _FRONTMATTER_RE.match(text)
+    if match:
+        fm_raw, rest = match.group(1), match.group(2)
+        body = rest.strip()
+        for raw_line in fm_raw.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            key = k.strip().lower()
+            val = v.strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                val = val[1:-1].strip()
+            if key == "name" and val:
+                name = val
+            elif key == "keep-coding-instructions":
+                keep_coding = val.lower() in ("true", "1", "yes", "on")
+    return {
+        "name": name,
+        "stem": stem,
+        "keep_coding_instructions": keep_coding,
+        "body": body,
+    }
+
+
+def resolve_active_claude_output_style(
+    source: Mapping[str, str] | None,
+    cwd: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Resolve active non-default Claude outputStyle metadata and body across global/project configs."""
+    merged_settings: dict[str, str] = {}
+    style_entries: list[dict[str, Any]] = []
+
+    for cdir in _candidate_claude_dirs(source, cwd):
+        styles_src = cdir / "output-styles"
+        try:
+            is_styles_dir = styles_src.is_dir()
+        except OSError:
+            is_styles_dir = False
+        if is_styles_dir:
+            try:
+                md_files = sorted(styles_src.rglob("*.md"))
+            except OSError:
+                md_files = []
+            for src_file in md_files:
+                raw = _read_regular_bytes(src_file)
+                if raw is None:
+                    continue
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                style_entries.append(_parse_output_style_markdown(text, src_file.stem))
+
+        for cfg_name in ("settings.json", "settings.local.json"):
+            raw_cfg = _read_regular_bytes(cdir / cfg_name)
+            if raw_cfg is None:
+                continue
+            try:
+                parsed = json.loads(raw_cfg.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if isinstance(parsed, dict):
+                val = parsed.get("outputStyle")
+                if isinstance(val, str) and val.strip():
+                    merged_settings["outputStyle"] = val.strip()
+
+    target = merged_settings.get("outputStyle", "").strip()
+    if not target or target.lower() == "default":
+        return None
+
+    target_lower = target.lower()
+    matched = next(
+        (entry for entry in reversed(style_entries) if entry["name"].lower() == target_lower),
+        None,
+    )
+    if matched is None:
+        matched = next(
+            (entry for entry in reversed(style_entries) if entry["stem"].lower() == target_lower),
+            None,
+        )
+    if matched is None or not matched["body"]:
+        return None
+    return {
+        "name": matched["name"],
+        "keep_coding_instructions": matched["keep_coding_instructions"],
+        "body": matched["body"],
+    }
+
+
 def _worker_environment(source, agy_bin, temporary):
     env = {key: value for key, value in source.items() if key.lower() in _environment_keys}
     profile = Path(temporary) / "claude"
@@ -101,7 +328,7 @@ def _worker_environment(source, agy_bin, temporary):
         "AGY_BRIDGE_MAX_PROCS": "1",
         "AGY_BRIDGE_EVENTS": "0",
         "AGY_BRIDGE_SYSTEM_APPEND": "0",
-        "AGY_BRIDGE_MINIMAL_AGENT": "0",
+        "AGY_BRIDGE_MINIMAL_AGENT": os.getenv("AGY_BRIDGE_MINIMAL_AGENT", "1"),
         "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
         "MINTCLI_REPO": str(_bridge.parents[1]),
         "MINTCLI_MAGPIE_AGY": os.getenv(
@@ -129,6 +356,7 @@ async def stream_claude_agy(
     async with _slots:
         with tempfile.TemporaryDirectory(prefix="claude-agy-", dir=scratch) as temporary:
             worker_env, claude_home = _worker_environment(env, agy_bin, temporary)
+            sync_claude_style_profile(claude_home, env, cwd)
             payload = {
                 "prompt": prompt, "model": model, "cwd": cwd, "claudeHome": claude_home,
                 "turnId": turn_id, "sandbox": sandbox,

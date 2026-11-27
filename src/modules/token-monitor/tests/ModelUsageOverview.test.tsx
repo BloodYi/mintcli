@@ -210,3 +210,115 @@ it('renders session tok/s speed in MonitorButton, inspector dialog, and per-repl
   expect(within(dialog).getAllByText(/42\.5 tok\/s/).length).toBeGreaterThan(0);
   await within(dialog).findByText(/3 个模型 · 总计 7,900/);
 });
+
+it('renders ThinkTranslateOverview failover diagnostics and AGY channel/plugin annotations', async () => {
+  vi.mocked(api.tokenMonitor.sessions).mockResolvedValue(
+    Response.json({
+      ...samplePayload,
+      thinkTranslate: {
+        configuredAccountId: 'agy:user-a@example.com',
+        configuredModel: 'gemini-4-hydrogen-medium',
+        totalCalls: 4,
+        cachedCalls: 1,
+        fallbackCalls: 2,
+        failedCalls: 0,
+        tokens: { input: 18000, output: 360, cacheRead: 6000, cacheWrite: 0, reasoning: 0, total: 24360 },
+        timedOutputTokens: 360,
+        timedDurationMs: 6000,
+        speed: 60,
+        models: [
+          {
+            model: 'gemini-3.8-flash-low',
+            platform: 'agy',
+            callCount: 3,
+            tokens: { input: 18000, output: 360, cacheRead: 6000, cacheWrite: 0, reasoning: 0, total: 24360 },
+            timedOutputTokens: 360,
+            timedDurationMs: 6000,
+            speed: 60,
+          },
+        ],
+        cooldowns: [
+          {
+            accountId: 'agy:user-a@example.com',
+            model: '',
+            reason: '翻译模型额度已耗尽（HTTP 429，约 163h 后重置）',
+            remainingSeconds: 18000,
+          },
+        ],
+        recent: [
+          {
+            timestamp: '2026-11-25T16:58:00Z',
+            platform: 'agy',
+            accountLabel: 'agy:user-b@example.com',
+            requestedModel: 'gemini-3.8-flash-low',
+            reportedModel: 'gemini-3.8-flash-low',
+            tokens: { input: 6000, output: 120, cacheRead: 2000, cacheWrite: 0, reasoning: 0, total: 8120 },
+            durationMs: 2000,
+            tokensPerSec: 60,
+            cached: false,
+            fallbackUsed: true,
+            fallbackReason: '原账号 429',
+            status: 'ok',
+            errorMessage: null,
+          },
+        ],
+      },
+    }),
+  );
+  vi.mocked(api.tokenMonitor.snapshot).mockResolvedValue(
+    Response.json({
+      sessionId: 'agy-1',
+      provider: 'antigravity',
+      configuredModel: 'gemini-4-carbon-high',
+      returnedModel: 'gemini-4-carbon',
+      checkedAt: Date.now(),
+      status: 'ok',
+      limited: false,
+      totals: { input: 1000, output: 200, cacheRead: 500, cacheWrite: 0, reasoning: 50, total: 1700 },
+      totalsScope: 'session',
+      speed: 50,
+      latestSpeed: 50,
+      timedOutputTokens: 200,
+      timedDurationMs: 4000,
+      modelUsage: [],
+      alerts: [],
+      replies: [],
+      usage: [],
+    }),
+  );
+  vi.mocked(api.tokenMonitor.replyModels).mockResolvedValue(
+    Response.json({
+      sessionId: 'agy-1',
+      status: 'ok',
+      models: [
+        {
+          messageIds: ['msg-agy-1'],
+          timestamp: '2026-11-25T16:58:10Z',
+          requestedModel: 'gemini-4-carbon-high',
+          reportedModel: 'gemini-4-carbon',
+          durationMs: 4000,
+          tokensPerSec: 50,
+          transport: 'claude_agy',
+          plugins: ['Armor', 'agy-fast'],
+        },
+      ],
+    }),
+  );
+
+  render(
+    <TokenMonitorProvider sessionId="agy-1" model="gemini-4-carbon-high">
+      <MonitorButton />
+      <ReplyModelProvider sessionId="agy-1">
+        <ReplyModelDetails sessionId="agy-1" messageId="msg-agy-1" timestamp="2026-11-25T16:58:10Z" provider="antigravity" />
+      </ReplyModelProvider>
+    </TokenMonitorProvider>,
+  );
+
+  await screen.findByText('Claude → agy · Armor · agy-fast');
+  fireEvent.click(screen.getByRole('button', { name: '开关监控窗口' }));
+  const dialog = await screen.findByRole('dialog');
+  await within(dialog).findByText(/思考翻译模型监控/);
+  expect(within(dialog).getByText(/已自动旁路额度受限的翻译账号/)).toBeTruthy();
+  expect(within(dialog).getByText(/容灾成功/)).toBeTruthy();
+  expect(within(dialog).getByText(/mintcli 适配版 v1\.19\.0/)).toBeTruthy();
+});

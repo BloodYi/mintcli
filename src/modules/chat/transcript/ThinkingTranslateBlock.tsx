@@ -3,6 +3,7 @@ import { Languages, Loader2 } from 'lucide-react';
 
 import {
   getCachedThinkingTranslation,
+  getCachedThinkingTranslationMeta,
   shouldAutoTranslateThinking,
   translateThinkingText,
 } from '@/modules/antigravity';
@@ -129,6 +130,7 @@ export const ThinkingTranslateBlock = React.memo<ThinkingTranslateBlockProps>(
     };
 
     const showingTranslation = Boolean(translated && showTranslated);
+    const translationMeta = showingTranslation && cleaned ? getCachedThinkingTranslationMeta(cleaned) : null;
     const displayText = showingTranslation && translated ? translated : text;
     const preventAutoClose = Boolean(
       translating
@@ -150,8 +152,22 @@ export const ThinkingTranslateBlock = React.memo<ThinkingTranslateBlockProps>(
           {!isExporting && cleaned && !isStreaming && (
             <div className="flex shrink-0 items-center gap-1.5">
               {showingTranslation && (
-                <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400">
-                  已译
+                <span
+                  title={
+                    translationMeta?.fallbackUsed
+                      ? `原配置账号受限，已自动切换至 ${translationMeta.accountId || '备用账号'}${translationMeta.reportedModel || translationMeta.model ? ` (${translationMeta.reportedModel || translationMeta.model})` : ''} 完成翻译${translationMeta.fallbackReason ? ` · ${translationMeta.fallbackReason}` : ''}`
+                      : translationMeta?.reportedModel || translationMeta?.model
+                        ? `翻译模型：${translationMeta.reportedModel || translationMeta.model}`
+                        : undefined
+                  }
+                  className={cn(
+                    'rounded px-1.5 py-0.5 text-[10px] font-medium',
+                    translationMeta?.fallbackUsed
+                      ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+                      : 'bg-violet-500/15 text-violet-600 dark:text-violet-400',
+                  )}
+                >
+                  {translationMeta?.fallbackUsed ? '容灾已译' : '已译'}
                 </span>
               )}
               <button

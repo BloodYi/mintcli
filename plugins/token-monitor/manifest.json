@@ -1,9 +1,9 @@
 {
   "name": "token-monitor",
   "displayName": "Token Monitor · 真实返回与用量",
-  "version": "1.17.0",
+  "version": "1.20.0",
   "entry": "index.js",
-  "description": "mintcli 适配版：全模型累计用量、模型生成速度（tok/s）、历史会话归档及真实返回模型。",
+  "description": "mintcli 适配版：全模型累计用量、模型生成速度（tok/s）、Claude → agy / ACP 逐轮计量、思考翻译监控与自动容灾、历史会话归档及真实返回模型。",
   "author": "mintcli integration / Javis603 / tokscale",
   "icon": "Activity",
   "type": "module",

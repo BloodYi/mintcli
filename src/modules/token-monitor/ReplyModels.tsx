@@ -67,12 +67,21 @@ export function ReplyModelDetails({ sessionId, messageId, timestamp, model, prov
   const real = reported || (index?.sessionId === sessionId && index.status === 'error' ? '读取失败' : !index && sessionId ? '读取中…' : '未报告');
   const speedLabel = formatTokenSpeed(record?.tokensPerSec);
   const durationLabel = formatMonitorDuration(record?.durationMs);
+  const transportLabel = record?.transport === 'claude_agy'
+    ? 'Claude → agy'
+    : record?.transport === 'acp'
+      ? 'ACP'
+      : record?.transport === 'cli'
+        ? 'CLI'
+        : null;
+  const channelDetails = [transportLabel, ...(record?.plugins || [])].filter(Boolean);
   return <details open className="mt-1 w-fit max-w-full text-[11px] text-muted-foreground" aria-label="回复模型信息">
     <summary className="cursor-pointer select-none">模型信息</summary>
     <dl className="mt-1 grid min-w-0 gap-0.5 pl-3">
       <div className="break-all"><dt className="inline">使用模型：</dt><dd className="inline font-mono">{used}</dd></div>
       <div className="break-all"><dt className="inline">真实返回模型：</dt><dd className="inline font-mono">{real}</dd></div>
       {speedLabel && <div className="break-all"><dt className="inline">生成速度：</dt><dd className="inline font-mono text-emerald-700 dark:text-emerald-400">{speedLabel}{durationLabel ? ` (${durationLabel})` : ''}</dd></div>}
+      {channelDetails.length > 0 && <div className="break-all"><dt className="inline">通道与插件：</dt><dd className="inline font-mono">{channelDetails.join(' · ')}</dd></div>}
     </dl>
   </details>;
 }

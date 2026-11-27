@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createAntigravityBridge } from '../antigravity.service.js';
+import { antigravityBridge, createAntigravityBridge } from '../antigravity.service.js';
+import { getThinkTranslateMonitorSummary, thinkTranslateService } from '../think-translate.service.js';
 
 test('native backend login is shared, its cookie never goes in the public response, and SSE stays unchanged', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-bridge-'));
@@ -167,4 +168,77 @@ test('allows authenticated think-translate endpoints and rejects unknown think-t
     '/api/think-translate/translate',
   ]);
   await assert.rejects(bridge.request('POST', '/api/think-translate/unknown'));
+});
+
+test('records privacy-safe think-translate telemetry and quota-failover summary without storing reasoning text', async t => {
+  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'mintcli-think-telemetry-'));
+  const prevRoot = process.env.AGENT_CONNECTIONS_ROOT;
+  process.env.AGENT_CONNECTIONS_ROOT = tmpRoot;
+  t.after(async () => {
+    if (prevRoot === undefined) delete process.env.AGENT_CONNECTIONS_ROOT;
+    else process.env.AGENT_CONNECTIONS_ROOT = prevRoot;
+    await fs.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  await fs.writeFile(
+    path.join(tmpRoot, 'think-translate.json'),
+    JSON.stringify({
+      account_id: 'agy:user-a@example.com',
+      model: 'gemini-4-hydrogen-medium',
+      target_lang: 'zh-CN',
+      updated_at: '2026-11-25T05:34:42.430Z',
+    }),
+  );
+
+  t.mock.method(antigravityBridge, 'request', async (_method: string, target: string) => {
+    if (target.startsWith('/api/think-translate/translate')) {
+      return Response.json({
+        ok: true,
+        translated: '不应落盘的译文正文',
+        account_id: 'ultra-442715d6',
+        account_email: 'user-b@example.com',
+        model: 'gemini-3.8-flash-low',
+        reported_model: 'gemini-3.8-flash-low',
+        target_lang: 'zh-CN',
+        cached: false,
+        fallback_used: true,
+        fallback_reason: '翻译模型额度已耗尽（HTTP 429，约 163h9m 后重置）',
+        duration_ms: 2000,
+        usage: { input: 9000, output: 120, cacheRead: 3000, cacheWrite: 0, reasoning: 0, total: 12120 },
+      });
+    }
+    if (target.startsWith('/api/think-translate/config')) {
+      return Response.json({
+        account_id: 'user-a@example.com',
+        model: 'gemini-4-hydrogen-medium',
+        target_lang: 'zh-CN',
+        cooldowns: [
+          {
+            account_id: 'user-a@example.com',
+            model: '',
+            reason: '翻译模型额度已耗尽（HTTP 429，约 163h9m 后重置）',
+            remaining_seconds: 21600,
+          },
+        ],
+      });
+    }
+    return Response.json({ ok: true });
+  });
+
+  const translated = await thinkTranslateService.translate({
+    text: 'Private English reasoning text that must not be persisted.',
+  });
+  assert.equal(translated.account_id, 'agy:ultra-442715d6');
+
+  const summary = await getThinkTranslateMonitorSummary();
+  assert.equal(summary.totalCalls, 1);
+  assert.equal(summary.fallbackCalls, 1);
+  assert.equal(summary.tokens.total, 12120);
+  assert.equal(summary.speed, 60);
+  assert.equal(summary.models[0]?.model, 'gemini-3.8-flash-low');
+  assert.equal(summary.cooldowns[0]?.accountId, 'agy:user-a@example.com');
+
+  const rawTelemetry = await fs.readFile(path.join(tmpRoot, 'think-translate-telemetry.json'), 'utf8');
+  assert.ok(!rawTelemetry.includes('Private English reasoning text'));
+  assert.ok(!rawTelemetry.includes('不应落盘的译文正文'));
 });

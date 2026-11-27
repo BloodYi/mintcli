@@ -89,3 +89,21 @@ The update button now follows the deployment worker's heartbeat. It stays reserv
 Integrates per-request generation timing (`tok/s`) and cross-session per-model token attribution adapted from MIT-licensed [Javis603/token-monitor](https://github.com/Javis603/token-monitor) (`tokenRatePresentation`, `sessionRows`, `usageAttributionRows`) and [junhoyeo/tokscale](https://github.com/junhoyeo/tokscale) / [Javis603/tokscale](https://github.com/Javis603/tokscale) (`codex_timing`, `claudecode` monotonic split-block timing; license retained in `vendor/LICENSE.tokscale`).
 
 Codex generation speed excludes post-response local tool waits via `token_usage_record` and same-flush boundaries; Claude timing spans from each turn/tool-result start across split response blocks; Antigravity reads native per-turn `⏱️` durations while preserving non-additive cumulative session totals. The dialog adds an **全部模型 Token 用量与速度** overview with tool/scope/sort controls, session and per-turn `tok/s` readouts, history speed sorting, and per-reply speed annotations.
+
+### 0.98.0 `3ea0ec25` / mintcli adapter 1.18.0
+
+- Rebuilt the MIT-licensed session-detail parser from the official tag. Its inclusive local-day range support belongs to the upstream desktop period picker. The web monitor continues to present full indexed session history and keeps provider-native cumulative snapshots intact.
+- Adapted the upstream project-label fallback to web history. Untitled sessions can be found by their indexed project directory name. Explicit titles and titles recovered from the owning Codex home retain priority, and sessions without a project name retain their existing fallback.
+- Upstream fixed-range collection, deleted-session daily buckets, device sync and Hub/Worker upload endpoints, T3 Code ACP source discovery, packaged tokscale and Chokidar updates, desktop dashboard/widget changes, and WSL discovery are outside this web adapter. Existing native Antigravity history and indexed Codex archives continue through mintcli's own providers.
+
+### 0.98.0 `3ea0ec25` / mintcli adapter 1.19.0
+
+- Adapted Antigravity multi-turn accounting to distinguish modern per-turn `Claude → agy` (`transport: claude_agy`) and `ACP` (`transport: acp`) runs from legacy cumulative CLI snapshots, reconciling full multi-turn session totals and per-model attribution while keeping legacy native snapshots non-additive.
+- Added safe execution channel and plugin provenance (`Claude → agy`, `ACP`, `Armor`, `TRANS-AM`, `agy-fast`, `思考跟随`) to per-reply model evidence and the inspector, recovered untitled Antigravity `"Conversation"` rows via indexed project basenames, and mounted `监控窗口` in `AntigravityWorkspace`.
+- Added an isolated **思考翻译模型监控** overview tracking translation calls, token totals, `tok/s` throughput, cache hits, and automatic 429 quota-failover cooldowns without polluting chat session token totals.
+
+### 0.99.0 `49831523` / mintcli adapter 1.20.0
+
+- Rebuilt the MIT-licensed session-detail parser from verified official tag `v0.99.0` (`49831523e3bbb3ec57ad6d30001306390592c59b`). All 27 transitive inputs, the bundled CJS output, and the MIT license are byte-identical to `v0.98.0`.
+- Preserved all local mintcli adapter customizations from `1.17.0` and `1.19.0`: per-request generation speed (`tok/s`), cross-session per-model token attribution (`ModelUsageOverview`), Antigravity `Claude → agy` and `ACP` multi-turn accounting with non-additive legacy native snapshots, execution channel and plugin provenance badges, untitled project/Conversation label recovery, `AntigravityWorkspace` monitor mount, and isolated **思考翻译模型监控** (`ThinkTranslateOverview`).
+- Upstream `v0.99.0` additions — Antigravity ACP `conversation_summaries.db` pre-token activity projection and turn start/finish live status, T3 Code ACP live activity/titles/cross-provider grouping, Kiro thread grouping, Codex local Web Work usage tracking/settings, Hub/Worker fixed-range upload limit preservation and daily-session coverage checks, and Electron idle-heap/duplicate-window fixes — belong to the upstream desktop, collector, and Hub/Worker runtimes and are not claimed as web adapter features.

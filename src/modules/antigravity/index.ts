@@ -4,6 +4,7 @@ export { useAgyFastStatus } from '@/modules/antigravity/hooks/useAgyFastStatus';
 export {
   formatThinkTranslateAccountLabel,
   getCachedThinkingTranslation,
+  getCachedThinkingTranslationMeta,
   shouldAutoTranslateThinking,
   translateThinkingText,
   useThinkTranslateConfig,
